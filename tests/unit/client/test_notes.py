@@ -8,8 +8,7 @@ not list"``.
 """
 
 import pytest
-
-from nextcloud_mcp_server.client.notes import _expect_note_object
+from nextcloud_client.notes import _expect_note_object
 
 pytestmark = pytest.mark.unit
 

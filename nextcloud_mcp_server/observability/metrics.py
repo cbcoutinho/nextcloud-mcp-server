@@ -19,11 +19,13 @@ import logging
 import threading
 import time
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from typing import Any
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.context import CallNext, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
+from nextcloud_client import instrumentation as _nc_instrumentation
 from prometheus_client import (
     REGISTRY,
     Counter,
@@ -34,7 +36,11 @@ from prometheus_client import (
 from prometheus_client.core import GaugeHistogramMetricFamily
 from prometheus_client.registry import Collector
 
-from nextcloud_mcp_server.observability.tracing import trace_operation
+from nextcloud_mcp_server.observability.tracing import (
+    add_span_attribute,
+    trace_nextcloud_api_call,
+    trace_operation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -474,7 +480,7 @@ document_escalation_suppressed_total = Counter(
 document_parse_failed_total = Counter(
     "astrolabe_document_parse_failed_total",
     "Document parses that failed in the isolated worker (process killed)",
-    ["reason"],  # reason: timeout | oom | error | unreadable
+    ["reason"],  # reason: timeout | oom | interrupted | error | unreadable
 )
 
 # Documents dead-lettered after a terminal parse failure: the failing tier had
@@ -489,8 +495,8 @@ document_dead_lettered_total = Counter(
     "astrolabe_document_dead_lettered_total",
     "Documents dead-lettered by a terminal parse failure (no escalation tier) "
     "or by repeated index failures",
-    # reason: a parse-failure reason (timeout | oom | error | oversize |
-    # unreadable | unsupported_type) OR a vector.processor._drop_reason value
+    # reason: a parse-failure reason (timeout | oom | interrupted | error |
+    # oversize | unreadable | unsupported_type) OR a vector.processor._drop_reason value
     # (timeout | connection | rate_limit | server | qdrant | other) for the
     # repeated-index-failure path. Keep in step with record_document_dead_lettered's
     # docstring below and with _drop_reason.
@@ -1797,7 +1803,8 @@ def record_document_parse_failed(reason: str) -> None:
     """Record a hard parse failure from the isolated worker.
 
     Args:
-        reason: ``timeout`` | ``oom`` | ``error`` (from the isolated worker);
+        reason: ``timeout`` | ``oom`` | ``interrupted`` | ``error`` (from the
+            isolated worker);
             ``unreadable`` -- the engine could not open the bytes as a document
             at all, i.e. the file's content does not match the mime type its
             extension claimed. Distinguished from ``error`` on purpose: it means
@@ -1858,7 +1865,7 @@ def record_document_dead_lettered(reason: str) -> None:
 
     Args:
         reason: for a **terminal parse failure** — ``timeout`` | ``oom`` |
-            ``error`` (the reason carried from the isolated worker),
+            ``interrupted`` | ``error`` (the reason carried from the isolated worker),
             ``oversize`` (rejected by the pre-parse size guard, which no tier can
             ever parse), ``unreadable`` (the bytes are not a document the engine
             can open -- no tier will do better, so it is terminal on the first
@@ -2200,3 +2207,38 @@ def instrument_tool(func):
                 raise
 
     return wrapper
+
+
+class _ServerInstrumentation(_nc_instrumentation.Instrumentation):
+    """Feeds the Nextcloud clients' hooks into the server's metrics and traces.
+
+    The clients call only no-op hooks, which keeps them free of prometheus and
+    OpenTelemetry. The instance is installed below at import, because every
+    server entrypoint imports this module, as the clients did before the hooks
+    existed.
+    """
+
+    def on_api_call(
+        self, app: str, method: str, status_code: int, duration: float
+    ) -> None:
+        record_nextcloud_api_call(app, method, status_code, duration)
+        # Called inside the trace_api_call span; 0 means no response arrived.
+        if status_code:
+            add_span_attribute("http.response.status_code", status_code)
+
+    def on_api_retry(self, app: str, reason: str) -> None:
+        record_nextcloud_api_retry(app, reason)
+
+    def on_download_truncated(self) -> None:
+        document_download_truncated_total.inc()
+
+    def on_scan_truncated(self) -> None:
+        document_scan_truncated_total.inc()
+
+    def trace_api_call(
+        self, app: str, method: str, path: str | None = None
+    ) -> AbstractContextManager[object]:
+        return trace_nextcloud_api_call(app, method, path)
+
+
+_nc_instrumentation.hooks = _ServerInstrumentation()

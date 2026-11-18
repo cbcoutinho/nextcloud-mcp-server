@@ -13,10 +13,9 @@ from io import BytesIO
 
 import pytest
 from mcp.client.session import ClientSession
+from nextcloud_client import NextcloudClient
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-
-from nextcloud_mcp_server.client import NextcloudClient
 
 logger = logging.getLogger(__name__)
 

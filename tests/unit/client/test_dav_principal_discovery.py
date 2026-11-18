@@ -5,9 +5,8 @@ from types import SimpleNamespace
 import httpx2
 import pytest
 from caldav.lib import error as caldav_error
-
-from nextcloud_mcp_server.client.contacts import ContactsClient
-from nextcloud_mcp_server.client.webdav import WebDAVClient
+from nextcloud_client.contacts import ContactsClient
+from nextcloud_client.webdav import WebDAVClient
 
 pytestmark = pytest.mark.unit
 
@@ -271,9 +270,7 @@ async def test_carddav_public_method_discovers_divergent_principal(mocker):
 def _calendar_client_with_principal(
     mocker, principal_id: str, *, calendar_home_id: str | None = None
 ):
-    mock_dav_client = mocker.patch(
-        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
-    )
+    mock_dav_client = mocker.patch("nextcloud_client.calendar.AsyncDAVClient")
     dav_client = mock_dav_client.return_value
     principal = SimpleNamespace(
         url=f"https://cloud.example.org/remote.php/dav/principals/users/{principal_id}/"
@@ -288,7 +285,7 @@ def _calendar_client_with_principal(
         return_value=mocker.Mock(raw=_calendar_multistatus(response_id))
     )
 
-    from nextcloud_mcp_server.client.calendar import CalendarClient
+    from nextcloud_client.calendar import CalendarClient
 
     client = CalendarClient("https://cloud.example.org", "alice", password=_APP_PW)
     return client, dav_client
@@ -324,9 +321,7 @@ async def test_caldav_prefers_discovered_calendar_home_set(mocker):
 
 
 async def test_caldav_uses_async_safe_calendar_home_property_lookup(mocker):
-    mock_dav_client = mocker.patch(
-        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
-    )
+    mock_dav_client = mocker.patch("nextcloud_client.calendar.AsyncDAVClient")
     dav_client = mock_dav_client.return_value
 
     class AsyncPrincipal:
@@ -344,7 +339,7 @@ async def test_caldav_uses_async_safe_calendar_home_property_lookup(mocker):
         return_value=mocker.Mock(raw=_calendar_multistatus("calendar_home_5678"))
     )
 
-    from nextcloud_mcp_server.client.calendar import CalendarClient
+    from nextcloud_client.calendar import CalendarClient
 
     client = CalendarClient("https://cloud.example.org", "alice", password=_APP_PW)
 
@@ -357,9 +352,7 @@ async def test_caldav_uses_async_safe_calendar_home_property_lookup(mocker):
 
 
 async def test_caldav_falls_back_to_calendar_home_property_when_lookup_empty(mocker):
-    mock_dav_client = mocker.patch(
-        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
-    )
+    mock_dav_client = mocker.patch("nextcloud_client.calendar.AsyncDAVClient")
     dav_client = mock_dav_client.return_value
 
     class Principal:
@@ -379,7 +372,7 @@ async def test_caldav_falls_back_to_calendar_home_property_when_lookup_empty(moc
         return_value=mocker.Mock(raw=_calendar_multistatus("calendar_home_5678"))
     )
 
-    from nextcloud_mcp_server.client.calendar import CalendarClient
+    from nextcloud_client.calendar import CalendarClient
 
     client = CalendarClient("https://cloud.example.org", "alice", password=_APP_PW)
 
@@ -468,7 +461,7 @@ async def test_caldav_event_operations_use_discovered_home_url(mocker):
         )
     )
     mock_calendar = mocker.patch(
-        "nextcloud_mcp_server.client.calendar.AsyncCalendar",
+        "nextcloud_client.calendar.AsyncCalendar",
         return_value=fake_calendar,
     )
 

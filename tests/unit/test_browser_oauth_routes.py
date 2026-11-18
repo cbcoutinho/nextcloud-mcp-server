@@ -38,52 +38,31 @@ def _fake_settings(*, cookie_secure, mcp_server_url=""):
 
 
 @pytest.mark.parametrize(
-    "value,expected",
+    ("cookie_secure", "mcp_server_url", "expected"),
     [
-        (True, True),
-        (False, False),
-        ("true", True),
-        ("false", False),
-        ("True", True),
-        ("FALSE", False),
-        ("0", False),
-        ("1", True),
-        ("no", False),
-        ("yes", True),
-        ("off", False),
-        ("on", True),
-        ("", False),
+        # An explicit setting wins over the scheme, in both directions.
+        ("false", "https://mcp.example.com", False),
+        ("True", "http://localhost:8000", True),
+        # Unset or unrecognised: decided by the scheme this server is served on.
+        (None, "https://mcp.example.com", True),
+        (None, "http://localhost:8000", False),
+        ("ture", "https://mcp.example.com", True),
+        ("ture", "http://localhost:8000", False),
     ],
 )
-def test_should_use_secure_cookies_string_coercion(monkeypatch, value, expected):
+def test_should_use_secure_cookies(
+    monkeypatch, cookie_secure, mcp_server_url, expected
+):
+    """Spellings are parse_bool's job (tests/unit/utils/test_parsing.py); this
+    pins only how the setting and the scheme combine."""
     monkeypatch.setattr(
         browser_oauth_routes,
         "get_settings",
-        lambda: _fake_settings(cookie_secure=value),
+        lambda: _fake_settings(
+            cookie_secure=cookie_secure, mcp_server_url=mcp_server_url
+        ),
     )
     assert browser_oauth_routes._should_use_secure_cookies() is expected
-
-
-def test_should_use_secure_cookies_falls_back_to_https_scheme(monkeypatch):
-    monkeypatch.setattr(
-        browser_oauth_routes,
-        "get_settings",
-        lambda: _fake_settings(
-            cookie_secure=None, mcp_server_url="https://mcp.example.com"
-        ),
-    )
-    assert browser_oauth_routes._should_use_secure_cookies() is True
-
-
-def test_should_use_secure_cookies_falls_back_to_http_scheme(monkeypatch):
-    monkeypatch.setattr(
-        browser_oauth_routes,
-        "get_settings",
-        lambda: _fake_settings(
-            cookie_secure=None, mcp_server_url="http://localhost:8000"
-        ),
-    )
-    assert browser_oauth_routes._should_use_secure_cookies() is False
 
 
 # ---------------------------------------------------------------------------

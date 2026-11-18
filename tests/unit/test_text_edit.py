@@ -3,6 +3,8 @@
 import io
 
 import pytest
+from hypothesis import assume, example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.utils.text_edit import (
     EditError,
@@ -17,18 +19,100 @@ from nextcloud_mcp_server.utils.text_edit import (
 
 # ── apply_edits ─────────────────────────────────────────────────────────
 
-
-def test_replaces_a_unique_passage():
-    result = apply_edits("one\ntwo\nthree\n", [TextEdit("two", "2")])
-
-    assert result.text == "one\n2\nthree\n"
-    assert result.replacements == 1
+#: A small alphabet so a quoted passage often occurs once, often several
+#: times, and line breaks fall inside and at the edges of quotes.
+_lf_text = st.text(alphabet="ab\n", max_size=30)
 
 
-def test_empty_new_string_deletes():
-    result = apply_edits("keep\ndrop me\nkeep\n", [TextEdit("drop me\n", "")])
+@st.composite
+def lf_edits(draw):
+    """An LF-only file and an edit as a model sends it: ``\\n`` line breaks,
+    ``old_string`` usually quoted from the file itself."""
+    text = draw(_lf_text)
+    if text and draw(st.booleans()):
+        start = draw(st.integers(0, len(text) - 1))
+        old = text[start : draw(st.integers(start + 1, len(text)))]
+    else:
+        old = draw(st.text(alphabet="ab\n", min_size=1, max_size=30))
+    edit = TextEdit(old, draw(_lf_text), replace_all=draw(st.booleans()))
+    return text, edit
 
-    assert result.text == "keep\nkeep\n"
+
+def _outcome(text: str, edit: TextEdit) -> tuple[str, int] | None:
+    try:
+        result = apply_edits(text, [edit])
+    except EditError:
+        return None
+    return result.text, result.replacements
+
+
+@given(lf_edits())
+@example(("one\ntwo\nthree\n", TextEdit("two", "2")))
+@example(("keep\ndrop me\nkeep\n", TextEdit("drop me\n", "")))
+@example(("a-b-a-b\n", TextEdit("a", "c", replace_all=True)))
+def test_an_lf_file_is_edited_like_str_replace(case):
+    """Exactly one match, or replace_all: plain replacement. Anything else is
+    an error, never a silent no-op or a guess between matches."""
+    text, edit = case
+    count = text.count(edit.old_string)
+
+    outcome = _outcome(text, edit)
+
+    if (
+        count
+        and edit.old_string != edit.new_string
+        and (edit.replace_all or count == 1)
+    ):
+        assert outcome == (text.replace(edit.old_string, edit.new_string), count)
+    else:
+        assert outcome is None
+
+
+def _crlf(text: str) -> str:
+    return text.replace("\n", "\r\n")
+
+
+@given(lf_edits())
+@example(("a\nb\nc\n", TextEdit("a\nb", "x\ny")))  # \n quote matches CRLF
+@example(("a\nb\na\nb\n", TextEdit("b", "B", replace_all=True)))
+@example(("a\nb\na\nb\n", TextEdit("a\nb", "x\ny", replace_all=True)))
+@example(("title\nbody\n", TextEdit("title", "title\nsubtitle")))  # added lines
+# A quote starting with "\n" used to match the LF half of a CRLF pair and
+# leave a lone CR behind: deleting "\nb" gave "a\r\r\nc\r\n".
+@example(("a\nb\nc\n", TextEdit("\nb", "")))
+@example(("a\nb\nc\n", TextEdit("\n", "", replace_all=True)))
+def test_a_crlf_file_is_edited_as_if_it_were_lf(case):
+    """Models quote with ``\\n`` whatever the file uses. In a file that is CRLF
+    throughout, an edit must do exactly what it does to the LF version of the
+    file, and the file must stay CRLF-only."""
+    lf_text, edit = case
+    assume("\n" in lf_text)  # no line endings, so no convention to keep
+
+    expected = _outcome(lf_text, edit)
+
+    outcome = _outcome(_crlf(lf_text), edit)
+
+    if expected is None:
+        assert outcome is None
+    else:
+        assert outcome == (_crlf(expected[0]), expected[1])
+
+
+def test_a_quote_ending_in_cr_does_not_match_half_a_crlf_pair():
+    """Outside the property above (models do not quote CRs): "a\\r" would take
+    the CR and leave a lone LF ("x\\nb"). A bare CR still matches where it is."""
+    with pytest.raises(EditError, match="not found"):
+        apply_edits("a\r\nb\r\n", [TextEdit("a\r", "x")])
+
+    assert apply_edits("a\rb\r\n", [TextEdit("a\r", "x")]).text == "xb\r\n"
+    # replace_all takes only the bare one, never the CR of the CRLF.
+    result = apply_edits("a\rb\ra\r\n", [TextEdit("a\r", "x", replace_all=True)])
+    assert (result.text, result.replacements) == ("xb\ra\r\n", 1)
+
+
+def test_the_crlf_guards_do_not_over_reject_bare_line_breaks():
+    """In a mixed file, a leading-LF quote after a bare LF still matches."""
+    assert apply_edits("a\nb\r\nc", [TextEdit("\nb", "")]).text == "a\r\nc"
 
 
 def test_missing_passage_is_an_error():
@@ -47,13 +131,6 @@ def test_ambiguous_error_caps_the_line_list():
     text = "hit\n" * 15
     with pytest.raises(EditError, match="and 5 more"):
         apply_edits(text, [TextEdit("hit", "miss")])
-
-
-def test_replace_all_replaces_every_occurrence():
-    result = apply_edits("a-b-a-b\n", [TextEdit("a", "c", replace_all=True)])
-
-    assert result.text == "c-b-c-b\n"
-    assert result.replacements == 2
 
 
 def test_edits_apply_in_order_to_the_previous_result():
@@ -88,40 +165,9 @@ def test_no_edits_is_an_error():
         apply_edits("text", [])
 
 
-def test_crlf_files_keep_their_line_endings():
-    """Models quote with \\n. In a CRLF file the match and the result use CRLF."""
-    result = apply_edits("a\r\nb\r\nc\r\n", [TextEdit("a\nb", "x\ny")])
-
-    assert result.text == "x\r\ny\r\nc\r\n"
-
-
 def test_crlf_mismatch_hint_in_not_found_error():
     with pytest.raises(EditError, match="CRLF"):
         apply_edits("a\r\nb\r\n", [TextEdit("missing", "x")])
-
-
-def test_pure_crlf_file_matches_single_line_and_replace_all_edits():
-    """Without a line break in the edit there is nothing to convert, and
-    replace_all counts the CRLF-form matches."""
-    text = "a\r\nb\r\na\r\nb\r\n"
-
-    single = apply_edits(text, [TextEdit("b", "B", replace_all=True)])
-    multi = apply_edits(text, [TextEdit("a\nb", "x\ny", replace_all=True)])
-
-    assert single.text == "a\r\nB\r\na\r\nB\r\n"
-    assert single.replacements == 2
-    assert multi.text == "x\r\ny\r\nx\r\ny\r\n"
-    assert multi.replacements == 2
-
-
-def test_lines_added_to_a_pure_crlf_file_get_crlf():
-    """old_string has no line break, so it matches as given, but the lines the
-    edit adds must not bring bare LFs into a CRLF-only file."""
-    text = "title\r\nbody\r\n"
-
-    result = apply_edits(text, [TextEdit("title", "title\nsubtitle")])
-
-    assert result.text == "title\r\nsubtitle\r\nbody\r\n"
 
 
 def test_lines_added_to_a_mixed_file_are_written_as_given():
@@ -245,44 +291,78 @@ def _lines(text: bytes) -> io.BytesIO:
     return io.BytesIO(text)
 
 
-def test_window_is_byte_exact_without_numbers():
-    window = line_window(_lines(b"one\r\ntwo\r\nthree\r\n"), 2, 3)
+def _longest_utf8_prefix(line: str, limit: int) -> str:
+    return max(
+        (line[:i] for i in range(len(line) + 1) if len(line[:i].encode()) <= limit),
+        key=len,
+    )
 
-    assert window.content == "two\r\nthree\r\n"
-    assert (window.first, window.last, window.total) == (2, 3, 3)
+
+@st.composite
+def windows(draw):
+    """A UTF-8 file (any line endings, multi-byte characters) and a request
+    for a window of it: (raw, start, end, max_bytes)."""
+    lines = draw(st.lists(st.text(st.characters(exclude_characters="\n")), max_size=6))
+    raw = "\n".join(lines).encode() + draw(st.sampled_from([b"", b"\n"]))
+    total = len(io.BytesIO(raw).readlines())
+    start = draw(st.integers(1, total + 2))
+    end = draw(st.none() | st.integers(start, start + 4))
+    max_bytes = draw(st.none() | st.integers(0, 40))
+    return raw, start, end, max_bytes
+
+
+@given(windows())
+@example((b"one\r\ntwo\r\nthree\r\n", 2, 3, None))  # byte-exact, CRLF kept
+@example((b"one\ntwo", 1, 99, None))  # end past the file is clamped
+@example((b"one\ntwo\n", 3, None, None))  # start past the end
+@example((b"", 1, None, None))  # an empty file has no line 1, yet reads as empty
+@example((b"aaaa\nbbbb\ncccc\n", 1, None, 10))  # capped by bytes
+@example((b"x" * 100 + b"\nsecond\n", 1, None, 10))  # oversized first line is cut
+@example((b"a\nb\n" + b"y" * 50 + b"\nz\n", 3, None, 8))  # ...in a later range too
+@example((b"1234567890", 1, None, 10))  # fits exactly: not cut
+@example((b"short\n" + b"y" * 50 + b"\n", 1, None, 20))  # later overflow: not cut
+@example((("é" * 10).encode(), 1, None, 5))  # never cut inside a character
+@example(("aé€😀b€é".encode(), 1, None, 9))  # 1-, 2-, 3- and 4-byte characters
+def test_line_window_returns_whole_lines_or_the_longest_valid_prefix(case):
+    """Whole lines while they fit under ``max_bytes``. A first line too big on
+    its own is returned as its longest prefix that does not split a character,
+    so a huge line (minified JSON) neither comes back whole nor fails to decode.
+    """
+    raw, start, end, max_bytes = case
+    lines = [line.decode() for line in io.BytesIO(raw).readlines()]
+    total = len(lines)
+
+    if start > max(total, 1):
+        with pytest.raises(LineRangeError, match=f"has {total} lines"):
+            line_window(_lines(raw), start, end, max_bytes=max_bytes)
+        return
+
+    window = line_window(_lines(raw), start, end, max_bytes=max_bytes)
+
+    wanted = lines[start - 1 : end]
+    fit = 0
+    while fit < len(wanted) and (
+        max_bytes is None or len("".join(wanted[: fit + 1]).encode()) <= max_bytes
+    ):
+        fit += 1
+    if fit == 0 and wanted:
+        assert window.content == _longest_utf8_prefix(wanted[0], max_bytes)
+        assert window.last_line_cut is True
+        assert window.last == start
+    else:
+        assert window.content == "".join(wanted[:fit])
+        assert window.last_line_cut is False
+        assert window.last == start - 1 + fit
+    assert window.truncated is (fit < len(wanted))
+    assert (window.first, window.total) == (start, total)
+    if max_bytes is not None:
+        assert len(window.content.encode()) <= max_bytes
 
 
 def test_window_with_numbers():
     window = line_window(_lines(b"one\ntwo\nthree\n"), 2, None, numbered=True)
 
     assert window.content == "     2\ttwo\n     3\tthree"
-
-
-def test_window_end_past_the_file_is_clamped():
-    window = line_window(_lines(b"one\ntwo"), 1, 99)
-
-    assert window.content == "one\ntwo"
-    assert (window.last, window.total) == (2, 2)
-
-
-def test_window_start_past_the_end_is_an_error():
-    with pytest.raises(LineRangeError, match="has 2 lines"):
-        line_window(_lines(b"one\ntwo\n"), 3, None)
-
-
-def test_empty_file_reads_as_empty():
-    window = line_window(_lines(b""), 1, None)
-
-    assert window.content == ""
-    assert window.total == 0
-
-
-def test_window_is_capped_by_bytes():
-    window = line_window(_lines(b"aaaa\nbbbb\ncccc\n"), 1, None, max_bytes=10)
-
-    assert window.content == "aaaa\nbbbb\n"
-    assert window.truncated is True
-    assert (window.last, window.total) == (2, 3)
 
 
 def test_only_the_window_is_decoded():
@@ -295,70 +375,6 @@ def test_only_the_window_is_decoded():
 def test_window_that_is_not_utf8_raises():
     with pytest.raises(UnicodeDecodeError):
         line_window(_lines(b"text\n\xff\xfe\n"), 2, 2)
-
-
-def test_window_cuts_an_oversized_first_line():
-    """One huge line (minified JSON) must not come back whole."""
-    window = line_window(_lines(b"x" * 100 + b"\nsecond\n"), 1, None, max_bytes=10)
-
-    assert window.content == "x" * 10
-    assert window.truncated is True
-    assert window.last_line_cut is True
-    assert (window.first, window.last, window.total) == (1, 1, 2)
-
-
-def test_window_cuts_the_first_line_of_a_later_range():
-    window = line_window(_lines(b"a\nb\n" + b"y" * 50 + b"\nz\n"), 3, None, max_bytes=8)
-
-    assert window.content == "y" * 8
-    assert (window.first, window.last, window.total) == (3, 3, 4)
-    assert window.last_line_cut is True
-
-
-def test_window_does_not_cut_a_first_line_that_fits_exactly():
-    window = line_window(_lines(b"1234567890"), 1, None, max_bytes=10)
-
-    assert window.content == "1234567890"
-    assert window.truncated is False
-    assert window.last_line_cut is False
-
-
-def test_window_cut_line_is_not_flagged_when_a_later_line_overflows():
-    """The first line is whole here. Only the second one does not fit."""
-    window = line_window(_lines(b"short\n" + b"y" * 50 + b"\n"), 1, None, max_bytes=20)
-
-    assert window.content == "short\n"
-    assert window.truncated is True
-    assert window.last_line_cut is False
-    assert (window.last, window.total) == (1, 2)
-
-
-def test_window_never_cuts_inside_a_multibyte_character():
-    """Two-byte "é" straddles the byte limit: the half character is dropped."""
-    raw = ("é" * 10).encode()  # c3 a9 repeated: byte 5 is the middle of a character
-
-    window = line_window(_lines(raw), 1, None, max_bytes=5)
-
-    assert window.content == "éé"
-    assert window.last_line_cut is True
-    assert len(window.content.encode()) <= 5
-
-
-@pytest.mark.parametrize("limit", range(0, 16))
-def test_window_cut_is_the_longest_valid_prefix_for_any_limit(limit):
-    """Sweeps the cut over 1-, 2-, 3- and 4-byte characters."""
-    text = "aé€😀b€é"
-    raw = text.encode()
-
-    window = line_window(_lines(raw), 1, None, max_bytes=limit)
-
-    expected = max(
-        (text[:i] for i in range(len(text) + 1) if len(text[:i].encode()) <= limit),
-        key=len,
-    )
-    assert window.content == expected
-    assert len(window.content.encode()) <= limit
-    assert window.truncated is (len(raw) > limit)
 
 
 def test_cut_first_line_with_numbers():
@@ -378,171 +394,185 @@ def test_cut_still_rejects_invalid_utf8():
 
 # ── is_editable_text ────────────────────────────────────────────────────
 
+_token = st.from_regex(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,15}", fullmatch=True)
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("text/plain", "text/plain"),
-        ("Text/Markdown; charset=UTF-8", "text/markdown"),
-        ("  application/JSON ;charset=utf-8", "application/json"),
-        ("", ""),
-        (None, ""),
-    ],
-)
-def test_content_type_is_normalised(raw, expected):
+
+@st.composite
+def content_type_headers(draw):
+    """A Content-Type header as servers send it, and its bare media type."""
+    media_type = f"{draw(_token)}/{draw(_token)}"
+    cased = "".join(c.upper() if draw(st.booleans()) else c.lower() for c in media_type)
+    pad = st.sampled_from(["", " ", "  "])
+    params = draw(st.sampled_from(["", ";charset=utf-8", " ; charset=UTF-8"]))
+    return draw(pad) + cased + draw(pad) + params, media_type.lower()
+
+
+@given(content_type_headers())
+@example(("Text/Markdown; charset=UTF-8", "text/markdown"))
+@example(("", ""))
+@example((None, ""))
+def test_content_type_is_normalised(case):
+    raw, expected = case
     assert normalize_content_type(raw) == expected
 
 
-@pytest.mark.parametrize(
-    "content_type",
-    [
-        "text/plain",
-        "text/markdown",
-        "text/x-python",
-        "text/csv",
-        "text/html",
-        "Text/Plain; charset=UTF-8",
-        "application/json",
-        "application/xml",
-        "application/yaml",
-        "application/x-yaml",
-        "application/toml",
-        "application/javascript",
-        "application/x-javascript",
-        "application/ecmascript",
-        "application/x-sh",
-        "application/x-shellscript",
-        "application/x-php",
-        "application/sql",
-        "application/x-tex",
-        "application/x-latex",
-        "application/xhtml+xml",
-        "image/svg+xml",
-        "application/vnd.api+json",
-        "application/atom+xml",
-        "application/vnd.excalidraw+json",
-    ],
-)
-def test_text_content_types_are_editable(content_type):
-    assert is_editable_text(content_type, "/some/file") is True
+#: Directories a file may sit in. Only the base name may ever matter, and
+#: only for a file the server could not classify -- a dotted directory such as
+#: ``v1.2`` must never be read as an extension.
+directories = st.from_regex(
+    r"(/[A-Za-z0-9._ -]{1,10}){0,3}/", fullmatch=True
+) | st.just("")
+
+TEXT_CONTENT_TYPES = [
+    "text/plain",
+    "text/markdown",
+    "text/x-python",
+    "text/csv",
+    "text/html",
+    "Text/Plain; charset=UTF-8",
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+    "application/toml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/ecmascript",
+    "application/x-sh",
+    "application/x-shellscript",
+    "application/x-php",
+    "application/sql",
+    "application/x-tex",
+    "application/x-latex",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "application/vnd.api+json",
+    "application/atom+xml",
+    "application/vnd.excalidraw+json",
+]
+
+NON_TEXT_CONTENT_TYPES = [
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "audio/mpeg",
+    "video/mp4",
+    "application/zip",
+    "application/gzip",
+    "application/x-tar",
+    "application/epub+zip",
+    "application/x-msdos-program",
+    "font/woff2",
+]
 
 
-@pytest.mark.parametrize(
-    "content_type",
-    [
-        "application/pdf",
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.oasis.opendocument.text",
-        "application/vnd.oasis.opendocument.spreadsheet",
-        "image/png",
-        "image/jpeg",
-        "image/gif",
-        "audio/mpeg",
-        "video/mp4",
-        "application/zip",
-        "application/gzip",
-        "application/x-tar",
-        "application/epub+zip",
-        "application/x-msdos-program",
-        "font/woff2",
-    ],
-)
-def test_non_text_content_types_are_refused(content_type):
-    assert is_editable_text(content_type, "/some/file") is False
-
-
-@pytest.mark.parametrize("name", ["notes.md", "data.json", "readme.txt", "Makefile"])
-def test_a_text_file_name_does_not_rescue_a_binary_content_type(name):
+@given(directories, st.text(max_size=20))
+@example("/docs/", "notes.md")  # a text name does not rescue a binary type
+@example("/docs/", "Makefile")
+def test_a_classified_content_type_decides_whatever_the_file_name(directory, name):
     """The file name only decides when the server could not tell."""
-    assert is_editable_text("application/pdf", f"/docs/{name}") is False
+    path = directory + name
+    assert [ct for ct in TEXT_CONTENT_TYPES if not is_editable_text(ct, path)] == []
+    assert [ct for ct in NON_TEXT_CONTENT_TYPES if is_editable_text(ct, path)] == []
 
 
-@pytest.mark.parametrize("content_type", ["application/octet-stream", "", None])
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/Makefile",
-        "Dockerfile",
-        "/work/LICENSE",
-        "/home/.env",
-        ".gitignore",
-        "/a/b/.bashrc",
-        "script.sh",
-        "/src/app.ts",
-        "/src/App.TSX",
-        "/etc/app.ini",
-        "/etc/app.cfg",
-        "/logs/run.log",
-        "/data/rows.jsonl",
-        "README.",
-    ],
+#: What a server reports for a file it cannot classify.
+unclassified = st.sampled_from(
+    [None, "", "application/octet-stream", "Application/Octet-Stream; x=y"]
 )
-def test_unclassified_files_are_editable_without_or_with_a_text_extension(
-    content_type, path
-):
-    assert is_editable_text(content_type, path) is True
+
+TEXT_NAMES = [
+    "Makefile",
+    "Dockerfile",
+    "LICENSE",
+    ".env",
+    ".gitignore",
+    ".bashrc",
+    "script.sh",
+    "app.ts",
+    "App.TSX",
+    "app.ini",
+    "app.cfg",
+    "run.log",
+    "rows.jsonl",
+    "README.",
+]
+
+NON_TEXT_NAMES = [
+    "report.pdf",
+    "letter.docx",
+    "letter.odt",
+    "sheet.xlsx",
+    "slides.pptx",
+    "photo.png",
+    "photo.JPG",
+    "song.mp3",
+    "clip.mp4",
+    "archive.zip",
+    "archive.tar.gz",
+    "blob.bin",
+    "v1.2.3-release",
+]
 
 
-@pytest.mark.parametrize("content_type", ["application/octet-stream", "", None])
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/docs/report.pdf",
-        "/docs/letter.docx",
-        "/docs/letter.odt",
-        "/docs/sheet.xlsx",
-        "/docs/slides.pptx",
-        "/img/photo.png",
-        "/img/photo.JPG",
-        "/music/song.mp3",
-        "/video/clip.mp4",
-        "/archive.zip",
-        "/archive.tar.gz",
-        "/blob.bin",
-        "/build/v1.2.3-release",
-    ],
-)
-def test_unclassified_files_with_other_extensions_are_refused(content_type, path):
-    assert is_editable_text(content_type, path) is False
+@given(unclassified, directories)
+def test_an_unclassified_file_is_judged_by_its_extension(content_type, directory):
+    """No extension or a well-known text one: editable. Anything else is not."""
+    refused = [
+        n for n in TEXT_NAMES if not is_editable_text(content_type, directory + n)
+    ]
+    allowed = [
+        n for n in NON_TEXT_NAMES if is_editable_text(content_type, directory + n)
+    ]
+    assert refused == []
+    assert allowed == []
 
 
-@pytest.mark.parametrize(
-    ("content_type", "name"),
-    [
-        # What Nextcloud sends on a GET: the "secure" type of its mapping
-        # (resources/config/mimetypemapping.dist.json, second entry).
-        ("text/markdown", "page.md"),
-        ("text/plain", "config.yaml"),
-        ("text/plain", "config.yml"),
-        ("text/plain", "data.json"),
-        ("text/plain", "feed.xml"),
-        ("text/plain", "app.js"),
-        ("text/plain", "logo.svg"),
-        ("text/x-shellscript", "run.sh"),
-        ("text/x-python", "tool.py"),
-        ("text/x-php", "index.php"),
-        ("text/code", "pyproject.toml"),
-        ("text/plain", "app.conf"),
-        ("text/csv", "table.csv"),
-        ("text/calendar", "event.ics"),
-        ("text/vcard", "person.vcf"),
-        ("application/x-tex", "paper.tex"),
-        # The primary type of the same mapping, as PROPFIND reports it.
-        ("application/yaml", "config.yaml"),
-        ("application/json", "data.json"),
-        ("application/xml", "feed.xml"),
-        ("application/javascript", "app.js"),
-        ("application/x-php", "index.php"),
-        ("application/toml", "pyproject.toml"),
-        ("image/svg+xml", "logo.svg"),
-        # No mapping at all: the server answers octet-stream.
-        ("application/octet-stream", "app.ts"),
-        ("application/octet-stream", "settings.ini"),
-        ("application/octet-stream", "settings.cfg"),
-        ("application/octet-stream", ".env"),
-    ],
-)
-def test_what_nextcloud_assigns_to_common_text_files_is_editable(content_type, name):
-    assert is_editable_text(content_type, f"/files/{name}") is True
+#: What Nextcloud sends for common text files: the "secure" type of its mapping
+#: (resources/config/mimetypemapping.dist.json, second entry) on a GET, the
+#: primary type as PROPFIND reports it, or octet-stream with no mapping at all.
+NEXTCLOUD_ASSIGNED = [
+    ("text/markdown", "page.md"),
+    ("text/plain", "config.yaml"),
+    ("text/plain", "config.yml"),
+    ("text/plain", "data.json"),
+    ("text/plain", "feed.xml"),
+    ("text/plain", "app.js"),
+    ("text/plain", "logo.svg"),
+    ("text/x-shellscript", "run.sh"),
+    ("text/x-python", "tool.py"),
+    ("text/x-php", "index.php"),
+    ("text/code", "pyproject.toml"),
+    ("text/plain", "app.conf"),
+    ("text/csv", "table.csv"),
+    ("text/calendar", "event.ics"),
+    ("text/vcard", "person.vcf"),
+    ("application/x-tex", "paper.tex"),
+    ("application/yaml", "config.yaml"),
+    ("application/json", "data.json"),
+    ("application/xml", "feed.xml"),
+    ("application/javascript", "app.js"),
+    ("application/x-php", "index.php"),
+    ("application/toml", "pyproject.toml"),
+    ("image/svg+xml", "logo.svg"),
+    ("application/octet-stream", "app.ts"),
+    ("application/octet-stream", "settings.ini"),
+    ("application/octet-stream", "settings.cfg"),
+    ("application/octet-stream", ".env"),
+]
+
+
+@given(directories)
+def test_what_nextcloud_assigns_to_common_text_files_is_editable(directory):
+    refused = [
+        (ct, n)
+        for ct, n in NEXTCLOUD_ASSIGNED
+        if not is_editable_text(ct, directory + n)
+    ]
+    assert refused == []

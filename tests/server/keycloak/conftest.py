@@ -48,8 +48,8 @@ import httpx2
 import pytest
 from mcp import ClientSession
 from mcp.types import ElicitRequestParams, ElicitResult
+from nextcloud_client import NextcloudClient
 
-from nextcloud_mcp_server.client import NextcloudClient
 from tests.conftest import (
     create_mcp_client_session,
 )

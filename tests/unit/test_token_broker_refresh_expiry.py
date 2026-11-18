@@ -15,9 +15,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.auth.storage import RefreshTokenStorage
-from nextcloud_mcp_server.auth.token_broker import TokenBrokerService
+from nextcloud_mcp_server.auth.token_broker import (
+    TokenBrokerService,
+    refresh_token_lifetime,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -95,57 +100,59 @@ async def _stored_lifetime(path: str, **token_fields) -> int:
     return expires_at - before
 
 
+_CAP = 3650 * _DAY
+
+_json = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda inner: st.lists(inner) | st.dictionaries(st.text(), inner),
+    max_leaves=5,
+)
+
+
+@given(st.integers(min_value=1, max_value=10**18), st.booleans())
+@example(900, False)  # Nextcloud oidc default: 15 minutes, not 90 days
+@example(604800, True)  # AWS Cognito sends the number as a JSON string
+@example(10**15, False)  # "effectively never" is capped at ten years
+def test_positive_lifetime_is_honoured_up_to_the_cap(seconds, as_string):
+    raw = str(seconds) if as_string else seconds
+    assert refresh_token_lifetime(raw) == min(seconds, _CAP)
+
+
+@given(st.floats(min_value=1, max_value=1e12))
+@example(3600.9)
+def test_float_is_truncated_to_seconds(seconds):
+    assert refresh_token_lifetime(seconds) == min(int(seconds), _CAP)
+
+
+@given(_json)
+@example(0)  # Keycloak: offline token that does not expire
+@example(-60)
+@example(True)
+@example("1.5")
+@example("-900")
+@example(float("nan"))
+@example(float("inf"))
+@example({"s": 900})
+def test_any_json_value_is_a_lifetime_or_none(raw):
+    """Untrusted IdP payload: never raises, never stores a non-positive or
+    out-of-range lifetime."""
+    result = refresh_token_lifetime(raw)
+    assert result is None or 1 <= result <= _CAP
+
+
 @pytest.mark.parametrize("path", _PATHS)
-class TestIdPLifetimeIsUsed:
-    async def test_short_lifetime_is_honoured(self, path):
-        """Nextcloud oidc's default: 15 minutes, not 90 days."""
+class TestEveryRotationPathUsesIt:
+    """Each of the three code paths that store a rotated token goes through
+    ``refresh_token_lifetime``; an unusable value keeps the 90-day default."""
+
+    async def test_idp_lifetime(self, path):
         assert await _stored_lifetime(path, refresh_expires_in=900) in (900, 901)
 
-    async def test_lifetime_longer_than_90_days_is_honoured(self, path):
-        lifetime = await _stored_lifetime(path, refresh_expires_in=200 * _DAY)
-        assert lifetime in (200 * _DAY, 200 * _DAY + 1)
-
-    async def test_numeric_string_is_accepted(self, path):
-        """Some IdPs (e.g. AWS Cognito) send the number as a JSON string."""
-        lifetime = await _stored_lifetime(path, refresh_expires_in="604800")
-        assert lifetime in (604800, 604801)
-
-    async def test_float_is_truncated_to_seconds(self, path):
-        lifetime = await _stored_lifetime(path, refresh_expires_in=3600.9)
-        assert lifetime in (3600, 3601)
-
-    async def test_effectively_never_is_capped_at_ten_years(self, path):
-        lifetime = await _stored_lifetime(path, refresh_expires_in=10**15)
-        assert lifetime in (3650 * _DAY, 3650 * _DAY + 1)
-
-
-@pytest.mark.parametrize("path", _PATHS)
-class TestFallbackToNinetyDays:
-    """Regression guards: anything that is not a positive lifetime keeps the
-    90-day default the broker has always used."""
-
-    async def test_absent(self, path):
+    async def test_absent_falls_back(self, path):
         assert await _stored_lifetime(path) in (90 * _DAY, 90 * _DAY + 1)
 
-    @pytest.mark.parametrize(
-        "value",
-        [
-            0,
-            -60,
-            None,
-            True,
-            "",
-            "abc",
-            "1.5",
-            "-900",
-            float("nan"),
-            float("inf"),
-            {"s": 900},
-        ],
-        ids=repr,
-    )
-    async def test_unusable_value(self, path, value):
-        lifetime = await _stored_lifetime(path, refresh_expires_in=value)
+    async def test_unusable_falls_back(self, path):
+        lifetime = await _stored_lifetime(path, refresh_expires_in="abc")
         assert lifetime in (90 * _DAY, 90 * _DAY + 1)
 
 

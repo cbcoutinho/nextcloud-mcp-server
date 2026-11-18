@@ -29,10 +29,10 @@ from unittest.mock import AsyncMock
 import anyio
 import pytest
 from httpx2 import BasicAuth
+from nextcloud_client import NextcloudClient
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.providers import SimpleProvider
 from nextcloud_mcp_server.search.access_filter import (

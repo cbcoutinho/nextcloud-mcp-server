@@ -13,8 +13,8 @@ from __future__ import annotations
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from nextcloud_client.sharing import validate_share_with
 
-from nextcloud_mcp_server.client.sharing import validate_share_with
 from nextcloud_mcp_server.server.sharing import configure_sharing_tools
 
 pytestmark = pytest.mark.unit

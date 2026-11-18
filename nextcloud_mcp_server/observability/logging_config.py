@@ -308,7 +308,7 @@ def configure_component_loggers(default_level: str = "INFO") -> None:
         # Application loggers
         "nextcloud_mcp_server": default_level,
         "nextcloud_mcp_server.server": default_level,
-        "nextcloud_mcp_server.client": default_level,
+        "nextcloud_client": default_level,
         "nextcloud_mcp_server.auth": default_level,
         "nextcloud_mcp_server.observability": default_level,
         # HTTP client loggers (less verbose by default). httpx2 carries our own

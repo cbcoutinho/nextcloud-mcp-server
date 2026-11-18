@@ -87,15 +87,39 @@ def extract_document_task(payload: dict) -> DocumentTask | None:
     target isn't a markdown file under a user's Notes folder. Callers should
     treat None as "ignored" — not an error.
     """
+    # The payload is user-controlled: anything Nextcloud (or a caller holding the
+    # webhook secret) sends. Never raise out of here -- a malformed payload is
+    # "ignored", exactly like an unsupported event.
     try:
         event = payload["event"]
         event_class = event["class"]
         user_id = payload["user"]["uid"]
-        time = int(payload.get("time", 0) or 0)
-    except (KeyError, TypeError, ValueError):
+        time = int(payload.get("time", 0) or 0)  # inf -> OverflowError
+    except (KeyError, TypeError, ValueError, OverflowError):
         logger.debug("Webhook payload has missing or malformed envelope fields")
         return None
+    if not isinstance(user_id, str) or not user_id:
+        logger.debug("Webhook payload has no usable user uid")
+        return None
+    if not isinstance(event_class, str):
+        logger.debug("Webhook payload has a non-string event class")
+        return None
 
+    try:
+        return _dispatch(event_class, event, user_id, time)
+    except (AttributeError, TypeError, ValueError):
+        # A body of the wrong shape: ``node``/``card`` not an object, a
+        # non-string path. The parsers below do no I/O, so these can only come
+        # from the payload; exc_info keeps a genuine parser regression visible.
+        logger.warning(
+            "Webhook %r has a malformed event body", event_class, exc_info=True
+        )
+        return None
+
+
+def _dispatch(
+    event_class: str, event: dict, user_id: str, time: int
+) -> DocumentTask | None:
     if event_class in (
         _FILE_EVENT_CREATED,
         _FILE_EVENT_WRITTEN,

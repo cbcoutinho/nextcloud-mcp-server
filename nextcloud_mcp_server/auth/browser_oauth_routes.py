@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from nextcloud_mcp_server.auth.storage import get_shared_storage
+from nextcloud_mcp_server.auth.token_broker import refresh_token_lifetime
 from nextcloud_mcp_server.auth.token_utils import (
     IdTokenVerificationError,
     get_oidc_discovery,
@@ -28,6 +29,7 @@ from nextcloud_mcp_server.auth.userinfo_routes import (
     _query_idp_userinfo,
 )
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.utils.parsing import parse_bool
 
 from ..http import nextcloud_httpx_client
 
@@ -94,13 +96,19 @@ def _safe_next_url(raw: str | None, default: str) -> str:
     ``client_redirect_uri`` stored on the oauth_session). A safe target:
       - starts with a single ``/`` (so it's a path on this server)
       - does NOT start with ``//`` (which would be protocol-relative)
-      - has no whitespace or control characters that could trick browsers
+      - contains no ``\\``: browsers parse it as ``/`` in http(s) URLs, so
+        ``/\\evil.com`` is ``//evil.com``. No legitimate target needs one.
+      - has no whitespace or non-printable characters that could trick browsers
 
     Anything else returns *default*.
     """
-    if not raw or not raw.startswith("/") or raw.startswith("//"):
-        return default
-    if any(c.isspace() or ord(c) < 0x20 for c in raw):
+    if (
+        not raw
+        or not raw.startswith("/")
+        or raw.startswith("//")
+        or "\\" in raw
+        or any(c.isspace() or not c.isprintable() for c in raw)
+    ):
         return default
     return raw
 
@@ -116,17 +124,12 @@ def _should_use_secure_cookies() -> bool:
     versa — would otherwise get the wrong answer.)
     """
     settings = get_settings()
-    raw = settings.cookie_secure
-    if raw is not None:
-        # Dynaconf normally coerces "true"/"false"/"1"/"0", but tests or
-        # direct ``settings.set`` calls can bypass that — bool("false") is
-        # True. Normalise explicitly so an unexpected string never flips
-        # cookies to Secure on plain HTTP (round-6 review).
-        if isinstance(raw, bool):
-            return raw
-        return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
-    mcp_server_url = settings.nextcloud_mcp_server_url or ""
-    return mcp_server_url.startswith("https://")
+    # An unset or unrecognised value (``bool("false")`` is True, so never trust
+    # truthiness) falls back to the scheme rather than guessing (round-6 review).
+    served_over_https = (settings.nextcloud_mcp_server_url or "").startswith("https://")
+    return parse_bool(
+        settings.cookie_secure, default=served_over_https, name="COOKIE_SECURE"
+    )
 
 
 async def oauth_login(request: Request) -> RedirectResponse | JSONResponse:
@@ -557,12 +560,10 @@ async def oauth_login_callback(request: Request) -> RedirectResponse | HTMLRespo
     logger.info("Browser login successful: %s (sub=%s)", username, user_id)
 
     # Calculate refresh token expiration from token response
-    refresh_expires_in = token_data.get("refresh_expires_in")
+    refresh_expires_in = refresh_token_lifetime(token_data.get("refresh_expires_in"))
     refresh_expires_at = None
     if refresh_expires_in:
-        # Some IdPs (e.g. AWS Cognito) return refresh_expires_in as a JSON
-        # string rather than an int; coerce to be safe.
-        refresh_expires_at = int(time.time()) + int(refresh_expires_in)
+        refresh_expires_at = int(time.time()) + refresh_expires_in
         logger.debug(
             "Refresh token expires in %ss (at timestamp %s)",
             refresh_expires_in,

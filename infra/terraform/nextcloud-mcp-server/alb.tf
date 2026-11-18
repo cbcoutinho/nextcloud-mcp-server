@@ -60,6 +60,13 @@ resource "aws_lb" "this" {
   security_groups    = [aws_security_group.alb.id]
 
   drop_invalid_header_fields = true
+
+  # Off unless a bucket is given; the bucket needs the ELB log-delivery policy.
+  access_logs {
+    enabled = var.access_logs_bucket != null
+    bucket  = coalesce(var.access_logs_bucket, "unused")
+    prefix  = var.name
+  }
 }
 
 resource "aws_lb_target_group" "this" {

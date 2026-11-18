@@ -4,6 +4,7 @@ import datetime as dt
 import inspect
 import logging
 import re
+import ssl
 import uuid
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -18,9 +19,8 @@ from caldav.lib import error as caldav_error
 from icalendar import Alarm, Calendar, Timezone, vCalAddress, vDDDTypes, vRecur, vText
 from icalendar import Event as ICalEvent
 from icalendar import Todo as ICalTodo
-from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[unresolved-import]
+from lxml import etree  # type: ignore[import-untyped]  # ty: ignore[import-not-found]
 
-from ..config import get_nextcloud_ssl_verify
 from .availability import (
     Span,
     busy_spans_from_events,
@@ -48,6 +48,10 @@ CALENDAR_FANOUT = 8
 # Bounded all the same, so one pathological calendar cannot pull an unlimited
 # listing into memory.
 AVAILABILITY_EVENT_LIMIT = 1000
+
+# Per-calendar match cap for bulk update/delete/move. Same reasoning: the
+# listing default of 50 made a bulk operation silently leave matches untouched.
+BULK_EVENT_LIMIT = 1000
 
 # The URI scheme RFC 6638 addresses attendees by.
 _MAILTO = "mailto:"
@@ -326,6 +330,7 @@ class CalendarClient:
         auth_username: str | None = None,
         password: str | None = None,
         token: str | None = None,
+        verify: bool | ssl.SSLContext = True,
     ):
         """Initialize CalendarClient with AsyncDAVClient.
 
@@ -343,6 +348,8 @@ class CalendarClient:
                 the UID for OIDC-provisioned users.
             password: App password / login password — selects ``auth_type="basic"``
             token: OAuth bearer token — selects ``auth_type="bearer"``
+            verify: TLS verification: False disables it, an SSLContext carries
+                a custom CA
 
         Pass exactly one of ``password`` or ``token``. Passing neither leaves
         the underlying client unauthenticated.
@@ -376,7 +383,7 @@ class CalendarClient:
         self._dav_client = AsyncDAVClient(
             url=f"{base_url}/remote.php/dav/",
             username=auth_username,
-            ssl_verify_cert=get_nextcloud_ssl_verify(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
+            ssl_verify_cert=verify,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # caldav types say bool|str but passes through to niquests which accepts SSLContext
             headers={"X-NC-CalDAV-Webcal-Caching": "On"},
             **auth_kwargs,
         )
@@ -724,9 +731,9 @@ class CalendarClient:
         tree = etree.fromstring(response.raw.encode("utf-8"))
         ns = {
             "d": "DAV:",
-            "cs": "http://calendarserver.org/ns/",
+            "cs": "http://calendarserver.org/ns/",  # NOSONAR(S5332) XML namespace URI, never fetched
             "c": "urn:ietf:params:xml:ns:caldav",
-            "ical": "http://apple.com/ns/ical/",
+            "ical": "http://apple.com/ns/ical/",  # NOSONAR(S5332) XML namespace URI, never fetched
         }
 
         for response_elem in tree.findall(".//d:response", ns):
@@ -875,8 +882,15 @@ class CalendarClient:
         start_datetime: dt.datetime | None = None,
         end_datetime: dt.datetime | None = None,
         limit: int = 50,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """List events in a calendar within date range."""
+        """List events in a calendar within date range.
+
+        ``filters`` are applied *before* ``limit``, and the cut keeps the
+        earliest events by start. Truncating first (in CalDAV response order)
+        made a filtered search silently miss matches past the first ``limit``
+        events (GH #1774).
+        """
         await self._ensure_calendar_home()
         calendar = self._get_calendar(calendar_name)
 
@@ -922,18 +936,27 @@ class CalendarClient:
                 cal, start_datetime, end_datetime, do_expand
             )
             for event_dict in event_dicts:
+                if filters and not self._event_matches_filters(event_dict, filters):
+                    continue
                 event_dict["href"] = href
                 event_dict["etag"] = etag
                 result.append(event_dict)
 
-                if len(result) >= limit:
-                    break
-
-            if len(result) >= limit:
-                break
-
-        logger.debug("Found %d events", len(result))
-        return result
+        # The whole window is scanned on purpose (no early break at ``limit``):
+        # "earliest N matches" needs every match before the cut.
+        # ponytail: ISO strings sort lexicographically, so all-day dates and
+        # differing UTC offsets order approximately; parse to instants if that matters.
+        result.sort(key=lambda e: e.get("start_datetime", ""))
+        if len(result) > limit:
+            # Leaves a trace when a cap bites -- notably BULK_EVENT_LIMIT, whose
+            # callers have no ``truncated`` field to report it through.
+            logger.info(
+                "Calendar %s: %d events matched, keeping the earliest %d",
+                calendar_name,
+                len(result),
+                limit,
+            )
+        return result[:limit]
 
     def _expand_event_occurrences(
         self,
@@ -1040,7 +1063,7 @@ class CalendarClient:
                 etag = props.get(dav.GetEtag.tag)
                 obj = AsyncEvent(
                     client=calendar.client,
-                    url=calendar.url.join(encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]  # url is always set for calendars
+                    url=calendar.url.join(encode_dav_url(href)),  # type: ignore[union-attr]  # ty: ignore[missing-union-attribute]  # url is always set for calendars
                     data=cal_data,
                     parent=calendar,
                     # caldav's ``etag`` property reads straight from ``props``,
@@ -1374,7 +1397,11 @@ class CalendarClient:
         async with limiter:
             try:
                 events = await self.get_calendar_events(
-                    calendar["name"], start_datetime, end_datetime, limit=limit
+                    calendar["name"],
+                    start_datetime,
+                    end_datetime,
+                    limit=limit,
+                    filters=filters,
                 )
             except Exception as e:
                 logger.warning(
@@ -1385,10 +1412,6 @@ class CalendarClient:
                         {"calendar_name": calendar["name"], "error": str(e)}
                     )
                 return
-
-        # Apply filters if provided
-        if filters:
-            events = self._apply_event_filters(events, filters)
 
         # Add calendar info to each event
         for event in events:
@@ -1414,7 +1437,8 @@ class CalendarClient:
     ) -> list[dict[str, Any]]:
         """Search events across all calendars with advanced filtering.
 
-        ``limit`` is per calendar, and truncation is silent -- callers that
+        ``limit`` is per calendar (applied after ``filters``, keeping the
+        earliest events), and truncation is silent -- callers that
         need every event in the window (availability, above all) must raise it
         rather than accept a listing that merely looks complete.
 
@@ -3031,14 +3055,6 @@ class CalendarClient:
             logger.warning("Error extracting categories: %s", e)
             return str(categories_obj)
 
-    def _apply_event_filters(
-        self, events: list[dict[str, Any]], filters: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        """Apply advanced filters to event list."""
-        return [
-            event for event in events if self._event_matches_filters(event, filters)
-        ]
-
     def _event_matches_filters(
         self, event: dict[str, Any], filters: dict[str, Any]
     ) -> bool:
@@ -3077,9 +3093,27 @@ class CalendarClient:
                 if search_term not in location:
                     return False
 
+            # Filter by minimum duration. An event without an end is
+            # zero-length; all-day dates parse as midnight, so a one-day
+            # all-day event lasts 1440 minutes.
+            if "min_duration_minutes" in filters:
+                start = dt.datetime.fromisoformat(event["start_datetime"])
+                end = dt.datetime.fromisoformat(
+                    event.get("end_datetime") or event["start_datetime"]
+                )
+                if (end - start) < dt.timedelta(
+                    minutes=filters["min_duration_minutes"]
+                ):
+                    return False
+
             return True
 
         except Exception:
+            # Fail open: an unreadable event stays in the result rather than
+            # vanishing. Logged, since a filter bug would otherwise match all.
+            logger.warning(
+                "Event filter failed; keeping event %r", event.get("uid"), exc_info=True
+            )
             return True
 
     def _todo_matches_filters(
@@ -3115,6 +3149,10 @@ class CalendarClient:
             return True
 
         except Exception:
+            # Fail open, logged: see _event_matches_filters.
+            logger.warning(
+                "Todo filter failed; keeping todo %r", todo.get("uid"), exc_info=True
+            )
             return True
 
     # ============= Legacy Methods (for backward compatibility) =============
@@ -3181,6 +3219,7 @@ class CalendarClient:
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 filters=filter_criteria,
+                limit=BULK_EVENT_LIMIT,
             )
 
             targets, skipped = self._bulk_targets(events, apply_to_series, "update")

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 from starlette.authentication import requires
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
@@ -29,9 +30,9 @@ logger = logging.getLogger(__name__)
 # autoescape is NOT Jinja's default and its absence was a live XSS hole
 # (python:S5247): every `{{ }}` in these templates rendered raw, including
 # `{{ error_message }}` (built from exception text) and the user-derived values
-# in user_info.html. The three `|safe` fragments in user_info.html stay
-# deliberate — they are HTML this module builds — and the values interpolated
-# into them are escaped at the point they are read, below.
+# in user_info.html. The HTML fragments this module builds are passed as
+# `Markup` (Web:S5247 flags `|safe` in the template) and the values
+# interpolated into them are escaped at the point they are read, below.
 _template_dir = Path(__file__).parent / "templates"
 _jinja_env = Environment(
     loader=FileSystemLoader(_template_dir),
@@ -600,8 +601,8 @@ async def user_info_html(request: Request) -> HTMLResponse:
     template = _jinja_env.get_template("user_info.html")
     return HTMLResponse(
         content=template.render(
-            user_info_tab_html=user_info_tab_html,
-            vector_sync_tab_html=vector_sync_tab_html,
+            user_info_tab_html=Markup(user_info_tab_html),
+            vector_sync_tab_html=Markup(vector_sync_tab_html),
             show_vector_sync_tab=show_vector_sync_tab,
             logout_url=logout_url if auth_mode == "oauth" else None,
             # Additional context for Welcome tab

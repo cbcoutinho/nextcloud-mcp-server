@@ -13,8 +13,10 @@ import pytest
 
 from nextcloud_mcp_server.config import Settings
 from nextcloud_mcp_server.providers.gateway import (
+    FileTokenProvider,
     GatewayProvider,
     GatewayTokenProvider,
+    build_gateway_token_provider,
 )
 from nextcloud_mcp_server.providers.registry import create_provider, reset_provider
 from nextcloud_mcp_server.providers.simple import SimpleProvider
@@ -63,6 +65,84 @@ def test_partial_m2m_creds_rejected():
             embedding_gateway_url="https://gateway:8083",
             embedding_gateway_client_id="mcp-server",  # missing token_url/secret
         )
+
+
+def test_token_file_and_m2m_creds_mutually_exclusive():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        Settings(
+            embedding_provider="gateway",
+            embedding_gateway_url="https://gateway:8083",
+            embedding_gateway_token_file="/var/run/secrets/astrolabe-gateway/token",
+            embedding_gateway_token_url="https://idp.example/oauth2/token",
+            embedding_gateway_client_id="mcp-server",
+            embedding_gateway_client_secret="shh",
+        )
+
+
+def test_gateway_selected_with_token_file(monkeypatch, tmp_path):
+    """Embeddings take the token-file path too (registry used to build its own
+    M2M provider and bypass build_gateway_token_provider)."""
+    token = tmp_path / "token"
+    settings = Settings(
+        embedding_provider="gateway",
+        embedding_gateway_url="https://gateway:8083",
+        embedding_gateway_token_file=str(token),
+    )
+    _patch_settings(monkeypatch, settings)
+    provider = create_provider()
+    assert isinstance(provider._token_provider, FileTokenProvider)
+    assert provider._token_provider.path == str(token)
+    # Every other gateway sub-client (OCR, batch OCR, rerank, NER) builds its
+    # bearer source through the same function.
+    assert isinstance(build_gateway_token_provider(settings), FileTokenProvider)
+
+
+async def test_file_token_provider_rereads_rotated_file(tmp_path):
+    token = tmp_path / "token"
+    token.write_text("first-token\n")
+    provider = FileTokenProvider(str(token))
+    assert await provider.get_token() == "first-token"
+    token.write_text("rotated-token\n")  # kubelet rotation
+    assert await provider.get_token() == "rotated-token"
+
+
+def test_token_file_with_partial_m2m_creds_rejected():
+    """Even a partial M2M set next to the token file is a startup error."""
+    with pytest.raises(ValueError, match="EMBEDDING_GATEWAY_TOKEN_FILE"):
+        Settings(
+            embedding_provider="gateway",
+            embedding_gateway_url="https://gateway:8083",
+            embedding_gateway_token_file="/var/run/secrets/astrolabe-gateway/token",
+            embedding_gateway_client_id="mcp-server",
+        )
+
+
+async def test_file_token_provider_empty_file_raises(tmp_path):
+    """An empty file must not become a bare ``Bearer `` header."""
+    token = tmp_path / "token"
+    token.write_text("  \n")
+    with pytest.raises(RuntimeError, match="is empty"):
+        await FileTokenProvider(str(token)).get_token()
+
+
+async def test_file_token_provider_missing_file_raises(tmp_path, caplog):
+    """A missing file fails loudly (no unauthenticated fallback) and logs the path."""
+    path = str(tmp_path / "absent")
+    with pytest.raises(FileNotFoundError):
+        await FileTokenProvider(path).get_token()
+    assert path in caplog.text
+
+
+async def test_gateway_bearer_comes_from_token_file(tmp_path):
+    token = tmp_path / "token"
+    token.write_text("sa-jwt\n")
+    provider = GatewayProvider(
+        base_url="https://gateway:8083",
+        embedding_model="mistral/mistral-embed",
+        token_provider=FileTokenProvider(str(token)),
+    )
+    await provider._ensure_bearer()
+    assert provider.client.api_key == "sa-jwt"
 
 
 def test_autodetect_default_does_not_pick_gateway(monkeypatch):

@@ -90,6 +90,7 @@ def run_query(
         container,
         "sqlite3",
         *sqlite_args,
+        "--",  # positionals only from here: no option injection (pythonsecurity:S8705)
         database,
         sql,
     ]

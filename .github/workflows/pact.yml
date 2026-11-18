@@ -64,11 +64,10 @@ jobs:
         if: ${{ env.PACT_BROKER != '' }}
         run: .github/scripts/install-pact-cli.sh
 
-      # Guard the migration: only `publish` runs on a PR (can-i-deploy is
-      # master-only, record-deployment is tag-only), so assert here that the
-      # unified CLI exposes every flag those steps pass. Dumps each --help so a
-      # future flag rename is visible in the log, then fails fast if a flag the
-      # workflows rely on is gone.
+      # Guard the migration: record-deployment only runs on a release, so assert
+      # here that the unified CLI exposes every flag the pact steps pass. Dumps
+      # each --help so a future flag rename is visible in the log, then fails
+      # fast if a flag the workflows rely on is gone.
       - name: Verify pact broker CLI flags
         if: ${{ env.PACT_BROKER != '' }}
         run: |
@@ -88,14 +87,18 @@ jobs:
         # closes the common case, but a blip landing between probe and call would
         # still fail the build for a network reason. Re-publishing identical pact
         # content under the same consumer version is idempotent in the broker.
+        env:
+          # Via env, not inline `${{ }}`: head_ref is the PR author's branch
+          # name, and interpolating it into the script is an injection vector.
+          BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           publish() {
             pact broker publish tests/contract/pacts \
               --broker-base-url "$PACT_BROKER" \
               --broker-username "$PACT_USERNAME" \
               --broker-password "$PACT_PASSWORD" \
-              --consumer-app-version "${{ github.sha }}" \
-              --branch "${{ github.head_ref || github.ref_name }}"
+              --consumer-app-version "$GITHUB_SHA" \
+              --branch "$BRANCH"
           }
           publish && exit 0
           echo "::warning title=Retrying pact publish::First attempt failed; retrying once to rule out a transient broker/tailnet error."
@@ -160,8 +163,10 @@ jobs:
           PACT_PROVIDER_URL: http://localhost:8000
           PACT_PROVIDER_VERSION: ${{ github.sha }}
           PACT_PROVIDER_BRANCH: ${{ github.head_ref || github.ref_name }}
-          # Publish results only from master so PR runs don't pollute the matrix.
-          PACT_PUBLISH_RESULTS: ${{ github.ref == 'refs/heads/master' }}
+          # Published from PRs too, tagged with the PR branch: can-i-deploy on a
+          # PR needs a matrix row for the PR's SHA, and branch-scoped results
+          # don't change what master's versions report. Forks never reach here.
+          PACT_PUBLISH_RESULTS: "true"
         # Retried once: the probe above closes the common case, but a blip landing
         # between probe and verify would still red master for a network reason. A
         # genuine contract mismatch is deterministic and fails both attempts, so
@@ -176,10 +181,11 @@ jobs:
     name: can-i-deploy
     runs-on: ubuntu-latest
     needs: [consumer, provider]
+    # Runs on master pushes and same-repo PRs (forks have no broker secrets).
     # Only the `github` context is available in a job-level `if`, so the broker
     # guard lives on each step below (the pact CLI errors on an empty
-    # --broker-base-url, e.g. after a secret rotation or on a fork).
-    if: ${{ github.ref == 'refs/heads/master' }}
+    # --broker-base-url, e.g. after a secret rotation).
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -206,13 +212,12 @@ jobs:
         run: .github/scripts/install-pact-cli.sh
 
       # SHADOW MODE: run can-i-deploy for signal but never fail the workflow.
-      # The broker's `production` environment is populated by the
-      # pact-record-deployment workflow on each repo's next release; until both
-      # nextcloud-mcp-server AND astrolabe have recorded a prod deployment this
-      # check cannot pass, so gating now would block every merge on a bootstrap
-      # gap rather than a real incompatibility. Once it reports ✅ in both repos,
-      # promote to a hard gate by removing the `set +e`/`exit 0` wrapper and
-      # relocating it ahead of the deploy step (see card #325 follow-up).
+      # It runs on PRs so that, once promoted, the gate blocks the merge rather
+      # than the deploy. Still non-blocking because astrolabe's pact against
+      # this provider has interactions that cannot verify until the
+      # authenticated surface does (#1340). Promote by dropping the
+      # `set +e`/`exit 0` wrapper, adding `--retry-while-unknown`, and marking
+      # the check required in branch protection (Deck #1457).
       - name: Can I deploy nextcloud-mcp-server? (shadow — non-blocking)
         if: ${{ env.PACT_BROKER != '' }}
         run: |
@@ -226,7 +231,7 @@ jobs:
             --to-environment production
           rc=$?
           if [ "$rc" -ne 0 ]; then
-            echo "::warning title=can-i-deploy (shadow)::can-i-deploy exited $rc — NOT gating (shadow mode). Expected until both repos record a production deployment; see Deck card #325."
+            echo "::warning title=can-i-deploy (shadow)::can-i-deploy exited $rc — NOT gating (shadow mode). See Deck card #1457 for what blocks promotion."
           else
             echo "can-i-deploy passed ✅ (shadow mode — not yet gating)"
           fi

@@ -1,7 +1,7 @@
 """Client for Nextcloud Tables app operations."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .base import BaseNextcloudClient
 from .ocs import OCS_REQUEST_HEADERS
@@ -36,18 +36,33 @@ class TablesClient(BaseNextcloudClient):
         return response.json()
 
     async def get_table_rows(
-        self, table_id: int, limit: Optional[int] = None, offset: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self, table_id: int, limit: int | None = None, offset: int | None = None
+    ) -> list[dict[str, Any]]:
         """Read rows from a table with optional pagination."""
-        params = {}
-        if limit is not None:
-            params["limit"] = limit
-        if offset is not None:
-            params["offset"] = offset
-
-        response = await self._make_request(
-            "GET", f"/apps/tables/api/1/tables/{table_id}/rows", params=params
+        return await self._get_rows(
+            f"/apps/tables/api/1/tables/{table_id}/rows", limit, offset
         )
+
+    async def get_view_rows(
+        self, view_id: int, limit: int | None = None, offset: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Read rows of a view, with the view's filters and sorting applied."""
+        return await self._get_rows(
+            f"/apps/tables/api/1/views/{view_id}/rows", limit, offset
+        )
+
+    async def _get_rows(
+        self, path: str, limit: int | None, offset: int | None
+    ) -> list[dict[str, Any]]:
+        params = {
+            k: v for k, v in (("limit", limit), ("offset", offset)) if v is not None
+        }
+        response = await self._make_request("GET", path, params=params)
+        return response.json()
+
+    async def get_row(self, row_id: int) -> dict[str, Any]:
+        """Get a single row by ID."""
+        response = await self._make_request("GET", f"/apps/tables/api/1/rows/{row_id}")
         return response.json()
 
     async def create_row(self, table_id: int, data: Dict[str, Any]) -> Dict[str, Any]:

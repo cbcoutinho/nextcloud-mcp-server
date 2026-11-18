@@ -796,7 +796,7 @@ async def test_read_file_rejects_a_download_past_the_transfer_ceiling(
 ):
     """An aborted transfer leaves nothing to describe, so it is an error rather
     than an empty response that reads like an empty document."""
-    from nextcloud_mcp_server.client.webdav import OversizeDownload
+    from nextcloud_client.webdav import OversizeDownload
 
     patch_get_client(fake_client)
     patch_excluded(set())

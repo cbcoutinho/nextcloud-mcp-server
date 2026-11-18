@@ -431,7 +431,7 @@ class PyMuPDFProcessor(DocumentProcessor):
         # Basic document info
         metadata["page_count"] = doc.page_count
         metadata["format"] = "PDF 1." + str(
-            doc.pdf_version() if hasattr(doc, "pdf_version") else "?"  # type: ignore[call-non-callable]  # ty: ignore[call-non-callable]
+            doc.pdf_version() if hasattr(doc, "pdf_version") else "?"  # type: ignore[call-non-callable]  # ty: ignore[not-callable]
         )
 
         if filename:

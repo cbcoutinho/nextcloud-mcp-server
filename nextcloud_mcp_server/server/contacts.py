@@ -18,6 +18,7 @@ from nextcloud_mcp_server.models.contacts import (
     UpdateContactResponse,
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ def _parse_categories(raw_categories: str | list | None) -> list[str]:
     """
     raw_categories = raw_categories or []
     if isinstance(raw_categories, str):
-        return [c.strip() for c in raw_categories.split(",") if c.strip()]
+        return split_csv(raw_categories)
     return [c for c in raw_categories if isinstance(c, str) and c]
 
 
@@ -459,8 +460,12 @@ def configure_contacts_tools(mcp: MCPServer):
                 - ``bday`` (ISO date str ``"YYYY-MM-DD"`` or ``datetime.date``).
                 - ``categories`` (list of str, or comma-separated str).
                 - ``url`` (str or list of str).
+                - ``adr`` / ``address`` (dict or list of dicts): Postal
+                  address(es) with keys ``po_box``, ``extended``, ``street``,
+                  ``locality``, ``region``, ``postal_code``, ``country`` and an
+                  optional ``type`` (e.g. ``"work"``, ``"home"``).
 
-                Unknown keys are ignored. Example:
+                Unknown keys are ignored and logged as a warning. Example:
                 ``{"fn": "John Doe", "email": "john@example.com",
                 "organization": "Acme", "note": "Met at conference"}``.
         """
@@ -532,6 +537,12 @@ def configure_contacts_tools(mcp: MCPServer):
                 - ``categories`` (list of str, or comma-separated str).
                 - ``url`` (str or list of str). Only the first URL is written
                   on update. Multi-URL contacts should use create_contact.
+                - ``adr`` / ``address`` (dict or list of dicts, same shape as
+                  create): **Replaces all** existing addresses, so pass every
+                  address the contact should keep. Only ``[]`` removes them
+                  all. A value with no usable address is ignored. A grouped
+                  ``item1.ADR`` is replaced ungrouped, so its ``X-ABLabel``
+                  label no longer applies.
 
                 Example: ``{"fn": "Jane Doe", "email": "jane.doe@example.com"}``.
             etag: Optional ETag for optimistic concurrency control. Pass the

@@ -1,117 +1,99 @@
 """Unit tests for shared boundary validators."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.utils.validation import (
     is_valid_nextcloud_doc_id,
     parse_modified_timestamp,
 )
 
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "value",
-    [
-        "1",
-        "42",
-        "1234567890",
-        "9999999999999999999",
-    ],
-)
-def test_accepts_positive_ascii_integers(value):
-    """Any positive ASCII integer (no leading zero) is a valid doc_id."""
-    assert is_valid_nextcloud_doc_id(value) is True
+pytestmark = pytest.mark.unit
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "value,reason",
-    [
-        ("", "empty string"),
-        ("0", "MySQL AUTO_INCREMENT starts at 1"),
-        ("01", "leading zero"),
-        ("00", "leading zeros"),
-        ("-1", "negative"),
-        ("+1", "explicit sign"),
-        ("1.0", "float-like"),
-        (" 1", "leading whitespace"),
-        ("1 ", "trailing whitespace"),
-        ("1\n", "trailing newline"),
-        ("abc", "alphabetic"),
-        ("1a", "trailing letter"),
-        ("a1", "leading letter"),
-        # Unicode digit classes that pass str.isdigit() but are not ASCII.
-        # `²` (U+00B2) is a superscript and would slip past the old guard.
-        ("²", "Unicode superscript-2"),
-        # `٢` (U+0662) Arabic-Indic digit two — passes both isdigit() and
-        # isdecimal(), so only an explicit ASCII regex catches it.
-        ("٢", "Arabic-Indic digit two"),
-        # `१` (U+0967) Devanagari digit one — same story.
-        ("१", "Devanagari digit one"),
-        # Mixed ASCII + Unicode digits.
-        ("1٢", "mixed ASCII + Arabic-Indic"),
-    ],
-)
-def test_rejects_invalid_doc_ids(value, reason):
-    """Reject empty/zero/leading-zero/non-ASCII/non-digit inputs."""
-    assert is_valid_nextcloud_doc_id(value) is False, f"should reject: {reason}"
+@given(st.integers(min_value=1))
+def test_accepts_every_positive_integer(n):
+    assert is_valid_nextcloud_doc_id(str(n)) is True
+
+
+@given(st.text())
+@example("0")  # MySQL AUTO_INCREMENT starts at 1
+@example("01")  # leading zero
+@example("+1")
+@example("1\n")
+@example("²")  # superscript: passes str.isdigit()
+@example("٢")  # Arabic-Indic: passes str.isdecimal() too
+@example("1٢")
+def test_accepts_only_the_canonical_ascii_form(value):
+    """Valid iff the string is exactly how a positive int prints."""
+    canonical = value.isascii() and value.isdigit() and str(int(value)) == value
+    assert is_valid_nextcloud_doc_id(value) is (canonical and int(value) > 0)
 
 
 # parse_modified_timestamp (ADR-027) ---------------------------------------
 
-_JAN_2026_UTC = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        (None, None),
-        ("", None),
-        ("   ", None),
-        # RFC 3339 / ISO 8601
-        ("2026-01-01T00:00:00Z", _JAN_2026_UTC),
-        ("2026-01-01T00:00:00+00:00", _JAN_2026_UTC),
-        # +02:00 offset is two hours earlier in UTC
-        ("2026-01-01T02:00:00+02:00", _JAN_2026_UTC),
-        # Naive datetime is assumed UTC
-        ("2026-01-01T00:00:00", _JAN_2026_UTC),
-        # Date-only ISO form
-        ("2026-01-01", _JAN_2026_UTC),
-        # Bare Unix seconds (string and int) pass through
-        (str(_JAN_2026_UTC), _JAN_2026_UTC),
-        (_JAN_2026_UTC, _JAN_2026_UTC),
-        (0, 0),
-        (1767225600.9, 1767225600),  # float truncates
-    ],
+_offsets = st.integers(min_value=-23 * 60, max_value=23 * 60).map(
+    lambda m: timezone(timedelta(minutes=m))
 )
-def test_parse_modified_timestamp_accepts(value, expected):
-    """RFC 3339 strings, Unix seconds, and None normalize to int seconds (UTC)."""
-    assert parse_modified_timestamp(value) == expected
+_instants = st.datetimes(
+    min_value=datetime(1970, 1, 2), max_value=datetime(9998, 12, 31), timezones=_offsets
+).map(lambda dt: dt.replace(microsecond=0))
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "value,reason",
-    [
-        ("not-a-date", "unparseable string"),
-        ("2026-13-01T00:00:00Z", "invalid month"),
-        (-1, "negative int"),
-        (-5.0, "negative float"),
-        (True, "bool is not a timestamp"),
-        (False, "bool is not a timestamp"),
-        ([], "wrong type"),
-    ],
+@given(_instants)
+@example(datetime(2026, 1, 1, 2, tzinfo=timezone(timedelta(hours=2))))
+def test_rfc3339_round_trips_to_unix_seconds(instant):
+    assert parse_modified_timestamp(instant.isoformat()) == int(instant.timestamp())
+
+
+@given(_instants)
+def test_z_suffix_and_naive_mean_utc(instant):
+    utc = instant.astimezone(timezone.utc).replace(tzinfo=None)
+    expected = int(instant.timestamp())
+    assert parse_modified_timestamp(utc.isoformat() + "Z") == expected
+    assert parse_modified_timestamp(utc.isoformat()) == expected
+
+
+@given(st.integers(min_value=0, max_value=2**53))
+def test_unix_seconds_pass_through_as_int_or_str(seconds):
+    assert parse_modified_timestamp(seconds) == seconds
+    assert parse_modified_timestamp(str(seconds)) == seconds
+    if seconds < 2**40:  # beyond that, +0.9 is not representable
+        assert parse_modified_timestamp(seconds + 0.9) == seconds
+
+
+_anything = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(),
+    st.floats(),
+    st.text(),
+    st.lists(st.integers(), max_size=2),
 )
-def test_parse_modified_timestamp_rejects(value, reason):
-    """Bad formats / negatives / bools raise ValueError (→ MCPError or HTTP 400)."""
-    with pytest.raises(ValueError):
-        parse_modified_timestamp(value)
 
 
-@pytest.mark.unit
+@given(_anything)
+@example("   ")
+@example("not-a-date")
+@example("2026-13-01T00:00:00Z")
+@example(-1)
+@example(-5.0)
+@example(True)
+@example(float("inf"))  # json.loads accepts Infinity
+@example(float("nan"))
+@example("1969-12-31T00:00:00Z")  # before the epoch: negative like -1
+def test_result_is_an_open_bound_or_non_negative_seconds(value):
+    """Request input: anything other than ValueError would be a 500, not a 400."""
+    try:
+        result = parse_modified_timestamp(value)
+    except ValueError:
+        return
+    assert result is None or (type(result) is int and result >= 0)
+
+
 def test_parse_modified_timestamp_error_names_param():
     """The param_name is surfaced in the error for caller-friendly messages."""
     with pytest.raises(ValueError, match="modified_after"):

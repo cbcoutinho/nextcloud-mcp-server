@@ -7,8 +7,8 @@ blow up on ``.json()``.
 
 import httpx2
 import pytest
+from nextcloud_client.shopping_list import ShoppingListClient
 
-from nextcloud_mcp_server.client.shopping_list import ShoppingListClient
 from tests.client.conftest import create_mock_response
 
 pytestmark = pytest.mark.unit

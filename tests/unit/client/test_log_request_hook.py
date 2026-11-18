@@ -14,12 +14,11 @@ from collections.abc import AsyncIterator
 
 import httpx2
 import pytest
-
-from nextcloud_mcp_server.client import NextcloudClient, log_request, log_response
+from nextcloud_client import NextcloudClient, log_request, log_response
 
 pytestmark = pytest.mark.unit
 
-HOOK_LOGGER = "nextcloud_mcp_server.client"
+HOOK_LOGGER = "nextcloud_client"
 PLACEHOLDER = "<streaming; body not read>"
 
 

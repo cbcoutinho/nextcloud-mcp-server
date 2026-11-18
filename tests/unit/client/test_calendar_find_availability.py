@@ -10,8 +10,7 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 import pytest
-
-from nextcloud_mcp_server.client.calendar import CalendarClient
+from nextcloud_client.calendar import CalendarClient
 
 pytestmark = pytest.mark.unit
 
@@ -167,7 +166,7 @@ async def test_search_is_scoped_to_the_requested_window(mocker):
 
 async def test_every_event_in_the_window_is_fetched(mocker):
     """The default per-calendar listing cap would drop busy time silently."""
-    from nextcloud_mcp_server.client.calendar import AVAILABILITY_EVENT_LIMIT
+    from nextcloud_client.calendar import AVAILABILITY_EVENT_LIMIT
 
     client = _client(mocker)
     start, end = _window()

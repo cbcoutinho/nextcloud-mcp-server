@@ -412,7 +412,7 @@ class TestSupportedSearchTypesHelper:
         from nextcloud_mcp_server.api.management import supported_search_types
 
         s = create_mock_settings(vector_sync_enabled=True)
-        assert supported_search_types(s) == ["semantic", "bm25", "hybrid"]
+        assert supported_search_types(s) == ["semantic", "bm25", "hybrid", "exact"]
 
 
 class TestSelectSearchAlgorithm:
@@ -492,7 +492,7 @@ class TestStatusEndpointSearchTypes:
 
     def test_vector_sync_on_advertises_all_three(self):
         data = self._get_status(create_mock_settings(vector_sync_enabled=True))
-        assert data["supported_search_types"] == ["semantic", "bm25", "hybrid"]
+        assert data["supported_search_types"] == ["semantic", "bm25", "hybrid", "exact"]
 
     def test_vector_sync_off(self):
         data = self._get_status(create_mock_settings(vector_sync_enabled=False))

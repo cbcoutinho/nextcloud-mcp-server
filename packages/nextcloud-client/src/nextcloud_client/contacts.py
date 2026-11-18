@@ -1,7 +1,9 @@
 """CardDAV client for NextCloud contacts operations."""
 
 import logging
+import os
 import re
+import traceback
 import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Any
@@ -14,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 # Canonical keys accepted by _build_contact_from_data. Callers normalise aliases
-# (``phone``→``tel``, ``organization``→``org``) via _normalize_contact_data beforehand
+# (``phone``→``tel``, ``organization``→``org``, ``address``→``adr``) via
+# _normalize_contact_data beforehand
 # so the set never needs to list them.
 _SUPPORTED_CONTACT_KEYS = frozenset(
     {
@@ -29,8 +32,96 @@ _SUPPORTED_CONTACT_KEYS = frozenset(
         "bday",
         "categories",
         "url",
+        "adr",
     }
 )
+
+# vCard ADR components, in RFC 6350 §6.3.1 order.
+_ADR_COMPONENTS = (
+    "po_box",
+    "extended",
+    "street",
+    "locality",
+    "region",
+    "postal_code",
+    "country",
+)
+_PARAM_TOKEN = re.compile(r"[A-Za-z0-9-]+")
+
+
+def _adr_entries(value: Any) -> list[dict[str, Any]]:
+    """Normalise ``adr`` input into pythonvCard4's ``[{value, type}]`` shape.
+
+    Accepts a dict keyed by ``_ADR_COMPONENTS`` plus an optional ``type`` (str or
+    list), a raw ``"pobox;ext;street;locality;region;code;country"`` string
+    (split on ``;`` as-is, like ``n``, so a component containing ``;`` or ``,``
+    needs the dict form), or a list of either. Entries with no
+    non-empty component are dropped. ``type`` is omitted when not given.
+    """
+    if value is None:
+        return []
+    items = value if isinstance(value, list) else [value]
+    return [e for e in map(_adr_entry, items) if e is not None]
+
+
+def _adr_entry(item: Any) -> dict[str, Any] | None:
+    """One ``adr`` item to ``{value, type}``; ``None`` (logged) if unusable."""
+    types: Any = None
+    if isinstance(item, str):
+        comps = item.split(";")
+        if len(comps) > len(_ADR_COMPONENTS):
+            # Shape only: address values are personal data.
+            logger.warning("Truncating ADR string from %d to 7 components", len(comps))
+    elif isinstance(item, dict):
+        if unknown := set(item) - {*_ADR_COMPONENTS, "type"}:
+            logger.warning("Ignoring unknown ADR keys: %s", sorted(unknown))
+        comps = [_name_component_str(item.get(k) or "") for k in _ADR_COMPONENTS]
+        types = item.get("type")
+    else:
+        logger.warning(
+            "Ignoring ADR entry that is not a dict or str: %s", type(item).__name__
+        )
+        return None
+    # Normalise CR here: pythonvCard4's escape_text (create path) escapes
+    # only LF, so a bare CR was written raw and lost on read.
+    comps = [c.replace("\r\n", "\n").replace("\r", "\n") for c in comps]
+    comps = (comps + [""] * len(_ADR_COMPONENTS))[: len(_ADR_COMPONENTS)]
+    if not any(c.strip() for c in comps):
+        return None
+    entry: dict[str, Any] = {"value": comps}
+    if safe := _safe_param_tokens(types):
+        entry["type"] = safe
+    return entry
+
+
+def _safe_param_tokens(types: Any) -> list[str]:
+    """Keep only RFC 6350 param tokens, logging the rest.
+
+    TYPE lands unescaped in the property head on both write paths, so a value
+    like ``"work\\nEMAIL:x"`` would otherwise inject a line.
+    """
+    if types is None:
+        return []
+    # Only a str or a list/tuple is a TYPE value; anything else (5, True, a
+    # dict, which would iterate its keys) is one rejected value, not a crash.
+    candidates = list(types) if isinstance(types, (list, tuple)) else [types]
+    safe: list[str] = []
+    rejected: list[Any] = []
+    for t in candidates:
+        if isinstance(t, str) and _PARAM_TOKEN.fullmatch(t):
+            safe.append(t)
+        else:
+            rejected.append(t)
+    if rejected:
+        # Count only: a rejected value is arbitrary caller input.
+        logger.warning("Ignoring %d invalid ADR type value(s)", len(rejected))
+    return safe
+
+
+def _adr_line(entry: dict[str, Any]) -> str:
+    params = f";TYPE={','.join(entry['type'])}" if entry.get("type") else ""
+    comps = ";".join(_escape_n_component(c) for c in entry["value"])
+    return f"ADR{params}:{comps}"
 
 
 # vCard N components, in RFC 6350 §6.2.2 order.
@@ -94,13 +185,44 @@ def _escape_n_component(value: str) -> str:
     return escape_text(value.replace("\r\n", "\n").replace("\r", "\n"))
 
 
+def _split_unescaped(value: str, sep: str = ";") -> list[str]:
+    """Split a raw (still escaped) structured value on its unescaped ``sep``.
+
+    Escape pairs are consumed whole, so ``\\\\;`` -- an escaped backslash, then
+    a separator -- splits, while ``\\;`` does not. A ``(?<!\\);`` lookbehind
+    gets the first case wrong and shifts every later component one slot.
+    """
+    comps: list[str] = []
+    current: list[str] = []
+    chars = iter(value)
+    for char in chars:
+        if char == "\\":
+            current.append(char + next(chars, ""))
+        elif char == sep:
+            comps.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    comps.append("".join(current))
+    return comps
+
+
+def _unescape_component(component: str) -> str:
+    """Single-pass vCard unescape (RFC 6350 §3.4).
+
+    ``pythonvCard4.unescape_text`` chains ``replace`` calls, so it decodes an
+    escaped backslash followed by ``n`` as a line break.
+    """
+    return re.sub(r"\\(.)", lambda m: "\n" if m[1] in "nN" else m[1], component)
+
+
 def _merge_n_value(existing: str, parts: dict[str, str]) -> str:
     """Overwrite the supplied components of an existing raw N value.
 
     Existing components are split on unescaped ``;`` and kept verbatim (still
     escaped); supplied components are escaped and written in their slot.
     """
-    comps = re.split(r"(?<!\\);", existing) if existing else []
+    comps = _split_unescaped(existing) if existing else []
     comps += [""] * (len(_N_COMPONENTS) - len(comps))
     for i, key in enumerate(_N_COMPONENTS):
         if key in parts:
@@ -111,7 +233,8 @@ def _merge_n_value(existing: str, parts: dict[str, str]) -> str:
 def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
     """Map documented aliases to canonical keys.
 
-    ``phone`` → ``tel``, ``organization`` → ``org``. The canonical key wins if both
+    ``phone`` → ``tel``, ``organization`` → ``org``, ``address`` → ``adr``. A
+    ``None`` value counts as not supplied. The canonical key wins if both
     are supplied, so callers who set ``tel`` don't lose it to a stray ``phone`` entry.
     Structured-name keys (``given_name``, ``family_name``, …, or ``n``) collapse
     into ``n`` as a ``{component: value}`` dict — see ``_pop_name_parts``.
@@ -121,14 +244,35 @@ def _normalize_contact_data(contact_data: dict[str, Any]) -> dict[str, Any]:
     name_parts = _pop_name_parts(normalised)
     if name_parts:
         normalised["n"] = name_parts
-    if "phone" in normalised and "tel" not in normalised:
-        normalised["tel"] = normalised.pop("phone")
-    else:
-        normalised.pop("phone", None)
-    if "organization" in normalised and "org" not in normalised:
-        normalised["org"] = normalised.pop("organization")
-    else:
-        normalised.pop("organization", None)
+    for alias, canonical in (
+        ("phone", "tel"),
+        ("organization", "org"),
+        ("address", "adr"),
+    ):
+        # ``None`` = not supplied (as for name parts): an update keeps the
+        # property, and a ``None`` canonical key doesn't shadow its alias.
+        if normalised.get(canonical) is None:
+            normalised.pop(canonical, None)
+            if normalised.get(alias) is not None:
+                normalised[canonical] = normalised[alias]
+        normalised.pop(alias, None)
+    if "adr" in normalised:
+        # Parsed once here; both write paths consume ``adr`` as ready entries.
+        raw_adr = normalised["adr"]
+        normalised["adr"] = _adr_entries(raw_adr)
+        if raw_adr != [] and not normalised["adr"]:
+            # Only a literal ``[]`` clears addresses on update. Input that yields
+            # no entry (all empty, misspelled keys) is far likelier a mistake.
+            logger.warning(
+                "Ignoring adr with no usable address (%s)", type(raw_adr).__name__
+            )
+            del normalised["adr"]
+    unknown = set(normalised) - _SUPPORTED_CONTACT_KEYS
+    if unknown:
+        # Warning, not debug: a dropped key is otherwise invisible (GH #1814).
+        logger.warning("Ignoring unknown contact_data keys: %s", sorted(unknown))
+        for key in unknown:
+            del normalised[key]
     return normalised
 
 
@@ -179,7 +323,7 @@ def _split_categories(value: str | list[str]) -> list[str]:
     """
     if isinstance(value, list):
         return value
-    return [v.strip() for v in value.split(",") if v.strip()]
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _parse_bday(value: str | date | None) -> date | None:
@@ -197,7 +341,8 @@ def _parse_bday(value: str | date | None) -> date | None:
         try:
             return date.fromisoformat(value)
         except ValueError:
-            logger.warning("Ignoring non-ISO bday value: %r", value)
+            # Not the value itself: a birthday is personal data.
+            logger.warning("Ignoring non-ISO bday value (expected YYYY-MM-DD)")
     return None
 
 
@@ -281,6 +426,20 @@ def _custom_extras(custom: dict[str, str | list[str]]) -> dict[str, str | list[s
     }
 
 
+def _exc_summary(exc: BaseException) -> str:
+    """Exception class and raising frame, without the message.
+
+    Contact data is personal data and must not reach the logs. pythonvCard4's
+    parse errors carry the offending value in their message (``date.fromisoformat``
+    -> ``Invalid isoformat string: '<the birthday>'``), so log handlers around
+    vCard parsing use this instead of ``exc_info=True``.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    last = frames[-1] if frames else None
+    where = f" at {os.path.basename(last.filename)}:{last.lineno}" if last else ""
+    return f"{type(exc).__name__}{where}"
+
+
 def _parses_alone(line: str) -> bool:
     # Relies on from_vcard ignoring BEGIN/END/VERSION and taking the first FN,
     # so structural lines probe clean. If a future release validates the
@@ -301,10 +460,10 @@ def _parse_vcard(vcard_text: str) -> Contact:
     loses every field of the contact. On failure, retry without the lines that
     fail in isolation, so the contact keeps its name, phone and email.
     """
+    lines = unfold_lines(vcard_text.splitlines())
     try:
-        return Contact.from_vcard(vcard_text)
+        contact = Contact.from_vcard(vcard_text)
     except Exception:
-        lines = unfold_lines(vcard_text.splitlines())
         dropped = [line for line in lines if not _parses_alone(line)]
         if not dropped:
             raise
@@ -312,8 +471,49 @@ def _parse_vcard(vcard_text: str) -> Contact:
             "Dropped unparseable vCard properties: %s",
             [line.split(":", 1)[0] for line in dropped],
         )
-        kept = [line for line in lines if line not in dropped]
-        return Contact.from_vcard("\n".join(kept))
+        lines = [line for line in lines if line not in dropped]
+        contact = Contact.from_vcard("\n".join(lines))
+    _resplit_structured(contact, lines)
+    return contact
+
+
+#: Structured properties pythonvCard4 splits, and the separator it splits on.
+#: NICKNAME is ``,``-separated in RFC 6350; ``;`` matches what the library writes.
+_STRUCTURED_SEPARATORS = {"N": ";", "ADR": ";", "NICKNAME": ";", "CATEGORIES": ","}
+
+
+def _resplit_structured(contact: Contact, lines: list[str]) -> None:
+    """Re-split N, ADR, NICKNAME and CATEGORIES from their raw lines.
+
+    ponytail: workaround for pythonvCard4 <= 0.2.0, whose ``from_vcard``
+    unescapes these values *before* splitting them, so an escaped separator
+    inside one component (``N:Doe\\;Jr;John``) splits it and shifts every later
+    field. Remove this, and its call in ``_parse_vcard``, once a pythonvCard4
+    release ships https://github.com/sharf-shawon/pythonvCard4/pull/6, and raise
+    the dependency floor to that release.
+
+    Mirrors which line the library keeps: the first N, the last NICKNAME and
+    CATEGORIES, and every ADR in order, so ``contact.adr`` keeps its TYPEs.
+    """
+    adr_entries = iter(contact.adr)
+    n_done = False
+    for line in lines:
+        key, colon, raw = line.partition(":")
+        name = key.split(";", 1)[0].upper()
+        sep = _STRUCTURED_SEPARATORS.get(name)
+        if not colon or sep is None:
+            continue
+        comps = [_unescape_component(c) for c in _split_unescaped(raw, sep)]
+        if name == "N" and not n_done:
+            contact.n, n_done = comps, True
+        elif name == "ADR":
+            entry = next(adr_entries, None)
+            if entry is not None:
+                entry["value"] = comps
+        elif name == "NICKNAME":
+            contact.nickname = comps
+        elif name == "CATEGORIES":
+            contact.categories = comps
 
 
 def _project_contact(contact: Contact) -> dict[str, Any]:
@@ -422,9 +622,8 @@ def _build_contact_from_data(contact_data: dict[str, Any], uid: str) -> Contact:
     if bday is not None:
         kwargs["bday"] = bday
 
-    unknown = set(data) - _SUPPORTED_CONTACT_KEYS
-    if unknown:
-        logger.debug("Ignoring unknown contact_data keys: %s", sorted(unknown))
+    if data.get("adr"):
+        kwargs["adr"] = data["adr"]  # already entries, see _normalize_contact_data
 
     # kwargs built dynamically from contact_data; pythonvCard4's Contact typeshed
     # has specific typed params and doesn't accept **dict[str, Any].
@@ -711,14 +910,17 @@ class ContactsClient(BaseNextcloudClient):
         # ``addressdata``, so nothing is withheld.
         try:
             contact_projection = _project_contact(_parse_vcard(vcard_content))
-        except Exception:
+        except Exception as exc:
             # Broad by intent: pythonvCard4 is third-party and its parse failure
             # modes aren't enumerable. Whatever it raises, the write stands.
-            logger.exception(
+            # _exc_summary, not logger.exception: the message carries card data.
+            # Warning, not error: the write itself succeeded.
+            logger.warning(
                 "Contact %s was updated successfully but the written vCard could "
-                "not be re-parsed for the response projection; returning the raw "
-                "card and ETag instead",
+                "not be re-parsed for the response projection (%s); returning the "
+                "raw card and ETag instead",
                 uid,
+                _exc_summary(exc),
             )
             contact_projection = {}
 
@@ -820,13 +1022,14 @@ class ContactsClient(BaseNextcloudClient):
             # parsed convenience fields for that one contact, not the listing.
             try:
                 contact_projection = _project_contact(_parse_vcard(addressdata))
-            except Exception:
+            except Exception as exc:
+                # _exc_summary, not exc_info: the message carries card data.
                 logger.warning(
-                    "Could not parse vCard for %s in addressbook %s; returning it "
-                    "with raw addressdata only",
+                    "Could not parse vCard for %s in addressbook %s (%s); returning "
+                    "it with raw addressdata only",
                     object_name,
                     addressbook,
-                    exc_info=True,
+                    _exc_summary(exc),
                 )
                 contact_projection = {}
 
@@ -900,12 +1103,12 @@ class ContactsClient(BaseNextcloudClient):
             _value = contact_data.get(_key)
             if _value is not None and not isinstance(_value, str):
                 logger.warning(
-                    "update_contact: %s=%r (dict/list shape) is not applied via "
+                    "update_contact: %s (a %s, dict/list shape) is not applied via "
                     "the text-merge update path; existing %s lines are preserved "
                     "unchanged. Use a plain string to update %s here, or recreate "
                     "via create_contact for multi-entry support.",
                     _key,
-                    _value,
+                    type(_value).__name__,  # not the value: it is personal data
                     _key.upper(),
                     _key.upper(),
                 )
@@ -1047,6 +1250,12 @@ class ContactsClient(BaseNextcloudClient):
                 else:
                     # Keep additional URLs unchanged
                     updated_lines.append(line)
+            elif property_name == "ADR" and "adr" in contact_data:
+                # A supplied ``adr`` is the contact's full address set: emit it in
+                # place of the first existing ADR and drop the rest.
+                if "adr" not in updated_properties:
+                    updated_lines.extend(_adr_line(e) for e in contact_data["adr"])
+                    updated_properties.add("adr")
             else:
                 # Keep all other properties unchanged (preserves all extended/custom fields)
                 updated_lines.append(line)
@@ -1094,6 +1303,8 @@ class ContactsClient(BaseNextcloudClient):
                     url_value = value[0] if isinstance(value, list) and value else value
                     if url_value:
                         updated_lines.append(f"URL:{_safe_vcard_value(url_value)}")
+                elif key == "adr":
+                    updated_lines.extend(_adr_line(e) for e in value)
 
         # Add the END:VCARD line
         updated_lines.append("END:VCARD")

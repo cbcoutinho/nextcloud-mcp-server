@@ -20,10 +20,9 @@ import httpx2
 import pytest
 from docx import Document
 from mcp.client.session import ClientSession
+from nextcloud_client import NextcloudClient
 from openpyxl import Workbook
 from pptx import Presentation
-
-from nextcloud_mcp_server.client import NextcloudClient
 
 pytestmark = [
     pytest.mark.integration,

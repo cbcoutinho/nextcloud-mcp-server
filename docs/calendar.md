@@ -6,7 +6,7 @@
 |------|-------------|
 | `nc_calendar_list_calendars` | List all available calendars for the user |
 | `nc_calendar_create_event` | Create a comprehensive calendar event with full feature support (recurring, reminders, attendees, etc.) |
-| `nc_calendar_list_events` | **Enhanced:** List events with advanced filtering (min attendees, duration, categories, status, search across all calendars). `calendar_name` is optional when `search_all_calendars=True` |
+| `nc_calendar_list_events` | **Enhanced:** List events with advanced filtering (min attendees, duration, categories, status, search across all calendars). `calendar_name` is optional when `search_all_calendars=True`. Filters run before `limit`, the earliest matches are kept, and `truncated: true` means more matched than `limit` |
 | `nc_calendar_get_event` | Get detailed information about a specific event |
 | `nc_calendar_update_event` | Update any aspect of an existing event |
 | `nc_calendar_delete_event` | Delete a calendar event |

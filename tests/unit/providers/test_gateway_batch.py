@@ -232,23 +232,6 @@ async def test_poll_succeeded_no_results_is_failed(monkeypatch):
 # (test_poll_non_404_4xx_still_raises).
 
 
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("30", 30),
-        ("  45  ", 45),  # surrounding whitespace tolerated
-        (None, None),  # header absent
-        ("0", None),  # non-positive -> no back-off signal
-        ("-5", None),  # negative -> ignored
-        ("30.5", None),  # non-integer -> ignored (we send whole seconds)
-        ("soon", None),  # non-numeric -> ignored
-        ("Wed, 21 Oct 2026 07:28:00 GMT", None),  # HTTP-date form unsupported
-    ],
-)
-def test_parse_retry_after(raw, expected):
-    assert gbc._parse_retry_after(raw) == expected
-
-
 def _capture_timeouts(monkeypatch, handler) -> list[httpx2.Timeout]:
     """Like ``_patch_transport`` but records the ``timeout`` each AsyncClient is
     constructed with, so the submit/poll split can be asserted."""

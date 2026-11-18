@@ -15,8 +15,7 @@ from typing import NamedTuple
 
 import pytest
 from mcp.client.session import ClientSession
-
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 pytestmark = [
     pytest.mark.integration,

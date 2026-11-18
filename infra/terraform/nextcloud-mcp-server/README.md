@@ -85,6 +85,7 @@ No modules.
 
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
+| <a name="input_access_logs_bucket"></a> [access\_logs\_bucket](#input\_access\_logs\_bucket) | S3 bucket for ALB access logs (must allow ELB log delivery). null disables access logging. | `string` | `null` | no |
 | <a name="input_allowed_mcp_clients"></a> [allowed\_mcp\_clients](#input\_allowed\_mcp\_clients) | MCP OAuth client allowlist published as ALLOWED\_MCP\_CLIENTS. Each entry is `id` or `id|redirect_uri`. Empty list keeps the upstream defaults (claude-desktop, test-mcp-client). | `list(string)` | `[]` | no |
 | <a name="input_allowed_mgmt_client"></a> [allowed\_mgmt\_client](#input\_allowed\_mgmt\_client) | Management API client allowlist published as ALLOWED\_MGMT\_CLIENT (comma-separated client IDs). Required from upstream v0.74.0+: when unset/empty the management API is fail-closed and rejects all tokens. Empty string skips publishing the env var. | `string` | `""` | no |
 | <a name="input_bedrock_embedding_model"></a> [bedrock\_embedding\_model](#input\_bedrock\_embedding\_model) | Bedrock model ID used for semantic search embeddings | `string` | `"amazon.titan-embed-text-v2:0"` | no |

@@ -8,11 +8,11 @@ import json
 
 import httpx2
 import pytest
-
-from nextcloud_mcp_server.client.fulltextsearch import (
+from nextcloud_client.fulltextsearch import (
     FullTextSearchClient,
     FullTextSearchError,
 )
+
 from tests.client.conftest import create_mock_response
 
 pytestmark = pytest.mark.unit

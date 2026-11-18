@@ -44,29 +44,18 @@ def create_provider() -> Provider:
     if settings.embedding_provider == "gateway":
         from .gateway import (  # noqa: PLC0415
             GatewayProvider,
-            GatewayTokenProvider,
+            build_gateway_token_provider,
         )
 
         # Settings.__post_init__ guarantees the URL is set when the
         # provider is gateway; assert narrows the type for the checker.
         assert settings.embedding_gateway_url is not None
-        # __post_init__ enforces all-or-nothing on the M2M creds, so
-        # checking one is enough to know the full triple is present.
-        token_provider = None
-        if settings.embedding_gateway_client_id:
-            assert settings.embedding_gateway_token_url is not None
-            assert settings.embedding_gateway_client_secret is not None
-            token_provider = GatewayTokenProvider(
-                token_url=settings.embedding_gateway_token_url,
-                client_id=settings.embedding_gateway_client_id,
-                client_secret=settings.embedding_gateway_client_secret,
-                scope=settings.embedding_gateway_scope,
-            )
+        token_provider = build_gateway_token_provider(settings)
         logger.info(
             "Using embedding gateway provider: url=%s, model=%s, auth=%s",
             settings.embedding_gateway_url,
             settings.embedding_gateway_model,
-            "oidc-m2m" if token_provider else "none",
+            token_provider.auth_label if token_provider else "none",
         )
         return GatewayProvider(
             base_url=settings.embedding_gateway_url,

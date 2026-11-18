@@ -2,8 +2,8 @@
 
 import httpx2
 import pytest
+from nextcloud_client.collectives import CollectivesClient, OCSError
 
-from nextcloud_mcp_server.client.collectives import CollectivesClient, OCSError
 from tests.client.conftest import create_mock_response
 
 pytestmark = pytest.mark.unit

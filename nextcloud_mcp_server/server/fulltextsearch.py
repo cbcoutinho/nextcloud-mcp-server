@@ -8,12 +8,12 @@ from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-
-from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.client.fulltextsearch import (
+from nextcloud_client.fulltextsearch import (
     FullTextSearchError,
     FullTextSearchMatch,
 )
+
+from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.fulltextsearch import (
     FullTextSearchHit,

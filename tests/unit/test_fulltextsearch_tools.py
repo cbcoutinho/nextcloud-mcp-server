@@ -12,8 +12,8 @@ import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from nextcloud_client.fulltextsearch import FullTextSearchError
 
-from nextcloud_mcp_server.client.fulltextsearch import FullTextSearchError
 from nextcloud_mcp_server.server import APP_CAPABILITY_KEY, AVAILABLE_APPS
 from nextcloud_mcp_server.server.fulltextsearch import configure_fulltextsearch_tools
 

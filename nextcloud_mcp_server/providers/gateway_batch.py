@@ -16,7 +16,7 @@ The gateway is a **stateless passthrough** to Mistral's Batch API — the
 This client submits exactly **one document per job** (the v1 unit; coalescing N
 docs/job is a follow-up). Auth + ``/v1`` base-url handling mirror the synchronous
 :class:`~nextcloud_mcp_server.providers.gateway.GatewayProvider` /
-``_GatewayOcrBackend`` — same M2M :class:`GatewayTokenProvider` bearer, no
+``_GatewayOcrBackend`` — same gateway bearer (M2M or token file), no
 provider keys in the pod.
 """
 
@@ -29,7 +29,9 @@ from typing import Any
 
 import httpx2
 
-from .gateway import GatewayTokenProvider
+from nextcloud_mcp_server.utils.parsing import parse_retry_after
+
+from .gateway import TokenProvider
 
 logger = logging.getLogger(__name__)
 
@@ -103,19 +105,6 @@ class BatchPollResult:
         return self.status == _FAILED
 
 
-def _parse_retry_after(value: str | None) -> int | None:
-    """Parse a Retry-After header as delta-seconds. The gateway sends an integer
-    number of seconds (never an HTTP-date), so a non-integer / non-positive / absent
-    value yields None and the caller falls back to its configured poll interval."""
-    if value is None:
-        return None
-    try:
-        seconds = int(value.strip())
-    except (TypeError, ValueError):
-        return None
-    return seconds if seconds > 0 else None
-
-
 class GatewayBatchOcrClient:
     """Submits + polls single-document batch OCR jobs against the gateway."""
 
@@ -123,7 +112,7 @@ class GatewayBatchOcrClient:
         self,
         base_url: str,
         model: str,
-        token_provider: GatewayTokenProvider | None = None,
+        token_provider: TokenProvider | None = None,
     ) -> None:
         # EMBEDDING_GATEWAY_URL is a bare origin; the batch routes live under /v1
         # like the rest of the gateway API. Idempotent if already /v1-suffixed.
@@ -239,7 +228,7 @@ class GatewayBatchOcrClient:
             # A 429 (or any error response) may carry Retry-After; honour it so a
             # rate-limited poll backs off as asked instead of at our own interval.
             retry_after = (
-                _parse_retry_after(exc.response.headers.get("Retry-After"))
+                parse_retry_after(exc.response.headers.get("Retry-After"))
                 if isinstance(exc, httpx2.HTTPStatusError)
                 else None
             )
@@ -269,7 +258,7 @@ class GatewayBatchOcrClient:
                 status=status,
                 pages=[],
                 error=body.get("error"),
-                retry_after=_parse_retry_after(resp.headers.get("Retry-After")),
+                retry_after=parse_retry_after(resp.headers.get("Retry-After")),
             )
         return _result_from_success(body)
 

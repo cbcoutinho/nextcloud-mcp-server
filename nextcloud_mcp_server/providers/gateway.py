@@ -15,6 +15,11 @@ mirrors the control-plane CLI's ``fetch_m2m_token`` pattern
 M2M creds are configured the client calls the gateway unauthenticated — matching
 the gateway's current (not-yet-authenticated) state.
 
+Alternatively ``EMBEDDING_GATEWAY_TOKEN_FILE`` points at a Kubernetes projected
+ServiceAccount token (audience ``astrolabe-gateway``) that the gateway checks
+via TokenReview; :class:`FileTokenProvider` re-reads it per request because
+kubelet rotates it.
+
 The gateway speaks the OpenAI ``/v1/embeddings`` wire format and routes by model
 name (e.g. ``mistral-embed`` → Mistral for the MVP). Embeddings-only: ``generate``
 is disabled (inherited ``NotImplementedError``).
@@ -50,6 +55,9 @@ class GatewayTokenProvider:
     ``fetch_m2m_token``. Tokens are cached until ``_EARLY_REFRESH_SECONDS``
     before expiry.
     """
+
+    # Log label for the configured auth mode (see GatewayProvider's init log).
+    auth_label = "oidc-m2m"
 
     def __init__(
         self,
@@ -109,6 +117,52 @@ class GatewayTokenProvider:
             return self._cache[0]
 
 
+class FileTokenProvider:
+    """Reads the gateway bearer from a file on every call.
+
+    For a Kubernetes projected ServiceAccount token (audience
+    ``astrolabe-gateway``): kubelet rotates the file in place, so it is re-read
+    each time rather than cached. A small local read per gateway request.
+    """
+
+    # Log label for the configured auth mode (see GatewayProvider's init log).
+    auth_label = "token-file"
+
+    def __init__(self, path: str):
+        self.path = path
+
+    async def get_token(self, *, force_refresh: bool = False) -> str:  # NOSONAR
+        """Return the file's current contents, stripped.
+
+        ``force_refresh`` is accepted for interface parity with
+        :class:`GatewayTokenProvider` (hence the S1172 suppression); every call
+        re-reads, so it has no effect. The per-call read is deliberate: do not
+        cache, kubelet rotates the file.
+
+        Raises:
+            OSError: the file is missing or unreadable (logged with the path).
+            RuntimeError: the file is empty or whitespace-only, which would
+                otherwise send a bare ``Bearer `` header and surface only as an
+                opaque gateway 401.
+        """
+        try:
+            token = (await anyio.Path(self.path).read_text()).strip()
+        except OSError:
+            logger.exception(
+                "Cannot read embedding-gateway token file %s "
+                "(EMBEDDING_GATEWAY_TOKEN_FILE); is the projected volume mounted?",
+                self.path,
+            )
+            raise
+        if not token:
+            raise RuntimeError(f"Embedding-gateway token file {self.path} is empty")
+        return token
+
+
+# Anything with ``async get_token(*, force_refresh=False) -> str``.
+TokenProvider = GatewayTokenProvider | FileTokenProvider
+
+
 class GatewayProvider(OpenAIProvider):
     """Embeddings-only OpenAI-compatible provider pointed at the gateway."""
 
@@ -117,7 +171,7 @@ class GatewayProvider(OpenAIProvider):
         *,
         base_url: str,
         embedding_model: str,
-        token_provider: GatewayTokenProvider | None = None,
+        token_provider: TokenProvider | None = None,
         timeout: float = 120.0,
         embedding_dimensions: int | None = None,
     ):
@@ -149,7 +203,7 @@ class GatewayProvider(OpenAIProvider):
             "auth=%s, requested_dimensions=%s",
             normalized_base_url,
             embedding_model,
-            "oidc-m2m" if token_provider else "none",
+            token_provider.auth_label if token_provider else "none",
             embedding_dimensions,
         )
 
@@ -251,15 +305,20 @@ class GatewayProvider(OpenAIProvider):
         return await super().embed_batch_with_usage(texts)
 
 
-def build_gateway_token_provider(settings: Settings) -> GatewayTokenProvider | None:
-    """Build the M2M ``GatewayTokenProvider`` from settings, or ``None`` when no
-    client-id is configured (unauthenticated gateway).
+def build_gateway_token_provider(settings: Settings) -> TokenProvider | None:
+    """Build the gateway bearer source from settings, or ``None`` when neither a
+    token file nor a client-id is configured (unauthenticated gateway).
 
-    Lives beside ``GatewayTokenProvider`` because every gateway sub-client needs
-    it — sync OCR, batch OCR, and rerank — so the all-or-nothing M2M-triple
-    validation has exactly one home. ``document_processors.ocr`` re-exports it
-    under its historical private name.
+    ``EMBEDDING_GATEWAY_TOKEN_FILE`` (projected SA token) wins; Settings
+    rejects it combined with the M2M triple, so at most one is set.
+
+    Lives beside ``GatewayTokenProvider`` because every gateway sub-client
+    needs it (embeddings, sync OCR, batch OCR, rerank and NER), so the
+    all-or-nothing M2M-triple validation has exactly one home.
+    ``document_processors.ocr`` re-exports it under its historical private name.
     """
+    if settings.embedding_gateway_token_file:
+        return FileTokenProvider(settings.embedding_gateway_token_file)
     if not settings.embedding_gateway_client_id:
         return None
 

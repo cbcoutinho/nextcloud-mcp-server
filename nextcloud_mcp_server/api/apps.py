@@ -17,6 +17,7 @@ never merged and is incompatible with admin endpoints gated by
 import logging
 
 import httpx2
+from nextcloud_client.ocs import OCS_REQUEST_HEADERS
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -26,7 +27,6 @@ from nextcloud_mcp_server.api.management import (
     validate_token_and_get_user,
 )
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
-from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
 
 from ..http import nextcloud_httpx_client
 

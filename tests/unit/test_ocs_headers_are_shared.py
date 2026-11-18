@@ -5,7 +5,7 @@ routes answer ``meta.statuscode: 997`` without it, and ``#[CORS]`` app routes
 log the session out and re-authenticate, which 404s Tables v1 on Nextcloud 33
 (GH #1664). While each client opted in per call, the Tables v1 calls never did.
 
-So the header lives in exactly one place -- ``http.NEXTCLOUD_DEFAULT_HEADERS``,
+So the header lives in exactly one place -- ``nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS``,
 applied by ``nextcloud_httpx_client`` -- and this module pins both halves of
 that: no module spells the header itself, and no module builds a raw
 ``httpx2.AsyncClient`` (which would skip the default) unless it talks to
@@ -19,53 +19,60 @@ import ast
 from pathlib import Path
 
 import httpx2
+import nextcloud_client
 import pytest
+from nextcloud_client import NextcloudClient
+from nextcloud_client.http import (
+    NEXTCLOUD_DEFAULT_HEADERS,
+    nextcloud_httpx_client,
+)
+from nextcloud_client.tables import TablesClient
 
-import nextcloud_mcp_server as root_pkg
-from nextcloud_mcp_server.client import NextcloudClient
-from nextcloud_mcp_server.client.tables import TablesClient
-from nextcloud_mcp_server.http import NEXTCLOUD_DEFAULT_HEADERS, nextcloud_httpx_client
+import nextcloud_mcp_server
 
 pytestmark = pytest.mark.unit
 
 #: The one module allowed to spell the header and to build a raw client.
-DEFINING_MODULE = "http.py"
+DEFINING_MODULE = "nextcloud_client/http.py"
 
 #: Modules whose raw ``httpx2.AsyncClient`` talks to a non-Nextcloud service, so
 #: the Nextcloud default headers do not belong on it. Adding a module here is a
 #: claim that it never calls Nextcloud -- if it does, use the factory instead.
 NON_NEXTCLOUD_CLIENTS = {
-    "app.py",  # Qdrant health probe
-    "auth/cimd.py",  # client ID metadata documents on the MCP client's host
-    "document_processors/collabora.py",
-    "document_processors/custom_http.py",
-    "document_processors/docling_serve.py",
-    "document_processors/ocr.py",
-    "document_processors/unstructured.py",
-    "providers/gateway.py",
-    "providers/gateway_batch.py",
-    "providers/ner.py",
-    "providers/ollama.py",
-    "providers/rerank.py",
-    "vector/collection_metadata.py",  # Qdrant
+    "nextcloud_mcp_server/app.py",  # Qdrant health probe
+    "nextcloud_mcp_server/auth/cimd.py",  # client ID metadata documents on the MCP client's host
+    "nextcloud_mcp_server/document_processors/collabora.py",
+    "nextcloud_mcp_server/document_processors/custom_http.py",
+    "nextcloud_mcp_server/document_processors/docling_serve.py",
+    "nextcloud_mcp_server/document_processors/ocr.py",
+    "nextcloud_mcp_server/document_processors/unstructured.py",
+    "nextcloud_mcp_server/providers/gateway.py",
+    "nextcloud_mcp_server/providers/gateway_batch.py",
+    "nextcloud_mcp_server/providers/ner.py",
+    "nextcloud_mcp_server/providers/ollama.py",
+    "nextcloud_mcp_server/providers/rerank.py",
+    "nextcloud_mcp_server/vector/collection_metadata.py",  # Qdrant
 }
 
 
-def _package_root() -> Path:
-    return Path(root_pkg.__file__).parent
+#: Both distributions built from this repo: the server and nextcloud-client.
+PACKAGES = (nextcloud_mcp_server, nextcloud_client)
 
 
 def _sources() -> dict[str, ast.Module]:
-    """Every module in the distribution, keyed by package-relative POSIX path.
+    """Every module in both packages, keyed ``<package>/<path>`` (POSIX).
 
     Bare filenames are not identifiers: ``deck.py`` / ``talk.py`` / ``sharing.py``
-    exist under each of ``client/``, ``models/`` and ``server/``.
+    exist in ``nextcloud_client`` and under the server's ``models/`` and
+    ``server/``.
     """
-    root = _package_root()
-    return {
-        p.relative_to(root).as_posix(): ast.parse(p.read_text())
-        for p in sorted(root.rglob("*.py"))
-    }
+    sources = {}
+    for pkg in PACKAGES:
+        root = Path(pkg.__file__).parent
+        for p in sorted(root.rglob("*.py")):
+            key = f"{pkg.__name__}/{p.relative_to(root).as_posix()}"
+            sources[key] = ast.parse(p.read_text())
+    return sources
 
 
 def _header_spellings(tree: ast.Module) -> list[int]:
@@ -97,9 +104,9 @@ def test_scan_covers_the_whole_package():
     found = set(_sources())
     assert {
         DEFINING_MODULE,
-        "client/webdav.py",
-        "api/apps.py",
-        "auth/storage.py",
+        "nextcloud_client/webdav.py",
+        "nextcloud_mcp_server/api/apps.py",
+        "nextcloud_mcp_server/auth/storage.py",
     } <= found
     assert _header_spellings(_sources()[DEFINING_MODULE])
     assert _raw_client_calls(_sources()[DEFINING_MODULE])
@@ -113,7 +120,7 @@ def test_no_module_spells_the_header():
         for line in _header_spellings(tree)
     ]
     assert not offenders, (
-        "OCS-APIRequest is a client default (http.NEXTCLOUD_DEFAULT_HEADERS); "
+        "OCS-APIRequest is a client default (nextcloud_client.http.NEXTCLOUD_DEFAULT_HEADERS); "
         f"drop it from these call sites: {offenders}"
     )
 
@@ -181,7 +188,7 @@ async def test_tables_v1_request_carries_the_header_on_the_wire():
 
 def test_the_ocs_json_constant_cannot_be_mutated():
     """Several clients share OCS_REQUEST_HEADERS; an in-place edit must fail."""
-    from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
+    from nextcloud_client.ocs import OCS_REQUEST_HEADERS
 
     with pytest.raises(TypeError):
         OCS_REQUEST_HEADERS["Accept"] = "text/xml"  # ty: ignore[unsupported-operation]

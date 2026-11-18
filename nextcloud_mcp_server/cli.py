@@ -38,6 +38,23 @@ from nextcloud_mcp_server.server import AVAILABLE_APPS
 
 from .app import get_app
 
+# Scopes the AS proxy requests from Nextcloud on top of what the MCP client
+# asks for, when NEXTCLOUD_OIDC_SCOPES is unset. Nextcloud grants the
+# intersection with the OIDC client's allowed scopes, so listing a scope for a
+# disabled feature costs nothing; leaving one out means its tools are
+# unreachable for any MCP client that cached an older scopes_supported (sar.*
+# on Mistral). Kept a literal so --help shows it; test_scope_vocabulary_drift
+# fails when it falls behind ALL_SUPPORTED_SCOPES.
+DEFAULT_OIDC_SCOPES = (
+    "openid profile email"
+    " notes.read notes.write calendar.read calendar.write todo.read todo.write"
+    " contacts.read contacts.write files.read files.write tables.read tables.write"
+    " deck.read deck.write cookbook.read cookbook.write sharing.read sharing.write"
+    " news.read news.write mail.read mail.write mail.send mail.draft"
+    " talk.read talk.write collectives.read collectives.write"
+    " shopping_list.read shopping_list.write semantic.read sar.read sar.write"
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,9 +128,9 @@ logger = logging.getLogger(__name__)
 @click.option(
     "--oauth-scopes",
     envvar="NEXTCLOUD_OIDC_SCOPES",
-    default="openid profile email notes.read notes.write calendar.read calendar.write todo.read todo.write contacts.read contacts.write cookbook.read cookbook.write deck.read deck.write tables.read tables.write files.read files.write sharing.read sharing.write",
+    default=DEFAULT_OIDC_SCOPES,
     show_default=True,
-    help="OAuth scopes to request during client registration. These define the maximum allowed scopes for the client. Note: Actual supported scopes are discovered dynamically from MCP tools at runtime. (can also use NEXTCLOUD_OIDC_SCOPES env var)",
+    help="OAuth scopes the AS proxy adds to every upstream Nextcloud authorization request, on top of what the MCP client asks for. Nextcloud grants only those allowed on its OIDC client. DCR registration derives its scopes separately. (can also use NEXTCLOUD_OIDC_SCOPES env var)",
 )
 @click.option(
     "--oauth-token-type",
