@@ -12,6 +12,8 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from mcp import types
 from mcp.client import Client
 from mcp.server.auth.middleware.auth_context import auth_context_var
@@ -296,17 +298,22 @@ class TestSanitizeToolArgs:
         assert _sanitize_tool_args({"ctx": object(), "etag": "abc"}) is None
 
 
-@pytest.mark.parametrize(
-    ("header", "expected"),
-    [
-        ("Basic dXNlcjphcHAtcGFzc3dvcmQ=", "Basic"),
-        ("Bearer eyJhbGciOi.payload.sig", "Bearer"),
-        ("bare-token-without-scheme", "<other>"),
-        ("Token abc123", "<other>"),
-    ],
-)
-def test_auth_scheme_never_echoes_credentials(header, expected):
-    """The /mcp auth log line carries the scheme only, never credentials."""
+@given(st.text())
+@example("bare-token-without-scheme")  # its first word IS the secret
+@example("Token abc123")
+def test_auth_scheme_never_echoes_credentials(header):
+    """The /mcp auth log line carries a known scheme word or a placeholder,
+    nothing else, so no part of any header can reach the log."""
     from nextcloud_mcp_server.app import _auth_scheme
 
-    assert _auth_scheme(header) == expected
+    assert _auth_scheme(header).lower() in {"basic", "bearer", "<other>"}
+
+
+@given(st.sampled_from(["Basic", "Bearer"]), st.text())
+@example("Basic", "dXNlcjphcHAtcGFzc3dvcmQ=")
+@example("Bearer", "eyJhbGciOi.payload.sig")
+def test_auth_scheme_names_the_known_schemes_in_any_case(scheme, credential):
+    from nextcloud_mcp_server.app import _auth_scheme
+
+    header = f"{scheme.swapcase()} {credential}"
+    assert _auth_scheme(header) == scheme.swapcase()

@@ -14,7 +14,7 @@ import logging
 
 import pytest
 
-from nextcloud_mcp_server.app import _build_transport_security, _csv_setting
+from nextcloud_mcp_server.app import _build_transport_security
 from nextcloud_mcp_server.config import _reload_config, set_override
 
 pytestmark = pytest.mark.unit
@@ -41,22 +41,6 @@ def clean_settings():
     for key in applied:
         set_override(key, _DEFAULTS[key.lower()])
     _reload_config()
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("", []),
-        ("*", ["*"]),
-        ("a.example", ["a.example"]),
-        ("a.example,b.example", ["a.example", "b.example"]),
-        (" a.example , b.example ", ["a.example", "b.example"]),
-        ("a.example,,b.example", ["a.example", "b.example"]),
-        (",", []),
-    ],
-)
-def test_csv_setting(raw, expected):
-    assert _csv_setting(raw) == expected
 
 
 def test_protection_defaults_off(clean_settings):

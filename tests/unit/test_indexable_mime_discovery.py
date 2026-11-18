@@ -2,8 +2,8 @@
 
 import anyio
 import pytest
+from nextcloud_client import _as_mime_tuple
 
-from nextcloud_mcp_server.client import _as_mime_tuple
 from nextcloud_mcp_server.config import Settings
 
 pytestmark = pytest.mark.unit
@@ -38,7 +38,7 @@ class TestTaggedFolderExpansion:
     def _client(
         mocker, per_type: dict[str, list[dict]] | None = None, fail: set | None = None
     ):
-        from nextcloud_mcp_server.client import NextcloudClient
+        from nextcloud_client import NextcloudClient
 
         client = mocker.Mock(spec=NextcloudClient)
         in_flight = 0
@@ -113,7 +113,7 @@ class TestDirectlyTaggedFiles:
 
     @staticmethod
     def _client(mocker, items):
-        from nextcloud_mcp_server.client import NextcloudClient
+        from nextcloud_client import NextcloudClient
 
         client = mocker.Mock(spec=NextcloudClient)
         client.webdav = mocker.Mock()

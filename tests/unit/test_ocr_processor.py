@@ -27,6 +27,7 @@ def _settings(**kw) -> Any:  # a Settings stand-in (only the read fields matter)
         embedding_gateway_client_secret=None,
         embedding_gateway_token_url=None,
         embedding_gateway_scope=None,
+        embedding_gateway_token_file=None,
         mistral_api_key=None,
         mistral_base_url=None,
         docling_api_url=None,

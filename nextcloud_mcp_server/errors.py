@@ -247,8 +247,31 @@ class NextcloudMCPServer(MCPServer):
             reset_request_context(token)
 
     async def list_tools(self) -> list[MCPTool]:
-        tools = await super().list_tools()
-        return await filter_by_capability(self, tools)
+        tools = await filter_by_capability(self, await super().list_tools())
+        # Advertise what call_tool enforces, so schema-aware clients catch a
+        # stray key before calling. Copy: input_schema is the shared
+        # Tool.parameters dict.
+        for tool in tools:
+            tool.input_schema = {**tool.input_schema, "additionalProperties": False}
+        return tools
+
+    def _reject_unknown_arguments(self, name: str, arguments: dict[str, Any]) -> None:
+        """Refuse keys the tool does not declare (card #1460).
+
+        The SDK's argument model uses pydantic's default ``extra="ignore"``, so a
+        misspelled or guessed key was dropped silently and the call reported
+        success having done less than asked. An unknown tool name is left to
+        ``super().call_tool``, which already refuses it.
+        """
+        tool = self._tool_manager.get_tool(name)
+        if tool is None:
+            return
+        valid = tool.parameters.get("properties", {})
+        if unknown := sorted(arguments.keys() - valid.keys()):
+            raise ToolError(
+                f"{name}: unknown argument(s) {', '.join(map(repr, unknown))}; "
+                f"valid: {', '.join(valid) or '(none)'}"
+            )
 
     async def call_tool(
         self,
@@ -256,6 +279,8 @@ class NextcloudMCPServer(MCPServer):
         arguments: dict[str, Any],
         context: Context[Any, Any] | None = None,
     ) -> CallToolResult | InputRequiredResult:
+        # Before the capability gate, so a rejected call never reaches Nextcloud.
+        self._reject_unknown_arguments(name, arguments)
         await enforce_capability(self, name)
         # The three clauses below are ordered by the SDK's hierarchy, and the
         # order is load-bearing: ``UnexpectedToolError`` subclasses ``ToolError``

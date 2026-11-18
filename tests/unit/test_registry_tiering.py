@@ -864,3 +864,31 @@ def test_evaluate_escalation_ignore_ocr_enabled_computes_ideal_target():
     assert r.next_available_tier("structured", s) is None
     # ...but the *ideal* target ignoring the enable gate is the OCR tier.
     assert r.next_available_tier("structured", s, ignore_ocr_enabled=True) == "ocr"
+
+
+def test_classification_scores_logged_only_for_non_fast_verdicts(caplog):
+    """GH #1802: an escalation verdict logs the classifier scores behind it."""
+    r = _registry((_Fake("fast", "fast"), 20))
+
+    def classify(text: str):
+        res = ProcessingResult(
+            text=text,
+            metadata={
+                "page_boundaries": [
+                    {"page": 1, "start_offset": 0, "end_offset": len(text)}
+                ]
+            },
+            processor="fast",
+            success=True,
+        )
+        return r._classify_result(res, b"", _Settings(), record=False, filename="a.pdf")
+
+    caplog.set_level("INFO", logger=reg_mod.__name__)
+    assert classify("this is clean readable prose text").recommended_tier == "fast"
+    assert not [m for m in caplog.messages if m.startswith("Classified")]
+
+    assert classify("x").recommended_tier == "ocr"  # near-empty page
+    (msg,) = [m for m in caplog.messages if m.startswith("Classified")]
+    assert "a.pdf as ocr" in msg
+    assert "mean_text_quality=" in msg
+    assert "ocr_page_fraction=1.0" in msg

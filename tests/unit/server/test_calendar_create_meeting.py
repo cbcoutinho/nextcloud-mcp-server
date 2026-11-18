@@ -10,8 +10,8 @@ from __future__ import annotations
 import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
+from nextcloud_client.users import UsersClient
 
-from nextcloud_mcp_server.client.users import UsersClient
 from nextcloud_mcp_server.server.calendar import configure_calendar_tools
 from tests.client.conftest import create_mock_response
 

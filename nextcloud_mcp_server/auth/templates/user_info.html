@@ -432,7 +432,7 @@
             <div x-show="activeSection === 'user-info'">
                 <div class="content-section">
                     <h1>User Information</h1>
-                    {{ user_info_tab_html|safe }}
+                    {{ user_info_tab_html }}
                 </div>
             </div>
 
@@ -441,7 +441,7 @@
             <div x-show="activeSection === 'vector-sync'">
                 <div class="content-section">
                     <h1>Vector Sync Status</h1>
-                    {{ vector_sync_tab_html|safe }}
+                    {{ vector_sync_tab_html }}
                 </div>
             </div>
             {% endif %}

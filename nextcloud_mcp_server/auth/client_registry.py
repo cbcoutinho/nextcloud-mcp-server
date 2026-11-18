@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
-from nextcloud_mcp_server.config import cfg
+from nextcloud_mcp_server.config import cfg, cfg_bool
+from nextcloud_mcp_server.utils.parsing import split_csv
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +83,7 @@ class ClientRegistry:
         allowed_clients = cfg("ALLOWED_MCP_CLIENTS", "").strip()
 
         if allowed_clients:
-            for entry in allowed_clients.split(","):
-                entry = entry.strip()
-                if not entry:
-                    continue
-
+            for entry in split_csv(allowed_clients):
                 if "|" in entry:
                     cid, redirect = entry.split("|", 1)
                     cid, redirect = cid.strip(), redirect.strip()
@@ -370,8 +367,6 @@ def get_client_registry() -> ClientRegistry:
     """Get the global client registry instance."""
     global _registry
     if _registry is None:
-        # Check if DCR is enabled. str() wraps it because dynaconf type-coerces
-        # env "true" -> bool True (which has no .lower()).
-        allow_dcr = str(cfg("ENABLE_DCR", "false")).lower() == "true"
+        allow_dcr = cfg_bool("ENABLE_DCR")
         _registry = ClientRegistry(allow_dynamic_registration=allow_dcr)
     return _registry

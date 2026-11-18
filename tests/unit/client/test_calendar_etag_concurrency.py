@@ -12,9 +12,8 @@ clobbered event.
 
 import pytest
 from caldav.elements import dav
-
-from nextcloud_mcp_server.client.calendar import CalendarClient
-from nextcloud_mcp_server.client.dav_errors import DavPreconditionFailed
+from nextcloud_client.calendar import CalendarClient
+from nextcloud_client.dav_errors import DavPreconditionFailed
 
 pytestmark = pytest.mark.unit
 
@@ -31,7 +30,7 @@ PRECONDITION_BODY = b"""<?xml version="1.0" encoding="utf-8"?>
 @pytest.fixture
 def client(mocker):
     """CalendarClient with its DAV client mocked out."""
-    mocker.patch("nextcloud_mcp_server.client.calendar.AsyncDAVClient")
+    mocker.patch("nextcloud_client.calendar.AsyncDAVClient")
     return CalendarClient("https://cloud.example.org", "alice", password="pw")
 
 

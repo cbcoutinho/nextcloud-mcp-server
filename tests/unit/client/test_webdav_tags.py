@@ -6,8 +6,7 @@ name is unusable and dropped rather than surfaced with placeholder values.
 """
 
 import pytest
-
-from nextcloud_mcp_server.client.webdav import WebDAVClient
+from nextcloud_client.webdav import WebDAVClient
 
 pytestmark = pytest.mark.unit
 

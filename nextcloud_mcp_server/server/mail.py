@@ -1,6 +1,5 @@
 """MCP tools for Nextcloud Mail app (read, send, drafts, flags, tags, move, delete)."""
 
-import json
 import logging
 import mimetypes
 from collections.abc import Generator
@@ -11,10 +10,10 @@ from httpx2 import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, ToolAnnotations
+from nextcloud_client.mail import DEFAULT_TAG_COLOR
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
-from nextcloud_mcp_server.client.mail import DEFAULT_TAG_COLOR
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.models.mail import (
     GetAttachmentResponse,
@@ -28,6 +27,7 @@ from nextcloud_mcp_server.models.mail import (
     MailMailbox,
     MailMessage,
     MailMessageSummary,
+    MailRecipient,
     MailTag,
     MailTagResponse,
     SaveDraftResponse,
@@ -45,6 +45,14 @@ from nextcloud_mcp_server.utils.image_view import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Recipient parameters are typed as an array, so the tool schema advertises one.
+# Callers written against the old string signature keep working: for any
+# annotation other than ``str``, the SDK's ``pre_parse_json`` decodes a JSON
+# string argument before validation. A malformed list, an entry without an
+# address, or a list encoded twice fails that validation with an error naming
+# the parameter, before any request reaches the Mail app.
+Recipients = list[MailRecipient]
 
 
 @contextmanager
@@ -257,42 +265,48 @@ async def nc_mail_get_message(message_id: int, ctx: Context) -> GetMessageRespon
 @instrument_tool
 async def nc_mail_send_message(
     account_id: int,
-    to: str,
+    to: Recipients,
     subject: str,
     body: str,
     ctx: Context,
     is_html: bool = False,
-    cc: str | None = None,
-    bcc: str | None = None,
+    cc: Recipients | None = None,
+    bcc: Recipients | None = None,
     references: str | None = None,
 ) -> SendMessageResponse:
     """Send an email through a configured Nextcloud Mail account (requires mail.send scope).
 
     The ``From:`` identity is derived by the Mail app from ``account_id``.
-    Recipients are specified as JSON arrays of ``{"label": "...", "email": "..."}``
-    objects.  Example for ``to``::
+    Recipients are arrays of ``{"label": "...", "email": "..."}`` objects
+    (``label`` is optional). Example for ``to``::
 
         [{"label": "John Doe", "email": "john@example.com"}]
 
     Args:
         account_id: Mail account ID to send from (from nc_mail_list_accounts)
-        to: JSON array of To recipients
+        to: Array of To recipients (``[]`` when sending only to cc/bcc)
         subject: Email subject
         body: Email body (plain text unless is_html is true)
         is_html: Whether body contains HTML (default false)
-        cc: Optional JSON array of CC recipients
-        bcc: Optional JSON array of BCC recipients
+        cc: Optional array of CC recipients
+        bcc: Optional array of BCC recipients. At least one recipient is
+            needed across to, cc and bcc.
         references: Optional RFC 2822 Message-ID for reply threading
 
     Returns:
         SendMessageResponse with success status and optional message
     """
+    to_list = _recipient_dicts(to)
+    cc_list = _recipient_dicts(cc)
+    bcc_list = _recipient_dicts(bcc)
+    if not (to_list or cc_list or bcc_list):
+        raise MCPError(
+            code=-1,
+            message="No recipients: to, cc and bcc are all empty. Nothing was sent.",
+        )
+
     client = await get_client(ctx)
     try:
-        to_list = json.loads(to)  # `to` is a required JSON-array string
-        cc_list = json.loads(cc) if isinstance(cc, str) else (cc or [])
-        bcc_list = json.loads(bcc) if isinstance(bcc, str) else (bcc or [])
-
         await client.mail.send_message(
             account_id=account_id,
             to=to_list,
@@ -312,64 +326,31 @@ async def nc_mail_send_message(
             message=f"Failed to send message: {e.response.status_code} "
             f"{e.response.text[:500]}",
         )
-    except json.JSONDecodeError as e:
-        raise MCPError(code=-1, message=f"Invalid JSON in recipient list: {str(e)}")
 
 
-def _parse_recipients(raw: str | None, field: str) -> list[dict[str, str]]:
-    """Parse a JSON recipient list (``[{"label": "...", "email": "..."}]``).
+def _recipient_dicts(recipients: list[MailRecipient] | None) -> list[dict[str, str]]:
+    """Turn validated recipients into the ``{"email", "label"?}`` dicts Mail takes.
 
-    Runs before any request is made, so a malformed list fails with an error
-    naming the parameter instead of a half-finished call to the Mail app.
-
-    Args:
-        raw: The JSON string as passed to the tool; ``None`` or ``""`` means
-            no recipients.
-        field: Parameter name for error messages (``to``, ``cc``, ``bcc``).
-
-    Returns:
-        One ``{"email", "label"?}`` dict per recipient. ``label`` is left out
-        when absent, so the Mail app falls back to the address itself.
+    ``label`` is left out when empty, so the Mail app falls back to the address
+    itself. Validation (shape, required ``email``) has already run in the SDK.
     """
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise MCPError(code=-1, message=f"Invalid JSON in {field}: {e}") from e
-    if not isinstance(parsed, list):
-        raise MCPError(
-            code=-1,
-            message=f"{field} must be a JSON array, got {type(parsed).__name__}",
-        )
-
-    recipients: list[dict[str, str]] = []
-    for entry in parsed:
-        email = entry.get("email") if isinstance(entry, dict) else None
-        if not isinstance(email, str) or not email.strip():
-            raise MCPError(
-                code=-1,
-                message=f"Each {field} entry needs an 'email' string, got {entry!r}",
-            )
-        recipient = {"email": email}
-        label = entry.get("label")
-        if isinstance(label, str) and label:
-            recipient["label"] = label
-        recipients.append(recipient)
-    return recipients
+    return [
+        {"email": r.email, "label": r.label} if r.label else {"email": r.email}
+        for r in recipients or []
+    ]
 
 
 @require_scopes("mail.draft")
 @instrument_tool
 async def nc_mail_save_draft(
     account_id: int,
-    to: str,
+    to: Recipients,
     subject: str,
     body: str,
     ctx: Context,
     is_html: bool = False,
-    cc: str | None = None,
-    bcc: str | None = None,
+    cc: Recipients | None = None,
+    bcc: Recipients | None = None,
 ) -> SaveDraftResponse:
     """Save an email as a draft WITHOUT sending it (requires mail.draft scope).
 
@@ -380,8 +361,8 @@ async def nc_mail_save_draft(
     sends themselves.
 
     The ``From:`` identity is derived by the Mail app from ``account_id``.
-    Recipients are JSON arrays of ``{"label": "...", "email": "..."}`` objects,
-    as for nc_mail_send_message. Example for ``to``::
+    Recipients are arrays of ``{"label": "...", "email": "..."}`` objects
+    (``label`` is optional), as for nc_mail_send_message. Example for ``to``::
 
         [{"label": "John Doe", "email": "john@example.com"}]
 
@@ -401,20 +382,20 @@ async def nc_mail_save_draft(
 
     Args:
         account_id: Mail account ID to save the draft in (from nc_mail_list_accounts)
-        to: JSON array of To recipients (``[]`` for none yet)
+        to: Array of To recipients (``[]`` for none yet)
         subject: Email subject
         body: Email body (plain text unless is_html is true)
         is_html: Whether body contains HTML (default false)
-        cc: Optional JSON array of CC recipients
-        bcc: Optional JSON array of BCC recipients
+        cc: Optional array of CC recipients
+        bcc: Optional array of BCC recipients
 
     Returns:
         SaveDraftResponse confirming the draft was saved. Find the draft in
         the account's Drafts mailbox.
     """
-    to_list = _parse_recipients(to, "to")
-    cc_list = _parse_recipients(cc, "cc")
-    bcc_list = _parse_recipients(bcc, "bcc")
+    to_list = _recipient_dicts(to)
+    cc_list = _recipient_dicts(cc)
+    bcc_list = _recipient_dicts(bcc)
 
     client = await get_client(ctx)
     try:

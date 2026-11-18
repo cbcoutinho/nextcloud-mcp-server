@@ -6,8 +6,7 @@ without Pretty URLs (issue #732).
 """
 
 import pytest
-
-from nextcloud_mcp_server.client.base import BaseNextcloudClient
+from nextcloud_client.base import BaseNextcloudClient
 
 pytestmark = pytest.mark.unit
 

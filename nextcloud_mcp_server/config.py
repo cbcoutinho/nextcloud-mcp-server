@@ -15,7 +15,12 @@ from typing import Any
 
 from dynaconf import Dynaconf, Validator
 
+from nextcloud_mcp_server.utils.parsing import parse_bool, split_csv
+
 logger = logging.getLogger(__name__)
+
+# Below this, the PDF parse worker's imports barely fit under RLIMIT_AS (#1635).
+_PARSE_MEM_LIMIT_WARN_MB = 1024
 
 # Sentinel for "key not in dynaconf at all" vs "explicitly set to None".
 _UNSET = object()
@@ -318,6 +323,12 @@ _DEFAULTS: dict[str, Any] = {
     # default: a deployment opts in, since only some need it. Also requires
     # vector sync and EMBEDDING_GATEWAY_URL (for name detection).
     "sar_enabled": False,
+    # TEXT index (with phrase matching) on chunk text, for algorithm="exact"
+    # searches: every document containing a phrase. Built in the background on
+    # startup; it costs disk and RAM roughly proportional to the indexed text.
+    # Off: exact searches still work by scanning, slower, except on Qdrant in
+    # strict mode, which refuses a filter on an unindexed field.
+    "exact_match_index_enabled": True,
     "ner_model": "local/urchade/gliner_multi_pii-v1",
     # Per-request budget. Export runs in the background, so this only needs to
     # cover one batch on the slowest backend (CPU GLiNER: ~570 chars/s).
@@ -618,6 +629,11 @@ _DEFAULTS: dict[str, Any] = {
     "embedding_gateway_client_id": None,
     "embedding_gateway_client_secret": None,
     "embedding_gateway_scope": None,  # e.g. astrolabe-embedding-gateway/embed
+    # Alternative to the M2M triple: a file holding the bearer, re-read per
+    # request — a Kubernetes projected ServiceAccount token (audience
+    # astrolabe-gateway, e.g. /var/run/secrets/astrolabe-gateway/token).
+    # Mutually exclusive with the M2M triple.
+    "embedding_gateway_token_file": None,
     # Query-side ACL pre-filter (design §11). OFF by default: a Qdrant
     # `match any` on `acl_hash` excludes points missing the key, so enabling
     # this before a real ACL backfill would silently drop legacy results.
@@ -811,6 +827,27 @@ _dynaconf = Dynaconf(
         ),
     ],
 )
+
+
+def _warn_low_parse_mem_limit(mem_limit_mb: int) -> None:
+    """Warn when the parse cap leaves the worker too little room (#1635).
+
+    The parse worker spends ~600 MiB of address space on imports alone (its
+    share of the app plus pymupdf4llm, which loads onnxruntime even in classic
+    mode), before any page is read. At 640 the markdown promotion failed
+    intermittently with "failed to map segment". The validator's floor of 128
+    only rejects nonsense, so this warns instead of refusing to start.
+    """
+    if mem_limit_mb < _PARSE_MEM_LIMIT_WARN_MB:
+        logger.warning(
+            "DOCUMENT_PARSE_MEM_LIMIT_MB=%d is below %d. The PDF parse worker "
+            "needs ~600 MiB of address space for its imports alone, so markdown "
+            "promotion is likely to fail (ImportError: failed to map segment). "
+            "The default is %d.",
+            mem_limit_mb,
+            _PARSE_MEM_LIMIT_WARN_MB,
+            _DEFAULTS["document_parse_mem_limit_mb"],
+        )
 
 
 def _reload_config():
@@ -1023,9 +1060,7 @@ def get_document_processor_config() -> dict[str, Any]:
             "api_url": _dynaconf.get("UNSTRUCTURED_API_URL"),
             "timeout": _dynaconf.get("UNSTRUCTURED_TIMEOUT"),
             "strategy": _dynaconf.get("UNSTRUCTURED_STRATEGY"),
-            "languages": [
-                lang.strip() for lang in languages_str.split(",") if lang.strip()
-            ],
+            "languages": split_csv(languages_str),
             "progress_interval": _dynaconf.get("PROGRESS_INTERVAL"),
         }
 
@@ -1048,9 +1083,7 @@ def get_document_processor_config() -> dict[str, Any]:
         custom_url = _dynaconf.get("CUSTOM_PROCESSOR_URL")
         if custom_url:
             supported_types_str = _dynaconf.get("CUSTOM_PROCESSOR_TYPES")
-            supported_types = {
-                t.strip() for t in supported_types_str.split(",") if t.strip()
-            }
+            supported_types = set(split_csv(supported_types_str))
 
             config["processors"]["custom"] = {
                 "name": _dynaconf.get("CUSTOM_PROCESSOR_NAME"),
@@ -1073,7 +1106,7 @@ def get_document_processor_config() -> dict[str, Any]:
             config["processors"]["docling"] = {
                 "api_url": docling_url,
                 "timeout": _dynaconf.get("DOCLING_TIMEOUT"),
-                "ocr_lang": [s.strip() for s in lang_str.split(",") if s.strip()],
+                "ocr_lang": split_csv(lang_str),
                 "do_ocr": _dynaconf.get("DOCLING_DO_OCR"),
                 # Normalize like Settings.__post_init__ does (.strip().lower()) so the
                 # image path matches convert_file()'s ``pipeline == "vlm"`` check --
@@ -1316,11 +1349,7 @@ class Settings:
             )
 
             return tuple(sorted(get_registry().supported_mime_types()))
-        return tuple(
-            t.strip()
-            for t in self.vector_sync_indexable_mime_types.split(",")
-            if t.strip()
-        )
+        return tuple(split_csv(self.vector_sync_indexable_mime_types))
 
     # Mail tag (an IMAP keyword) restricting which messages are indexed — the
     # mail analogue of ``vector_sync_tag``. Empty (default) indexes every
@@ -1426,6 +1455,7 @@ class Settings:
     search_rerank_max_concurrency: int = 1
     # SAR export redaction (ADR-040; see _DEFAULTS for the semantics).
     sar_enabled: bool = False
+    exact_match_index_enabled: bool = True
     ner_model: str = "local/urchade/gliner_multi_pii-v1"
     ner_timeout_seconds: float = 120.0
     ner_batch_size: int = 8
@@ -1663,6 +1693,7 @@ class Settings:
     embedding_gateway_client_id: str | None = None
     embedding_gateway_client_secret: str | None = None
     embedding_gateway_scope: str | None = None
+    embedding_gateway_token_file: str | None = None  # projected SA token path
     acl_prefilter_enabled: bool = False  # query-side ACL pre-filter (§11); OFF
     # Usage metering (Deck #67); OFF by default. When true, billable ops
     # record best-effort rows into the app-DB usage_events table for the
@@ -1705,6 +1736,8 @@ class Settings:
                     f"NEXTCLOUD_CA_BUNDLE path does not exist: {self.nextcloud_ca_bundle}"
                 )
             logger.info("Using custom CA bundle: %s", self.nextcloud_ca_bundle)
+
+        _warn_low_parse_mem_limit(self.document_parse_mem_limit_mb)
 
         # Page-packing is a sub-mode of page-aware chunking (the packing logic
         # only runs inside the page-aware branch). Enabling it without page-aware
@@ -1932,6 +1965,14 @@ class Settings:
             self.embedding_gateway_client_id,
             self.embedding_gateway_client_secret,
         )
+        # Checked first so a token file plus a partial trio reports the real
+        # conflict rather than asking for the rest of the trio.
+        if self.embedding_gateway_token_file and any(_gw_creds):
+            raise ValueError(
+                "EMBEDDING_GATEWAY_TOKEN_FILE and the EMBEDDING_GATEWAY_TOKEN_URL/"
+                "CLIENT_ID/CLIENT_SECRET client-credentials settings are mutually "
+                "exclusive; set one or the other"
+            )
         if any(_gw_creds) and not all(_gw_creds):
             raise ValueError(
                 "EMBEDDING_GATEWAY_TOKEN_URL, EMBEDDING_GATEWAY_CLIENT_ID, and "
@@ -2396,13 +2437,11 @@ def cfg_bool(key: str, default: bool = False) -> bool:
     syntax, which only recognises lowercase ``true``/``false``, so
     ``SOME_FLAG=False`` survives as the *string* ``"False"`` — and
     ``bool("False")`` is ``True``, inverting the operator's intent. This accepts
-    the spellings a human plausibly types (``true``/``1``/``yes``/``on``, any
-    case) and treats everything else as false.
+    the spellings a human plausibly types (``true``/``1``/``yes``/``on`` and
+    ``false``/``0``/``no``/``off``, any case). An unrecognised value yields
+    *default* and logs a warning naming *key* (see ``parse_bool``).
     """
-    value = cfg(key, default)
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    return parse_bool(cfg(key, default), default, name=key)
 
 
 def set_override(key: str, value) -> None:

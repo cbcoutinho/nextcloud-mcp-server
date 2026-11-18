@@ -12,7 +12,8 @@ Two things live here, both because *two* call sites must agree exactly:
 
 from typing import Any
 
-from nextcloud_mcp_server.client.mail import MailClient
+from nextcloud_client.mail import MailClient
+
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 

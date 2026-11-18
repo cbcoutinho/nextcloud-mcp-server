@@ -47,10 +47,10 @@ import httpx2
 import sqlalchemy as sa
 from anyio import to_thread
 from cryptography.fernet import Fernet
+from nextcloud_client.ocs import OCS_REQUEST_HEADERS
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
 from nextcloud_mcp_server.config import (
     cfg,
     get_database_url,

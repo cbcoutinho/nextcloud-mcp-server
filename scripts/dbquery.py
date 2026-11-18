@@ -53,15 +53,15 @@ def run_query(
         "-T",  # Disable pseudo-TTY allocation
         "db",
         "mariadb",
-        f"-u{user}",
-        f"-p{password}",
+        # Values bound with `=` and a `--` before the positional database, so
+        # no argument can be parsed as an extra option (pythonsecurity:S8705).
+        f"--user={user}",
+        f"--password={password}",
+        f"--execute={sql}",
+        *(["-E"] if vertical else []),  # Vertical output format
+        "--",
         database,
-        "-e",
-        sql,
     ]
-
-    if vertical:
-        cmd.insert(-2, "-E")  # Vertical output format
 
     result = subprocess.run(
         cmd,

@@ -47,7 +47,7 @@ def _post(body: dict, *, search_spy=None):
             new=AsyncMock(return_value=("alice", {})),
         ),
         patch(
-            "nextcloud_mcp_server.api.visualization.BM25HybridSearchAlgorithm",
+            "nextcloud_mcp_server.search.selection.BM25HybridSearchAlgorithm",
             return_value=algo,
         ),
         # Let _search_with_acl actually run: an unprovisioned caller takes the

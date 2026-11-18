@@ -5,12 +5,13 @@ from typing import Any, Protocol, runtime_checkable
 
 from httpx2 import BasicAuth
 from mcp.server.mcpserver import Context
+from nextcloud_client import NextcloudClient
 
 from nextcloud_mcp_server.auth.context_helper import get_client_from_context
 from nextcloud_mcp_server.auth.scope_authorization import ProvisioningRequiredError
 from nextcloud_mcp_server.auth.storage import get_shared_storage
-from nextcloud_mcp_server.client import NextcloudClient
 from nextcloud_mcp_server.config import get_settings
+from nextcloud_mcp_server.http import nextcloud_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,7 @@ def _get_client_from_basic_auth(ctx: Context) -> NextcloudClient:
         username=username,
         auth=BasicAuth(username, password),
         password=password,
+        **nextcloud_client_kwargs(),
     )
 
 
@@ -222,4 +224,5 @@ async def _get_client_from_login_flow(
         auth_username=login_name,
         auth=BasicAuth(login_name, app_password),
         password=app_password,
+        **nextcloud_client_kwargs(),
     )

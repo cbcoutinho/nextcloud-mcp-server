@@ -1,4 +1,5 @@
 import logging
+import ssl
 from collections.abc import Sequence
 from email.utils import parsedate_to_datetime
 
@@ -6,15 +7,13 @@ import anyio
 from httpx2 import (
     AsyncBaseTransport,
     Auth,
-    BasicAuth,
     Request,
     RequestNotRead,
     Response,
     Timeout,
 )
 
-from ..controllers.notes_search import NotesSearchController
-from ..http import nextcloud_httpx_client, nextcloud_httpx_transport
+from .auth import BearerAuth
 from .base import STREAMING_REQUEST_EXTENSION
 from .calendar import CalendarClient
 from .collectives import CollectivesClient
@@ -22,9 +21,11 @@ from .contacts import ContactsClient
 from .cookbook import CookbookClient
 from .deck import DeckClient
 from .groups import GroupsClient
+from .http import nextcloud_httpx_client, nextcloud_httpx_transport
 from .mail import MailClient
 from .news import NewsClient
 from .notes import NotesClient
+from .notes_search import NotesSearchController
 from .ocs import OCS_REQUEST_HEADERS
 from .sharing import SharingClient
 from .shopping_list import ShoppingListClient
@@ -165,7 +166,13 @@ class NextcloudClient:
         auth_username: str | None = None,
         password: str | None = None,
         token: str | None = None,
+        verify: bool | ssl.SSLContext = True,
+        keepalive: bool = True,
     ):
+        # ``verify`` is httpx2's: False disables TLS verification, and an
+        # SSLContext carries a custom CA. ``keepalive=False`` opens a fresh
+        # connection per request (see ``http.nextcloud_httpx_transport``).
+        #
         # ``username`` is the Nextcloud UID and DAV path fallback. Discovery can
         # replace that fallback with the canonical principal id when Nextcloud
         # exposes a different DAV identity. ``auth_username`` is the credential
@@ -180,7 +187,10 @@ class NextcloudClient:
         self._client = nextcloud_httpx_client(
             base_url=base_url,
             auth=auth,
-            transport=AsyncDisableCookieTransport(nextcloud_httpx_transport()),
+            verify=verify,
+            transport=AsyncDisableCookieTransport(
+                nextcloud_httpx_transport(verify=verify, keepalive=keepalive)
+            ),
             event_hooks={"request": [log_request], "response": [log_response]},
             timeout=Timeout(timeout=30, connect=5),
         )
@@ -198,6 +208,7 @@ class NextcloudClient:
             auth_username=auth_username,
             password=password,
             token=token,
+            verify=verify,
         )
         self.contacts = ContactsClient(self._client, username)
         self.cookbook = CookbookClient(self._client, username)
@@ -215,46 +226,35 @@ class NextcloudClient:
         self._notes_search = NotesSearchController()
 
     @classmethod
-    def from_env(cls):
-        logger.info("Creating NC Client using settings + env vars")
-
-        # NEXTCLOUD_HOST is read via settings (dynaconf) so a settings.toml-only
-        # value is honoured; the credentials remain env/Secret-sourced.
-        from nextcloud_mcp_server.config import cfg, get_settings  # noqa: PLC0415
-
-        host = get_settings().nextcloud_host
-        if not host:
-            raise ValueError("NEXTCLOUD_HOST must be set to build a client from env")
-        username = cfg("NEXTCLOUD_USERNAME")
-        password = cfg("NEXTCLOUD_PASSWORD")
-        # Pass username to constructor
-        return cls(
-            base_url=host,
-            username=username,
-            auth=BasicAuth(username, password),
-            password=password,
-        )
-
-    @classmethod
-    def from_token(cls, base_url: str, token: str, username: str):
+    def from_token(
+        cls,
+        base_url: str,
+        token: str,
+        username: str,
+        *,
+        verify: bool | ssl.SSLContext = True,
+        keepalive: bool = True,
+    ):
         """Create NextcloudClient with OAuth bearer token.
 
         Args:
             base_url: Nextcloud base URL
             token: OAuth access token
             username: Nextcloud username
+            verify: TLS verification, as for ``__init__``
+            keepalive: Connection reuse, as for ``__init__``
 
         Returns:
             NextcloudClient configured with bearer token authentication
         """
-        from ..auth import BearerAuth  # noqa: PLC0415
-
         logger.info("Creating NC Client for user '%s' using OAuth token", username)
         return cls(
             base_url=base_url,
             username=username,
             auth=BearerAuth(token),
             token=token,
+            verify=verify,
+            keepalive=keepalive,
         )
 
     async def capabilities(self):

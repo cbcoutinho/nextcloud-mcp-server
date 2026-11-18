@@ -1,8 +1,8 @@
 from typing import Dict, List, Optional
 
-from nextcloud_mcp_server.client.base import BaseNextcloudClient
-from nextcloud_mcp_server.client.ocs import OCS_REQUEST_HEADERS
-from nextcloud_mcp_server.models.users import UserDetails
+from .base import BaseNextcloudClient
+from .models.users import UserDetails
+from .ocs import OCS_REQUEST_HEADERS
 
 
 class UsersClient(BaseNextcloudClient):

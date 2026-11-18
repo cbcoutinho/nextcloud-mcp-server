@@ -9,8 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
-
-from nextcloud_mcp_server.client.calendar import _maybe_await
+from nextcloud_client.calendar import _maybe_await
 
 logger = logging.getLogger(__name__)
 

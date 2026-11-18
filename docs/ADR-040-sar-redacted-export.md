@@ -152,6 +152,32 @@ single `Plugin` (`nextcloud_mcp_server/sar_plugin.py`), registered under the
 `nextcloud_mcp_server.plugins` entry-point group; the server has no SAR-specific
 wiring of its own. See `nextcloud_mcp_server/plugins.py`.
 
+### Finding every document: `algorithm: "exact"`
+
+Ranked search (semantic, BM25, hybrid) returns the top results for a query, so
+it cannot promise "every document that mentions this person" at any page size:
+in one-row-per-document mode the grouped prefetch is bounded, and deeper pages
+come back empty. `POST /api/v1/search` (and so the case search route, which wraps
+it) therefore also accepts `algorithm: "exact"`: a Qdrant scroll filtered by the
+query as a phrase in the chunk text (or its words in the file path), within the
+caller's access scope and filters. It is unranked (every result has relevance 1.0,
+source `exact_match`), always one row per document, and `total_found` is the true
+count of indexed matches, so a client can page through all of them. Access is
+verified per page rather than over the whole set; export re-checks every file.
+So `total_found` counts indexed matches, including any the caller has since
+lost access to: a page can come back shorter than `limit`, and a client must
+page by `offset < total_found`, never stop at the first short page.
+A match stops at 20,000 documents (or 200,000 scanned chunks) per doc type and
+says so with `truncated: true`; the subset kept then is in scroll order, not by
+title. A file path matches more loosely than text: its words in any order.
+Every page re-runs the scroll and slices it, so a page costs the whole match
+set (bounded by the caps), not the pages before it; caching the sorted ids per
+query is the upgrade if deep paging gets slow. It is
+advertised in `supported_search_types`, so clients gate on it. The phrase filter
+uses the `excerpt` text index (`EXACT_MATCH_INDEX_ENABLED`). Agents reach the
+same search through `nc_semantic_search(algorithm="exact", offset=...)`, which
+also selects `semantic` or `bm25` (default `hybrid`).
+
 ### Execution
 
 The export runs in-process in the MCP server as a background task, with

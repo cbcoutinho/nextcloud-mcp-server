@@ -73,9 +73,7 @@ class _FakeAsyncClient:
 async def test_basic_auth_builder_splits_uid_and_loginname(mocker):
     """multi_user_basic background-sync builder: loginName authenticates,
     UID builds paths."""
-    mock_dav_client = mocker.patch(
-        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
-    )
+    mock_dav_client = mocker.patch("nextcloud_client.calendar.AsyncDAVClient")
     from nextcloud_mcp_server.vector.oauth_sync import get_user_client_basic_auth
 
     storage = mocker.MagicMock()
@@ -108,9 +106,7 @@ async def test_basic_auth_builder_legacy_row_falls_back_to_uid(mocker):
     """Legacy rows stored before the loginName column was populated have
     ``username = None`` → fall back to the UID for the credential (preserves
     the previous behaviour where UID == loginName)."""
-    mock_dav_client = mocker.patch(
-        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
-    )
+    mock_dav_client = mocker.patch("nextcloud_client.calendar.AsyncDAVClient")
     from nextcloud_mcp_server.vector.oauth_sync import get_user_client_basic_auth
 
     storage = mocker.MagicMock()
@@ -156,9 +152,7 @@ async def test_login_flow_builder_uses_login_name_for_dav_path(mocker):
     when NC is the OIDC IdP, loginName == sub == NC username (no change); when
     an external IdP maps preferred_username, loginName is the actual NC username.
     """
-    mock_dav_client = mocker.patch(
-        "nextcloud_mcp_server.client.calendar.AsyncDAVClient"
-    )
+    mock_dav_client = mocker.patch("nextcloud_client.calendar.AsyncDAVClient")
     from nextcloud_mcp_server import context
 
     mocker.patch(

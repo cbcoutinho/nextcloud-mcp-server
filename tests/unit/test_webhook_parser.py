@@ -5,6 +5,8 @@ Payload examples are taken from real Nextcloud captures recorded in
 """
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.vector.webhook_parser import extract_document_task
 
@@ -173,37 +175,94 @@ def test_node_deleted_event_without_id_returns_none():
     assert extract_document_task(payload) is None
 
 
+_EVENT_CLASSES = [
+    "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+    "OCP\\Files\\Events\\Node\\NodeWrittenEvent",
+    "OCP\\Files\\Events\\Node\\BeforeNodeDeletedEvent",
+    "OCA\\Deck\\Event\\CardCreatedEvent",
+    "OCA\\Deck\\Event\\CardUpdatedEvent",
+    "OCA\\Deck\\Event\\CardDeletedEvent",
+    "OCA\\Deck\\Event\\BoardUpdatedEvent",
+    "OCP\\SystemTag\\MapperEvent",
+]
+
+#: Any JSON value, floats (inf/nan) included: what a payload field may hold.
+json_values = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda inner: (
+        st.lists(inner, max_size=3) | st.dictionaries(st.text(), inner, max_size=3)
+    ),
+    max_leaves=8,
+)
+_ids = st.integers() | st.text() | json_values
+_paths = (
+    st.from_regex(
+        r"/[a-z]{1,5}/files/(Notes/)?[A-Za-z]{1,8}\.(md|pdf|txt)", fullmatch=True
+    )
+    | json_values
+)
+
+
+@st.composite
+def webhook_payloads(draw):
+    """Payloads shaped like Nextcloud's, with any field missing or wrong-typed:
+    the known event classes and plausible paths keep every parser branch hot."""
+    body = draw(
+        st.fixed_dictionaries(
+            {"class": st.sampled_from(_EVENT_CLASSES) | json_values},
+            optional={
+                "node": st.fixed_dictionaries({}, optional={"id": _ids, "path": _paths})
+                | json_values,
+                "card": st.fixed_dictionaries(
+                    {}, optional={"id": _ids, "stackId": _ids}
+                )
+                | json_values,
+                "objectType": st.just("files") | json_values,
+                "objectId": _ids,
+                "boardId": _ids,
+            },
+        )
+    )
+    return draw(
+        st.fixed_dictionaries(
+            {},
+            optional={
+                "event": st.just(body) | json_values,
+                "user": st.fixed_dictionaries(
+                    {}, optional={"uid": st.text() | json_values}
+                )
+                | json_values,
+                "time": st.integers() | st.floats() | json_values,
+            },
+        )
+    )
+
+
+_NOTE_CREATED = {
+    "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
+    "node": {"id": 1, "path": "/admin/files/Notes/foo.md"},
+}
+
+
 @pytest.mark.unit
-def test_missing_user_field_returns_none():
-    payload = {
-        "time": 1,
-        "event": {
-            "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
-            "node": {"id": 1, "path": "/admin/files/Notes/foo.md"},
-        },
-    }
+@given(webhook_payloads())
+@example({})
+@example({"time": 1, "event": _NOTE_CREATED})  # no user
+@example({"user": {"uid": "admin"}, "time": "not-a-number", "event": _NOTE_CREATED})
+@example({"user": {"uid": "admin"}, "time": float("inf"), "event": _NOTE_CREATED})
+@example({"user": {"uid": "a"}, "event": {**_NOTE_CREATED, "node": [None]}})
+def test_any_payload_yields_a_faithful_task_or_none(payload):
+    """Total: a malformed payload is ignored, never an exception. A task is only
+    ever built from a well-formed envelope, and carries exactly its values."""
+    task = extract_document_task(payload)
 
-    assert extract_document_task(payload) is None
-
-
-@pytest.mark.unit
-def test_empty_payload_returns_none():
-    assert extract_document_task({}) is None
-
-
-@pytest.mark.unit
-def test_non_numeric_time_field_returns_none():
-    """A malformed ``time`` field must not raise ValueError out of the parser."""
-    payload = {
-        "user": {"uid": "admin"},
-        "time": "not-a-number",
-        "event": {
-            "class": "OCP\\Files\\Events\\Node\\NodeCreatedEvent",
-            "node": {"id": 1, "path": "/admin/files/Notes/foo.md"},
-        },
-    }
-
-    assert extract_document_task(payload) is None
+    if task is None:
+        return
+    assert task.user_id == payload["user"]["uid"]
+    assert isinstance(task.user_id, str) and task.user_id
+    assert task.modified_at == int(payload.get("time", 0) or 0)
+    assert isinstance(task.doc_id, str)
+    assert task.operation in {"index", "delete"}
 
 
 @pytest.mark.unit

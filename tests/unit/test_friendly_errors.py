@@ -5,8 +5,8 @@ import pytest
 from httpx2 import HTTPStatusError
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
+from nextcloud_client.collectives import OCSError
 
-from nextcloud_mcp_server.client.collectives import OCSError
 from nextcloud_mcp_server.errors import NextcloudMCPServer, friendly_tool_error
 from nextcloud_mcp_server.server.collectives import _raise_collectives_error
 

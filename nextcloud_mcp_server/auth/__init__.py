@@ -1,6 +1,5 @@
 """OAuth authentication components for Nextcloud MCP server."""
 
-from .bearer_auth import BearerAuth
 from .client_registration import ensure_oauth_client, register_client
 from .context_helper import get_client_from_context
 from .scope_authorization import (
@@ -17,7 +16,6 @@ from .scope_authorization import (
 from .unified_verifier import UnifiedTokenVerifier
 
 __all__ = [
-    "BearerAuth",
     "UnifiedTokenVerifier",
     "register_client",
     "ensure_oauth_client",

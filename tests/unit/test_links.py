@@ -10,6 +10,12 @@ from unittest.mock import patch
 from urllib.parse import urlparse
 
 import pytest
+from nextcloud_client.models.deck import (
+    DeckAttachment,
+    DeckCard,
+    DeckCardSummary,
+    DeckStack,
+)
 
 from nextcloud_mcp_server.links import (
     _URL_BUILDERS,
@@ -21,10 +27,6 @@ from nextcloud_mcp_server.models.deck import (
     BoardOverviewResponse,
     CardOperationResponse,
     CreateCardResponse,
-    DeckAttachment,
-    DeckCard,
-    DeckCardSummary,
-    DeckStack,
     ListCardsResponse,
     StackOverview,
 )

@@ -149,7 +149,7 @@ public function impersonate(string $userId): JSONResponse {
 ### Option A: Admin Credentials (Current Implementation)
 ✅ **BasicAuth mode with admin account**:
 ```python
-client = NextcloudClient.from_env()  # Uses NEXTCLOUD_USERNAME/PASSWORD
+client = nextcloud_client_from_env()  # Uses NEXTCLOUD_USERNAME/PASSWORD
 # Can access all APIs with admin permissions
 ```
 
@@ -242,7 +242,7 @@ docker compose exec app php occ group:adduser <appropriate-group> mcp-sync
 **For Background Operations**:
 ```python
 # Use service account with BasicAuth
-from nextcloud_mcp_server.client import NextcloudClient
+from nextcloud_client import NextcloudClient
 
 # In background worker
 sync_client = NextcloudClient(

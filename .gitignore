@@ -34,3 +34,6 @@ tests/contract/provider_contracts/
 # Build artifacts: `uv build --wheel` output, produced by .github/actions/uv-env
 # and by anyone reproducing a CI job locally.
 dist/
+
+# Hypothesis example database (local replay of past failures)
+.hypothesis/

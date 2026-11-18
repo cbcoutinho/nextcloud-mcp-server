@@ -16,8 +16,7 @@ import gzip
 
 import httpx2
 import pytest
-
-from nextcloud_mcp_server.client.webdav import (
+from nextcloud_client.webdav import (
     OversizeDownload,
     WebDAVClient,
     _read_complete_body,
@@ -218,7 +217,7 @@ def test_make_request_still_carries_the_429_retry():
     between ``@retry_on_429`` and ``_make_request``, silently moving the retry
     onto the wrong function. Nothing else in the suite would have caught that.
     """
-    from nextcloud_mcp_server.client.base import BaseNextcloudClient
+    from nextcloud_client.base import BaseNextcloudClient
 
     # functools.wraps preserves __name__, so the wrapper is only detectable by
     # the closure the decorator builds around the original function.
@@ -252,7 +251,7 @@ async def test_stream_retries_on_429_then_succeeds(tmp_path, mocker):
     )
     client = _client_over(http)
     # Don't actually wait out the backoff.
-    mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep", new=mocker.AsyncMock())
+    mocker.patch("nextcloud_client.base.anyio.sleep", new=mocker.AsyncMock())
     dest = tmp_path / "out.pdf"
 
     written, _, _ = await client.stream_to_file("/f.pdf", dest)
@@ -270,7 +269,7 @@ async def test_stream_gives_up_after_repeated_429(tmp_path, mocker):
         transport=httpx2.MockTransport(handler), base_url="https://nc"
     )
     client = _client_over(http)
-    mocker.patch("nextcloud_mcp_server.client.base.anyio.sleep", new=mocker.AsyncMock())
+    mocker.patch("nextcloud_client.base.anyio.sleep", new=mocker.AsyncMock())
     dest = tmp_path / "out.pdf"
 
     with pytest.raises(httpx2.HTTPStatusError):

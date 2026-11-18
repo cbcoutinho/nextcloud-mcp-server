@@ -4,8 +4,8 @@ import logging
 
 import httpx2
 import pytest
+from nextcloud_client.news import NewsClient, NewsItemType
 
-from nextcloud_mcp_server.client.news import NewsClient, NewsItemType
 from tests.client.conftest import (
     create_mock_error_response,
     create_mock_news_feed_response,

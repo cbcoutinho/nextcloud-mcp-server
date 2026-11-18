@@ -161,6 +161,23 @@ class ReadTableResponse(BaseResponse):
     limit: Optional[int] = Field(None, description="Limit used for pagination")
 
 
+class ReadViewResponse(BaseResponse):
+    """Response model for reading the rows of a view."""
+
+    rows: list[TableRow] = Field(
+        description="View rows, filtered and sorted by the view"
+    )
+    view_id: int = Field(description="View ID")
+    offset: int | None = Field(None, description="Offset used for pagination")
+    limit: int | None = Field(None, description="Limit used for pagination")
+
+
+class GetRowResponse(BaseResponse):
+    """Response model for reading a single row."""
+
+    row: TableRow = Field(description="The requested row")
+
+
 class CreateRowResponse(IdResponse):
     """Response model for row creation."""
 

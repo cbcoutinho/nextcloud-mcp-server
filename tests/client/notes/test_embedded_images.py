@@ -5,9 +5,8 @@ from io import BytesIO
 
 import pytest
 from httpx2 import HTTPStatusError  # Import if needed for specific error checks
+from nextcloud_client import NextcloudClient
 from PIL import Image, ImageDraw
-
-from nextcloud_mcp_server.client import NextcloudClient
 
 # Note: nc_client fixture is session-scoped in conftest.py
 # Note: temporary_note fixture is function-scoped in conftest.py

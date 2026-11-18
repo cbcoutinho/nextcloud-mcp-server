@@ -19,8 +19,7 @@ from unittest.mock import AsyncMock
 
 import httpx2
 import pytest
-
-from nextcloud_mcp_server.client.webdav import FILE_ID_BATCH, WebDAVClient
+from nextcloud_client.webdav import FILE_ID_BATCH, WebDAVClient
 
 pytestmark = pytest.mark.unit
 
@@ -91,14 +90,12 @@ async def test_truncation_warns_and_increments_metric(mocker):
         return corpus[offset : offset + limit]
 
     client.search_files = AsyncMock(side_effect=fake)
-    metric = mocker.patch(
-        "nextcloud_mcp_server.client.webdav.document_scan_truncated_total"
-    )
+    metric = mocker.patch("nextcloud_client.instrumentation.hooks.on_scan_truncated")
 
     results = await client.search_files_all(scope="dir", page_size=5, max_results=5)
 
     assert len(results) == 5
-    metric.inc.assert_called_once()
+    metric.assert_called_once()
 
 
 async def test_offset_ignored_fallback_truncation_metric(mocker):
@@ -110,14 +107,12 @@ async def test_offset_ignored_fallback_truncation_metric(mocker):
         return corpus[:limit]  # offset ignored
 
     client.search_files = AsyncMock(side_effect=fake)
-    metric = mocker.patch(
-        "nextcloud_mcp_server.client.webdav.document_scan_truncated_total"
-    )
+    metric = mocker.patch("nextcloud_client.instrumentation.hooks.on_scan_truncated")
 
     results = await client.search_files_all(scope="dir", page_size=10, max_results=10)
 
     assert len(results) == 10
-    metric.inc.assert_called_once()
+    metric.assert_called_once()
 
 
 async def test_offset_page_exception_falls_back_to_single_fetch(mocker):

@@ -4,7 +4,11 @@ Every default must reproduce the monolith; the opt-in settings are validated
 in ``Settings.__post_init__``.
 """
 
+import json
+
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 import nextcloud_mcp_server.config as config_module
 from nextcloud_mcp_server.canonical import canonical_json
@@ -251,14 +255,35 @@ class TestProcrastinateConninfo:
             config_module.get_procrastinate_conninfo()
 
 
-class TestCanonicalJson:
-    def test_sorted_keys_no_whitespace(self):
-        assert canonical_json({"b": 1, "a": 2}) == b'{"a":2,"b":1}'
+#: JSON values canonical_json is fed: payload keys and ACL inputs. No floats,
+#: whose cross-language rendering is outside this function's contract.
+json_values = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.text(),
+    lambda inner: st.lists(inner) | st.dictionaries(st.text(), inner),
+    max_leaves=25,
+)
 
-    def test_non_ascii_preserved(self):
-        # ensure_ascii=False keeps the literal UTF-8 bytes.
+
+def _reorder(value):
+    """The same value with every dict's insertion order reversed."""
+    if isinstance(value, dict):
+        return {k: _reorder(value[k]) for k in reversed(list(value))}
+    if isinstance(value, list):
+        return [_reorder(v) for v in value]
+    return value
+
+
+class TestCanonicalJson:
+    def test_golden_bytes(self):
+        """The exact encoding other implementations must reproduce: sorted
+        keys, no whitespace, non-ASCII kept as literal UTF-8."""
+        assert canonical_json({"b": 1, "a": 2}) == b'{"a":2,"b":1}'
         assert canonical_json({"k": "café"}) == '{"k":"café"}'.encode("utf-8")
 
-    def test_stable_across_calls(self):
-        obj = {"tenant_id": "t", "doc_id": "d", "modified_at": "2026-01-01T00:00:00Z"}
-        assert canonical_json(obj) == canonical_json(dict(reversed(list(obj.items()))))
+    @given(json_values)
+    def test_lossless_and_independent_of_key_order(self, value):
+        encoded = canonical_json(value)
+
+        assert json.loads(encoded) == value
+        assert canonical_json(_reorder(value)) == encoded
+        assert canonical_json(json.loads(encoded)) == encoded

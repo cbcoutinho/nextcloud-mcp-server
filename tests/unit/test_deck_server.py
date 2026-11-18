@@ -2,8 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
-
-from nextcloud_mcp_server.models.deck import (
+from nextcloud_client.models.deck import (
     DeckACL,
     DeckAssignedUser,
     DeckBoard,
@@ -16,6 +15,7 @@ from nextcloud_mcp_server.models.deck import (
     DeckStack,
     DeckUser,
 )
+
 from nextcloud_mcp_server.server.deck import (
     _SHARE_TYPE_DECK,
     _append_archived_cards,
