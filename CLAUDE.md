@@ -38,7 +38,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   uv run ruff check
   uv run ruff format
   uv run ty check -- nextcloud_mcp_server packages/nextcloud-client/src
-  uv run pytest -m unit -q <tests related to the diff>  # never unscoped; GitHub CI runs the full suite
+  uv run pytest -m unit -q <tests related to the diff>  # skip if none — never unscoped; GitHub CI runs the full suite
   ```
 - **Ruff configuration** in pyproject.toml (extends select: ["I"] for import sorting)
 

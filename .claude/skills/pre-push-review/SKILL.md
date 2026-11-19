@@ -96,6 +96,8 @@ Pick the tests yourself from the diff — it's a judgment call, not a mechanical
 Start with test files the diff adds or modifies, then the tests that exercise the
 changed *behaviour*: the test module mirroring the changed file, and tests that call
 the changed functions/classes/tools (grep for the symbol names, not the module path).
+Search all of `tests/` — many unit-marked tests live outside `tests/unit/`
+(`tests/client/`, `tests/test_models.py`, …).
 Narrow with `-k` or `file::test` node IDs when only part of a large test file is
 relevant. Run them under the `unit` marker (smoke/integration need the Docker stack —
 leave them to CI):
@@ -308,7 +310,6 @@ If a category has zero applicable findings, omit it from the punch list. Don't p
 - format: ✅ / ❌
 - ty: ✅ / ❌
 - related unit tests: ✅ / ❌ (X passed, Y failed)
-- smoke (if run): ✅ / ❌
 
 [If any check failed, stop here and report. Otherwise continue.]
 
