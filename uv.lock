@@ -2438,7 +2438,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.28.2" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pillow", specifier = ">=10.3.0,<12.0.0" },
-    { name = "procrastinate", marker = "extra == 'postgres'", specifier = ">=3.11,<3.12" },
+    { name = "procrastinate", marker = "extra == 'postgres'", specifier = ">=3.12,<3.13" },
     { name = "prometheus-client", specifier = ">=0.21.0" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.11.4" },
@@ -2466,7 +2466,7 @@ dev = [
     { name = "nextcloud-mcp-server", extras = ["semantic"] },
     { name = "pact-python", specifier = ">=3.4.0" },
     { name = "playwright", specifier = ">=1.49.1" },
-    { name = "procrastinate", specifier = ">=3.11,<3.12" },
+    { name = "procrastinate", specifier = ">=3.12,<3.13" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pyroscope-io", specifier = ">=0.8.0" },
     { name = "pytest", specifier = ">=8.3.5" },
@@ -3202,7 +3202,7 @@ wheels = [
 
 [[package]]
 name = "procrastinate"
-version = "3.11.0"
+version = "3.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asgiref" },
@@ -3212,10 +3212,11 @@ dependencies = [
     { name = "psycopg", extra = ["pool"] },
     { name = "python-dateutil" },
     { name = "typing-extensions" },
+    { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/83/6b/38df28033726246eb475aac18b5da6d21bf1c95fb6435ce93a28f4df2f2d/procrastinate-3.11.0.tar.gz", hash = "sha256:ab1a374f842e38043ea229d874af107c90c767dabd2e837322328ab425525433", size = 91526, upload-time = "2026-11-11T08:13:58.653Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/c5/7b4a498fbfcca14218dbcfea8fce2890c56066d66fbe7e4c05543645a43e/procrastinate-3.12.0.tar.gz", hash = "sha256:7dc95c31fb5fa9e6d2d5d6dd9f94b54d069d7f788f6ac14f70d95348fd0ca2dc", size = 102118, upload-time = "2026-11-19T00:22:26.76Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a6/2f/dad6bb21373a321932441f47143e693488b0b0a7a9cd68130230daf2318f/procrastinate-3.11.0-py3-none-any.whl", hash = "sha256:97e143ad84c149ad115147b375d6478d871243e40d1db353deb4fe7a4619128d", size = 156933, upload-time = "2026-11-11T08:13:56.891Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/69/868e042ea1dd0ba0d9eeb8784fece05327b6079972c8ea660ee6f41a5ea5/procrastinate-3.12.0-py3-none-any.whl", hash = "sha256:14c28c3d24bf77d4a15dfcd8053c7db4a671011eefab337e666ce69290d33932", size = 193865, upload-time = "2026-11-19T00:22:25.318Z" },
 ]
 
 [[package]]

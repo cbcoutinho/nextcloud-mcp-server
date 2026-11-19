@@ -186,7 +186,7 @@ dev = [
     # its upgrade migrations, so a bump must also migrate existing DBs (3.11 adds
     # one). 3.12+ ships Alembic revisions (procrastinate PR 1584), adopt them then.
     # Upper bound is renovate-managed (one minor at a time).
-    "procrastinate>=3.11,<3.12",
+    "procrastinate>=3.12,<3.13",
     "psycopg[binary,pool]>=3.2",
     "pact-python>=3.4.0",
     # Linux-only dev/CI: exercise the profiling configured-path tests. The
@@ -245,7 +245,7 @@ documents = [
 ]
 postgres = [
     # Capped in lockstep with the dev group, see the note there.
-    "procrastinate>=3.11,<3.12",
+    "procrastinate>=3.12,<3.13",
     "psycopg[binary,pool]>=3.2",
 ]
 # Continuous profiling (Pyroscope push SDK). Kept OUT of the default deps: it's
