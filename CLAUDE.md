@@ -24,7 +24,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Code Quality
 - **Before committing or pushing, invoke the `pre-push-review` skill**:
-  - Runs `ruff check`, `ruff format --check`, `ty check`, and unit tests, then audits the
+  - Runs `ruff check`, `ruff format --check`, `ty check`, and only the unit tests related to the
+    diff (GitHub CI is authoritative for the full suite), then audits the
     branch diff against this repo's recurring PR-review patterns (mined from PRs #733–#750).
   - Output is a labelled punch list (🔴 blocking / 🟡 important / 🟢 nit). The main loop
     fixes; the skill reports.
@@ -37,7 +38,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   uv run ruff check
   uv run ruff format
   uv run ty check -- nextcloud_mcp_server packages/nextcloud-client/src
-  uv run pytest -m unit -n auto -q
+  uv run pytest -m unit -q <tests related to the diff>  # skip if none — never unscoped; GitHub CI runs the full suite
   ```
 - **Ruff configuration** in pyproject.toml (extends select: ["I"] for import sorting)
 
