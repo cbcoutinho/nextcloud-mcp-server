@@ -307,6 +307,7 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
     # whose collision stranded this one is still queued). Without per-job isolation the
     # FIRST such UniqueViolation aborted the whole sweep, so every later orphan stayed
     # in ``doing`` forever.
+    retried_ids: list[int] = []
     for job in stalled:
         job_id = job.id
         if (
@@ -315,6 +316,7 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
             continue
         try:
             await manager.retry_job_by_id_async(job_id=job_id, retry_at=retry_at)
+            retried_ids.append(job_id)
             reclaimed += 1
         except UniqueViolation as exc:
             if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
@@ -346,6 +348,24 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
         except Exception as exc:
             # Never let one bad job abort the sweep; the rest still get reclaimed.
             logger.error("ingest.reclaim_retry_failed job_id=%s: %s", job_id, exc)
+            errored += 1
+    # Since procrastinate 3.12, retry_job_v2 no longer raises the UniqueViolation
+    # handled above for a ``doing`` job: it closes the job as ``failed`` itself
+    # (migration procrastinate_0040). Nothing prunes ``procrastinate_jobs``, so drop those rows as
+    # the branch above did, or each dedup would count in the ``failed`` gauge
+    # for good. ``abort_requested`` is the other way a retry ends ``failed``;
+    # that's a genuine abort, so it stays.
+    if retried_ids:
+        try:
+            rows = await context.app.connector.execute_query_all_async(
+                "DELETE FROM procrastinate_jobs WHERE id = ANY(%(ids)s)"
+                " AND status = 'failed' AND NOT abort_requested RETURNING id",
+                ids=retried_ids,
+            )
+            reclaimed -= len(rows)
+            discarded += len(rows)
+        except Exception as exc:
+            logger.error("ingest.reclaim_discard_failed: %s", exc, exc_info=True)
             errored += 1
     if reclaimed or discarded or errored:
         logger.warning(
