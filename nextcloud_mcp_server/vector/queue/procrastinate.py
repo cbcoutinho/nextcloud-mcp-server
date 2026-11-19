@@ -307,6 +307,7 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
     # whose collision stranded this one is still queued). Without per-job isolation the
     # FIRST such UniqueViolation aborted the whole sweep, so every later orphan stayed
     # in ``doing`` forever.
+    retried_ids: list[int] = []
     for job in stalled:
         job_id = job.id
         if (
@@ -315,6 +316,7 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
             continue
         try:
             await manager.retry_job_by_id_async(job_id=job_id, retry_at=retry_at)
+            retried_ids.append(job_id)
             reclaimed += 1
         except UniqueViolation as exc:
             if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
@@ -346,6 +348,24 @@ async def reclaim_stalled_ingest_jobs(context: JobContext, timestamp: int) -> No
         except Exception as exc:
             # Never let one bad job abort the sweep; the rest still get reclaimed.
             logger.error("ingest.reclaim_retry_failed job_id=%s: %s", job_id, exc)
+            errored += 1
+    # Since procrastinate 3.12, retry_job_v2 no longer raises the UniqueViolation
+    # handled above for a ``doing`` job: it closes the job as ``failed`` itself
+    # (migration procrastinate_0040). Nothing prunes ``procrastinate_jobs``, so drop those rows as
+    # the branch above did, or each dedup would count in the ``failed`` gauge
+    # for good. ``abort_requested`` is the other way a retry ends ``failed``;
+    # that's a genuine abort, so it stays.
+    if retried_ids:
+        try:
+            rows = await context.app.connector.execute_query_all_async(
+                "DELETE FROM procrastinate_jobs WHERE id = ANY(%(ids)s)"
+                " AND status = 'failed' AND NOT abort_requested RETURNING id",
+                ids=retried_ids,
+            )
+            reclaimed -= len(rows)
+            discarded += len(rows)
+        except Exception as exc:
+            logger.error("ingest.reclaim_discard_failed: %s", exc, exc_info=True)
             errored += 1
     if reclaimed or discarded or errored:
         logger.warning(
@@ -590,61 +610,24 @@ def get_procrastinate_app() -> App:
     return _app
 
 
-async def _ingest_schema_present(app: App) -> bool:
-    row = await app.connector.execute_query_one_async(
-        "SELECT to_regclass('procrastinate_jobs') IS NOT NULL AS present"
+async def apply_ingest_queue_schema() -> None:
+    """Bring procrastinate's schema up to date (Deck #1494).
+
+    procrastinate's tables come from its own Alembic revisions, migrated after ours
+    (``migrations.upgrade_database``). This runs that migration through
+    ``RefreshTokenStorage.initialize()``, which holds the cross-pod advisory
+    lock, so pods starting together don't race it. The storage is closed again
+    so that a worker doesn't keep an idle connection open for it.
+    """
+    from nextcloud_mcp_server.auth.storage import (  # noqa: PLC0415
+        RefreshTokenStorage,
     )
-    return bool(row["present"])
 
-
-async def _apply_ingest_queue_schema_open(app: App) -> None:
-    """Apply the ingest-queue schema on an already-open connector (apply-if-absent).
-
-    procrastinate's ``schema.sql`` uses bare ``CREATE TYPE``/``CREATE TABLE``
-    (not ``IF NOT EXISTS``), so it errors if re-applied — it is meant to run
-    once on a fresh DB. We skip when ``procrastinate_jobs`` already exists;
-    *version* upgrades use procrastinate's own migration files (operator-run, a
-    lineage independent of the app's Alembic schema).
-
-    Safe to call concurrently across rolling-update pods without an advisory
-    lock: Postgres DDL is transactional and procrastinate applies the whole
-    schema in one transaction, so a pod that loses the race rolls back cleanly
-    and we treat the resulting error as benign once the schema is present.
-    """
-    if await _ingest_schema_present(app):
-        logger.debug("ingest queue schema already present; skipping apply")
-        return
+    storage = RefreshTokenStorage.from_env()
     try:
-        await app.schema_manager.apply_schema_async()
-        logger.info("Applied procrastinate ingest queue schema")
-    except Exception:
-        # The apply runs in a single transaction, so any failure rolls back
-        # atomically (no partial schema). The only benign case is losing the
-        # create race to another pod — confirmed by re-checking presence. Any
-        # other failure (network, auth, …) leaves the schema absent, so this
-        # branch re-raises it rather than masking it.
-        if await _ingest_schema_present(app):
-            logger.info("Ingest queue schema applied concurrently by another pod")
-            return
-        raise
-
-
-async def apply_ingest_queue_schema(
-    app: App | None = None, *, manage_connection: bool = True
-) -> None:
-    """Create procrastinate's tables on a fresh database (apply-if-absent).
-
-    By default opens a short-lived connection, so it is safe to call standalone
-    from the CLI ``db upgrade`` path. Pass ``manage_connection=False`` when the
-    caller already holds an open connector (the ``worker`` command opens the App
-    once and reuses it) to avoid a redundant open/close cycle.
-    """
-    app = app or get_procrastinate_app()
-    if not manage_connection:
-        await _apply_ingest_queue_schema_open(app)
-        return
-    async with app.open_async():
-        await _apply_ingest_queue_schema_open(app)
+        await storage.initialize()
+    finally:
+        await storage.close()
 
 
 # Job-status keys procrastinate flattens into each list_queues row (alongside
@@ -749,15 +732,6 @@ class ProcrastinateTaskProducer:
             # re-evaluates freshness (placeholder/Qdrant modified_at only
             # advances after a successful index), so this is not a lost update.
             logger.debug("ingest.already_enqueued key=%s", key)
-
-    async def ensure_schema(self) -> None:
-        """Apply the ingest-queue schema on the producer's already-open pool.
-
-        Lets the API lifespan provision the schema without a second open/close
-        cycle (it already opened the connector to build this producer) — the
-        ``worker`` command shares the same single-open pattern.
-        """
-        await _apply_ingest_queue_schema_open(self._app)
 
     async def job_counts(self) -> dict[str, int]:
         """Ingest job counts by status (for the vector-sync status surface)."""

@@ -68,6 +68,12 @@ def get_database_url() -> str:
     return url
 
 
+def _version_table() -> str:
+    # migrations.upgrade_database runs procrastinate's revisions through this
+    # env.py with their own version table; ours stays ``alembic_version``.
+    return config.get_main_option("version_table") or "alembic_version"
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
 
@@ -86,6 +92,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        version_table=_version_table(),
     )
 
     with context.begin_transaction():
@@ -94,7 +101,11 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection: Connection) -> None:
     """Execute migrations within a database connection."""
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        version_table=_version_table(),
+    )
 
     with context.begin_transaction():
         context.run_migrations()

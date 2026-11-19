@@ -24,10 +24,10 @@ import pytest
 from procrastinate import JobContext
 
 import nextcloud_mcp_server.vector.queue.procrastinate as pq
+from nextcloud_mcp_server.migrations import upgrade_database
 from nextcloud_mcp_server.vector.queue.procrastinate import (
     INGEST_QUEUE_NAME,
     ProcrastinateTaskProducer,
-    apply_ingest_queue_schema,
     build_app_for_url,
     get_ingest_job_counts,
     reclaim_stalled_ingest_jobs,
@@ -70,7 +70,8 @@ def postgres_url() -> str:
 
 @pytest.fixture
 async def fresh_app(postgres_url: str):
-    """Drop+recreate the public schema, then apply procrastinate's schema."""
+    """Drop+recreate the public schema, then migrate it (procrastinate included)."""
+    from anyio import to_thread
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -84,9 +85,8 @@ async def fresh_app(postgres_url: str):
 
     # get_procrastinate_conninfo passes the URL through verbatim (only strips
     # the +psycopg driver tag), so there is no settings/ssl lookup to pin.
-    app = build_app_for_url(postgres_url)
-    await apply_ingest_queue_schema(app)
-    return app
+    await to_thread.run_sync(upgrade_database, postgres_url)
+    return build_app_for_url(postgres_url)
 
 
 def _task(doc_id: str, doc_type: str = "note") -> DocumentTask:
@@ -100,7 +100,7 @@ def _task(doc_id: str, doc_type: str = "note") -> DocumentTask:
     )
 
 
-async def test_ingest_queue_end_to_end(fresh_app):
+async def test_ingest_queue_end_to_end(fresh_app, postgres_url):
     """One self-contained smoke against real Postgres.
 
     Kept as a single test so each assertion runs against the same freshly-applied
@@ -108,8 +108,10 @@ async def test_ingest_queue_end_to_end(fresh_app):
     SCHEMA`` that confuses pooled psycopg connections' cached prepared statements
     (a test-harness artifact, not a production path: prod never drops the schema).
     """
-    # 1. Schema is present and a second apply is a no-op (idempotent).
-    await apply_ingest_queue_schema(fresh_app)
+    # 1. Schema is present and a second migration is a no-op (idempotent).
+    from anyio import to_thread
+
+    await to_thread.run_sync(upgrade_database, postgres_url)
 
     async with fresh_app.open_async():
         present = await fresh_app.connector.execute_query_one_async(
@@ -289,14 +291,13 @@ def _fetch_job_skips_null_lock(postgres_url: str) -> bool:
 async def test_alembic_011_upgrades_existing_ingest_queue(fresh_app, postgres_url):
     """Revision 011 brings an existing queue's fetch function up to 3.11.
 
-    ``fresh_app`` applies 3.11's ``schema.sql``, so downgrading to 010 first puts
-    the database in the state of a queue created on 3.3-3.10.
+    Downgrading to 010 first puts the fetch function in the state of a queue
+    created on 3.3-3.10.
     """
     from anyio import to_thread
 
-    from nextcloud_mcp_server.migrations import downgrade_database, upgrade_database
+    from nextcloud_mcp_server.migrations import downgrade_database
 
-    await to_thread.run_sync(upgrade_database, postgres_url, "head")
     assert _fetch_job_skips_null_lock(postgres_url)
 
     await to_thread.run_sync(downgrade_database, postgres_url, "010")
@@ -316,7 +317,11 @@ async def test_alembic_011_upgrades_existing_ingest_queue(fresh_app, postgres_ur
 
 
 async def test_alembic_011_skips_postgres_without_ingest_queue(postgres_url):
-    """With no procrastinate schema yet (fresh install), 011 is a no-op."""
+    """With no procrastinate schema yet (fresh install), 011 is a no-op.
+
+    Upgrading to an explicit revision migrates only our own chain, so the queue
+    stays absent.
+    """
     from alembic.script import ScriptDirectory
     from anyio import to_thread
     from sqlalchemy import text
@@ -325,7 +330,6 @@ async def test_alembic_011_skips_postgres_without_ingest_queue(postgres_url):
     from nextcloud_mcp_server.migrations import (
         get_alembic_config,
         get_current_revision,
-        upgrade_database,
     )
 
     engine = create_async_engine(postgres_url, future=True)
@@ -336,7 +340,7 @@ async def test_alembic_011_skips_postgres_without_ingest_queue(postgres_url):
     finally:
         await engine.dispose()
 
-    await to_thread.run_sync(upgrade_database, postgres_url, "head")
+    await to_thread.run_sync(upgrade_database, postgres_url, "011")
 
     # The chain ran through 011 (skipping its SQL) to the current head.
     head = ScriptDirectory.from_config(
@@ -354,3 +358,114 @@ async def test_alembic_011_skips_postgres_without_ingest_queue(postgres_url):
     finally:
         await engine.dispose()
     assert absent
+
+
+def _queue_versions(postgres_url: str) -> tuple[list[str], list[str], bool]:
+    """Our revisions, procrastinate's revisions, and whether 3.12's lock_mode exists."""
+    from sqlalchemy import create_engine, text
+
+    from nextcloud_mcp_server.migrations import PROCRASTINATE_VERSION_TABLE
+
+    engine = create_engine(postgres_url)
+    try:
+        with engine.connect() as conn:
+            ours = list(conn.scalars(text("SELECT version_num FROM alembic_version")))
+            theirs = list(
+                conn.scalars(
+                    text(f"SELECT version_num FROM {PROCRASTINATE_VERSION_TABLE}")
+                )
+            )
+            lock_mode = conn.scalar(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+                    " WHERE table_name = 'procrastinate_jobs'"
+                    " AND column_name = 'lock_mode')"
+                )
+            )
+    finally:
+        engine.dispose()
+    return ours, theirs, bool(lock_mode)
+
+
+async def test_fresh_database_gets_procrastinate_pre_schema(fresh_app, postgres_url):
+    """A fresh database is migrated up to the pinned ``pre`` revision only.
+
+    procrastinate's revisions live in their own version table, so
+    ``alembic_version`` holds just our head, as releases before the adoption expect.
+    """
+    from alembic.script import ScriptDirectory
+
+    from nextcloud_mcp_server.migrations import (
+        PROCRASTINATE_REVISION,
+        get_alembic_config,
+    )
+
+    head = ScriptDirectory.from_config(
+        get_alembic_config(postgres_url)
+    ).get_current_head()
+    assert _queue_versions(postgres_url) == ([head], [PROCRASTINATE_REVISION], True)
+
+
+async def test_existing_ingest_queue_is_stamped_then_upgraded(postgres_url):
+    """A queue created before the adoption is stamped, then gets 3.12's ``pre`` revisions.
+
+    Such a queue has a procrastinate <= 3.10 schema plus 03.11.00_01 (our 011),
+    i.e. ``procrastinate_0038``, and no procrastinate version table. Also checks
+    that code from before the adoption can still run its own upgrade afterwards
+    (a rollback), since our ``alembic_version`` holds only revisions it knows.
+    """
+    from anyio import to_thread
+    from sqlalchemy import create_engine, text
+
+    from alembic import command
+    from nextcloud_mcp_server.migrations import (
+        PROCRASTINATE_ADOPTED_AT,
+        PROCRASTINATE_REVISION,
+        PROCRASTINATE_VERSION_TABLE,
+        _procrastinate_versions,
+        get_alembic_config,
+    )
+
+    engine = create_engine(postgres_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+    finally:
+        engine.dispose()
+
+    def build_pre_adoption_queue() -> None:
+        procrastinate = get_alembic_config(postgres_url)
+        versions = _procrastinate_versions(postgres_url)
+        assert versions is not None
+        procrastinate.set_main_option("version_locations", versions)
+        procrastinate.set_main_option("version_table", PROCRASTINATE_VERSION_TABLE)
+        command.upgrade(procrastinate, PROCRASTINATE_ADOPTED_AT)
+        drop = create_engine(postgres_url)
+        try:
+            with drop.begin() as conn:
+                conn.execute(text(f"DROP TABLE {PROCRASTINATE_VERSION_TABLE}"))
+        finally:
+            drop.dispose()
+        command.upgrade(get_alembic_config(postgres_url), "head")  # ours only
+
+    await to_thread.run_sync(build_pre_adoption_queue)
+
+    await to_thread.run_sync(upgrade_database, postgres_url)
+    ours, theirs, lock_mode = _queue_versions(postgres_url)
+    assert theirs == [PROCRASTINATE_REVISION]
+    assert lock_mode
+
+    # Pre-adoption code: our chain only, against alembic_version only.
+    await to_thread.run_sync(command.upgrade, get_alembic_config(postgres_url), "head")
+    assert _queue_versions(postgres_url) == (ours, theirs, lock_mode)
+
+    # 3.12 defers and fetches on the migrated schema.
+    app = build_app_for_url(postgres_url)
+    async with app.open_async():
+        await ProcrastinateTaskProducer(app).send(_task("1"))
+        job = await app.connector.execute_query_one_async(
+            "SELECT id FROM procrastinate_fetch_job_v2(%(q)s, NULL)",
+            q=[INGEST_QUEUE_NAME],
+        )
+        assert job["id"] is not None
