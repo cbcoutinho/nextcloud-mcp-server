@@ -85,15 +85,32 @@ run concurrently:
 ```bash
 uv run ruff check                                                    # lint
 uv run ruff format --check                                           # formatting
-uv run ty check -- nextcloud_mcp_server                              # types
-uv run pytest -m unit -n auto -x --no-header -q                      # unit tests (marker, not dir)
+uv run ty check -- nextcloud_mcp_server packages/nextcloud-client/src  # types
 ```
 
-If the diff touches `nextcloud_mcp_server/server/` or `tests/server/`, also run:
+**Run only the tests related to the change — never the whole suite.** GitHub CI is
+the authoritative runner for the full unit/smoke/integration suites; locally we only
+want fast feedback on what the diff touches.
+
+Pick the tests yourself from the diff — it's a judgment call, not a mechanical rule.
+Start with test files the diff adds or modifies, then the tests that exercise the
+changed *behaviour*: the test module mirroring the changed file, and tests that call
+the changed functions/classes/tools (grep for the symbol names, not the module path).
+Narrow with `-k` or `file::test` node IDs when only part of a large test file is
+relevant. Run them under the `unit` marker (smoke/integration need the Docker stack —
+leave them to CI):
 
 ```bash
-uv run pytest -m smoke -x --no-header -q
+uv run pytest -m unit -x --no-header -q <selected files or node IDs>
 ```
+
+- **Nothing relevant found** → do **not** invoke pytest (no path args = whole suite).
+  Report "no related unit tests; relying on CI", and consider an F4 finding if the
+  diff adds behaviour without tests.
+- **Change is broad** (`tests/conftest.py`, pytest config, a widely used base class)
+  → run the changed tests plus a representative handful; don't widen to the suite.
+  Say in the report which tests you chose and that CI covers the rest.
+- Do **not** run `pytest -m unit` unscoped, `-m smoke`, or integration lanes here.
 
 **If any automated check fails: stop and report.** Don't run the checklist on top of a
 broken build — fixing the failures may eliminate findings or change the diff.
@@ -290,7 +307,7 @@ If a category has zero applicable findings, omit it from the punch list. Don't p
 - ruff: ✅ / ❌
 - format: ✅ / ❌
 - ty: ✅ / ❌
-- unit tests: ✅ / ❌ (X passed, Y failed)
+- related unit tests: ✅ / ❌ (X passed, Y failed)
 - smoke (if run): ✅ / ❌
 
 [If any check failed, stop here and report. Otherwise continue.]
@@ -350,7 +367,7 @@ If a category has zero applicable findings, omit it from the punch list. Don't p
 - ruff: ✅
 - format: ✅
 - ty: ✅
-- unit tests: ✅ (412 passed)
+- related unit tests: ✅ (412 passed)
 
 ## Findings
 
