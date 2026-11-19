@@ -1735,6 +1735,7 @@ async def test_create_event_threads_organizer_into_the_put(mocker):
         return_value=mocker.Mock(url="https://x/e.ics")
     )
     mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_validate_calendar_name", mocker.AsyncMock())
     mocker.patch.object(client, "_get_calendar", return_value=calendar)
     mocker.patch.object(client, "_object_etag", mocker.AsyncMock(return_value='"e"'))
     resolve = mocker.patch.object(
@@ -1758,6 +1759,7 @@ async def test_create_event_without_attendees_skips_organizer_lookup(mocker):
         return_value=mocker.Mock(url="https://x/e.ics")
     )
     mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_validate_calendar_name", mocker.AsyncMock())
     mocker.patch.object(client, "_get_calendar", return_value=calendar)
     mocker.patch.object(client, "_object_etag", mocker.AsyncMock(return_value='"e"'))
     resolve = mocker.patch.object(client, "_organizer_address", mocker.AsyncMock())
@@ -1793,6 +1795,7 @@ async def test_update_event_resolves_organizer_for_legacy_attendees(mocker):
     event = mocker.Mock(data=stored, url="https://x/e.ics")
     event.load = mocker.Mock(return_value=None)
     mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_validate_calendar_name", mocker.AsyncMock())
     mocker.patch.object(client, "_get_calendar", return_value=mocker.Mock())
     mocker.patch.object(
         client, "_async_object_by_uid", mocker.AsyncMock(return_value=event)
@@ -1916,6 +1919,7 @@ async def test_get_calendar_events_filters_before_limit(mocker):
 
     client = CalendarClient("https://cloud.example.org", "alice")
     mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_validate_calendar_name", mocker.AsyncMock())
     mocker.patch.object(client, "_get_calendar", return_value=mocker.Mock())
     mocker.patch.object(
         client, "_search_events_by_date", mocker.AsyncMock(return_value=objs)

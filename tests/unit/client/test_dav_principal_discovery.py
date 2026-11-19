@@ -450,6 +450,9 @@ async def test_caldav_delete_calendar_uses_discovered_home_url(mocker):
 
 async def test_caldav_event_operations_use_discovered_home_url(mocker):
     client, dav_client = _calendar_client_with_principal(mocker, "alice_1234")
+    mocker.patch.object(
+        client, "list_calendars", mocker.AsyncMock(return_value=[{"name": "team"}])
+    )
     fake_calendar = mocker.Mock()
     fake_calendar.save_event = mocker.AsyncMock(
         # ``etag`` mirrors the real caldav object, whose ``etag`` property is
