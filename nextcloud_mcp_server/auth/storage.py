@@ -638,11 +638,18 @@ class RefreshTokenStorage:
             yield
             return
 
+        # A migration's CREATE INDEX CONCURRENTLY (procrastinate_0041) waits for
+        # every open transaction in the database to end. So neither the holder
+        # nor the waiters may sit in one: AUTOCOMMIT (the lock is session-level),
+        # and waiters poll pg_try_advisory_lock instead of blocking inside a
+        # pg_advisory_lock statement, which the index build would wait on.
         async with self.engine.connect() as conn:
-            await conn.execute(
-                sa.text("SELECT pg_advisory_lock(:lock_id)"),
+            await conn.execution_options(isolation_level="AUTOCOMMIT")
+            while not await conn.scalar(
+                sa.text("SELECT pg_try_advisory_lock(:lock_id)"),
                 {"lock_id": _MIGRATION_LOCK_ID},
-            )
+            ):
+                await anyio.sleep(0.5)
             logger.debug(
                 "Acquired Postgres advisory migration lock %s", _MIGRATION_LOCK_ID
             )

@@ -251,14 +251,15 @@ async def build_transport(settings: Settings) -> IngestTransport:
     """Build the ingest transport for the configured ``INGEST_QUEUE`` backend.
 
     - ``postgres`` → :class:`DistributedTransport`. Reuses :func:`build_producer`
-      (which opens the connector pool) and applies procrastinate's schema once on
-      that same open pool before any scanner can defer — a single open/close
-      cycle, matching the ``worker`` command.
+      (which opens the connector pool) and brings procrastinate's schema up to
+      date before any scanner can defer, as the ``worker`` command does.
     - ``memory`` (SQLite/dev default) → :class:`LocalTransport`.
     """
     if settings.ingest_queue == "postgres":
+        from .procrastinate import apply_ingest_queue_schema  # noqa: PLC0415
+
         producer = await build_producer(settings)
-        await producer.ensure_schema()
+        await apply_ingest_queue_schema()
         logger.info("Ingest queue: postgres (procrastinate); worker drains it")
         return DistributedTransport(producer)
 

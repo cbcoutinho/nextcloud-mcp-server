@@ -473,10 +473,8 @@ async def _run_ingest_worker(
         )
 
     async def _loop() -> None:
-        # Open the connector pool once and reuse it for both the defensive
-        # schema apply (the always-on API pod is the authoritative applier) and
-        # the worker loop — manage_connection=False avoids a redundant
-        # open/close cycle on startup.
+        # Migrate the queue schema defensively (the always-on API pod also
+        # does) once the pool is open, then run the worker loop on that pool.
         #
         # Safe to re-enter on the retry below: procrastinate's AwaitableContext
         # __aexit__ calls connector.close_async(), which sets _async_pool=None,
@@ -489,7 +487,7 @@ async def _run_ingest_worker(
         # not run when __aenter__ raises, so _async_pool would still be set.
         async with app.open_async():
             _start_profiling()
-            await apply_ingest_queue_schema(app, manage_connection=False)
+            await apply_ingest_queue_schema()
             # Structured log (not click.echo) so it lands in the JSON / OTel
             # pipeline like every other startup message.
             logger.info(
@@ -772,7 +770,8 @@ def _db_target_options(fn):
     "-r",
     default="head",
     show_default=True,
-    help="Target revision (default: head for latest)",
+    help="Target revision (default: head for latest; on Postgres, head also "
+    "migrates procrastinate's ingest-queue schema)",
 )
 def upgrade(database_url: str | None, database_path: str | None, revision: str):
     """Upgrade database to a specific revision.
@@ -792,28 +791,10 @@ def upgrade(database_url: str | None, database_path: str | None, revision: str):
     _warn_if_ephemeral(url)
     try:
         click.echo(f"Upgrading database to revision: {revision}")
+        # On Postgres this includes procrastinate's ingest-queue schema (its own
+        # Alembic revisions), so a one-shot init job provisions everything the api
+        # and worker roles need (Deck #183, #1494).
         upgrade_database(url, revision)
-        # Apply procrastinate's ingest-queue schema on Postgres so a one-shot
-        # migration/init job provisions everything the api + worker roles need
-        # (Deck #183). Idempotent + lazy import (Postgres-only extra).
-        from nextcloud_mcp_server.config import is_sqlite_url  # noqa: PLC0415
-
-        # The ingest queue only exists for semantic ingest, and its module
-        # imports the vector stack, so without the extra there is nothing to
-        # provision (Postgres can still back token storage alone).
-        postgres = not is_sqlite_url(url)
-        if postgres and not semantic_installed():
-            click.echo("Ingest queue schema skipped (semantic extra not installed)")
-        elif postgres:
-            import anyio  # noqa: PLC0415
-
-            from nextcloud_mcp_server.vector.queue.procrastinate import (  # noqa: PLC0415
-                apply_ingest_queue_schema,
-                build_app_for_url,
-            )
-
-            anyio.run(apply_ingest_queue_schema, build_app_for_url(url))
-            click.echo(click.style("✓ Ingest queue schema applied", fg="green"))
         click.echo(click.style("✓ Database upgraded successfully", fg="green"))
     except Exception as e:
         click.echo(click.style(f"✗ Upgrade failed: {e}", fg="red"), err=True)

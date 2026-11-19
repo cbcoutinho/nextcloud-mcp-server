@@ -11,6 +11,7 @@ back to :func:`nextcloud_mcp_server.config.get_database_url`.
 
 import logging
 import threading
+from importlib import resources
 from pathlib import Path
 
 from alembic.config import Config
@@ -18,7 +19,11 @@ from sqlalchemy import create_engine, inspect, text
 
 import nextcloud_mcp_server.alembic as alembic_package
 from alembic import command
-from nextcloud_mcp_server.config import get_database_url, mask_db_password
+from nextcloud_mcp_server.config import (
+    get_database_url,
+    is_sqlite_url,
+    mask_db_password,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +47,38 @@ logger = logging.getLogger(__name__)
 # under different event loops, and the lock is only ever held inside the worker
 # thread — never on an event loop.
 _ALEMBIC_COMMAND_LOCK = threading.Lock()
+
+# procrastinate's schema is managed by the Alembic revisions it ships
+# (procrastinate[alembic], Deck #1494). They are tracked in their own version
+# table, so ``alembic_version`` keeps holding only our revisions: releases that
+# predate this, still running during a rolling update or after a rollback, only
+# find revisions they know there.
+PROCRASTINATE_VERSION_TABLE = "alembic_version_procrastinate"
+
+# Upgrades stop at the last ``pre`` revision of the installed release: ``post``
+# revisions drop functions the previous release still calls, and we migrate at
+# startup while old pods may still be serving. On the next procrastinate bump,
+# move this to the new release's last ``pre``; that also applies this release's
+# ``post`` revisions, safe by then because every pod runs this release.
+PROCRASTINATE_REVISION = "procrastinate_0041"  # 03.12.00_03 pre (3.12's last pre)
+
+# Where an ingest queue created before this adoption stands: a
+# procrastinate 3.8-3.10 ``schema.sql`` plus 03.11.00_01, which our revision 011
+# inlined.
+PROCRASTINATE_ADOPTED_AT = "procrastinate_0038"
+
+
+def _procrastinate_versions(url: str) -> str | None:
+    """procrastinate's Alembic revisions, on Postgres with procrastinate installed.
+
+    The ingest queue is Postgres-only, so SQLite never sees them.
+    """
+    if is_sqlite_url(url):
+        return None
+    try:
+        return str(resources.files("procrastinate.contrib.alembic") / "versions")
+    except ModuleNotFoundError:  # optional: the postgres/semantic extras bring it
+        return None
 
 
 def _coerce_url(database_url: str | Path | None) -> str:
@@ -133,12 +170,46 @@ def get_alembic_config(database_url: str | Path | None = None) -> Config:
 def upgrade_database(
     database_url: str | Path | None = None, revision: str = "head"
 ) -> None:
-    """Upgrade database to a specific revision (default: latest)."""
+    """Upgrade database to a specific revision (default: latest).
+
+    Upgrading to ``head`` on Postgres with procrastinate installed then also
+    migrates procrastinate's schema to :data:`PROCRASTINATE_REVISION`.
+    """
     config = get_alembic_config(database_url)
+    url = _coerce_url(database_url)
+    procrastinate_versions = _procrastinate_versions(url)
     logger.info("Upgrading database to revision: %s", revision)
     with _ALEMBIC_COMMAND_LOCK:
         command.upgrade(config, revision)
+        if revision == "head" and procrastinate_versions:
+            # Same env.py, but only procrastinate's revisions, in their own table.
+            config.set_main_option("version_locations", procrastinate_versions)
+            config.set_main_option("version_table", PROCRASTINATE_VERSION_TABLE)
+            if _untracked_ingest_queue(url):
+                logger.info(
+                    "Stamping existing ingest queue at %s", PROCRASTINATE_ADOPTED_AT
+                )
+                command.stamp(config, PROCRASTINATE_ADOPTED_AT)
+            command.upgrade(config, PROCRASTINATE_REVISION)
     logger.info("Database upgrade completed successfully")
+
+
+def _untracked_ingest_queue(url: str) -> bool:
+    """True for an ingest queue whose schema procrastinate's revisions don't track yet."""
+    engine = create_engine(_to_sync_url(url))
+    try:
+        with engine.connect() as conn:
+            return bool(
+                conn.execute(
+                    text(
+                        "SELECT to_regclass('procrastinate_jobs') IS NOT NULL"
+                        " AND to_regclass(:table) IS NULL"
+                    ),
+                    {"table": PROCRASTINATE_VERSION_TABLE},
+                ).scalar()
+            )
+    finally:
+        engine.dispose()
 
 
 def downgrade_database(
