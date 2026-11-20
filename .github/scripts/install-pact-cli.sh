@@ -16,8 +16,8 @@ set -euo pipefail
 #   curl -fsSL https://github.com/pact-foundation/pact-cli/releases/download/<ver>/pact-installer.sh | sha256sum
 
 # renovate: datasource=github-release-attachments depName=pact-foundation/pact-cli
-PACT_CLI_VERSION="v0.10.9"
-PACT_INSTALLER_SHA256="42f80e875721761abfa235ed840ff1c2010cacfc8a8193c9284a65e2632c25e1"
+PACT_CLI_VERSION="v0.10.10"
+PACT_INSTALLER_SHA256="621e11e1874eeef9c9772445d71be548e3ae40997cfcafe7a26cd294b203a7c5"
 
 installer="$(mktemp)"
 trap 'rm -f "$installer"' EXIT
