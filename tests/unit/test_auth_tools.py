@@ -255,6 +255,144 @@ def test_all_supported_scopes():
     assert "semantic.read" in ALL_SUPPORTED_SCOPES
 
 
+# ── Revoked app passwords ──
+
+_GRANT = {
+    "app_password": "pw",
+    "encrypted_password": b"ciphertext",
+    "username": "alice",
+    "scopes": None,
+}
+
+
+def _storage_with_grant(mocker, check: str, *, after_delete=None):
+    """A stored grant for alice that Nextcloud judges as ``check``.
+
+    ``after_delete`` is what a second read returns: ``None`` when the
+    conditional delete removed the grant, another grant when one was stored
+    while the old one was being checked.
+    """
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.extract_user_id_from_token",
+        AsyncMock(return_value="alice"),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_settings",
+        return_value=MagicMock(nextcloud_host="https://nc", nextcloud_browser_url=None),
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_nextcloud_ssl_verify",
+        return_value=False,
+    )
+    storage = MagicMock()
+    storage.get_login_flow_session = AsyncMock(return_value=None)
+    storage.store_login_flow_session = AsyncMock()
+    storage.get_app_password_with_scopes = AsyncMock(
+        side_effect=[dict(_GRANT), after_delete]
+    )
+    storage.check_app_password = AsyncMock(return_value=check)
+    storage.delete_app_password = AsyncMock(return_value=after_delete is None)
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.get_shared_storage",
+        AsyncMock(return_value=storage),
+    )
+    return storage
+
+
+def _login_flow(mocker):
+    flow_client = AsyncMock()
+    flow_client.initiate = AsyncMock(
+        return_value=MagicMock(
+            poll_token="tok",
+            poll_endpoint="https://nc/login/v2/poll",
+            login_url="https://nc/login/v2/flow",
+        )
+    )
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.LoginFlowV2Client",
+        return_value=flow_client,
+    )
+    # auth_tools imports the name, so it is patched where it is looked up.
+    mocker.patch(
+        "nextcloud_mcp_server.server.auth_tools.present_login_url",
+        AsyncMock(return_value="message_only"),
+    )
+
+
+async def test_check_status_reports_rejected_password_as_revoked(mocker):
+    """A password revoked in Nextcloud must not read as provisioned."""
+    check = _capture_registered_tools()["nc_auth_check_status"]
+    storage = _storage_with_grant(mocker, "rejected")
+
+    response = await check(MagicMock())
+
+    assert response.status == "revoked"
+    assert "nc_auth_provision_access" in response.message
+    storage.check_app_password.assert_awaited_once_with(
+        "https://nc", _GRANT, timeout=5.0
+    )
+
+
+async def test_check_status_never_deletes(mocker):
+    """nc_auth_check_status is annotated read-only (ADR-017)."""
+    check = _capture_registered_tools()["nc_auth_check_status"]
+    storage = _storage_with_grant(mocker, "rejected")
+
+    await check(MagicMock())
+
+    storage.delete_app_password.assert_not_awaited()
+
+
+@pytest.mark.parametrize("outcome", ["valid", "unknown"])
+async def test_check_status_keeps_password_unless_rejected(mocker, outcome):
+    check = _capture_registered_tools()["nc_auth_check_status"]
+    _storage_with_grant(mocker, outcome)
+
+    response = await check(MagicMock())
+
+    assert response.status == "provisioned"
+
+
+async def test_provision_removes_rejected_password_and_starts_flow(mocker):
+    """Without this a revoked password leaves the user with no login URL at all."""
+    provision = _capture_registered_tools()["nc_auth_provision_access"]
+    storage = _storage_with_grant(mocker, "rejected", after_delete=None)
+    _login_flow(mocker)
+
+    response = await provision(MagicMock())
+
+    storage.delete_app_password.assert_awaited_once_with(
+        "alice", encrypted_password=b"ciphertext"
+    )
+    assert response.status != "already_provisioned"
+    assert response.login_url == "https://nc/login/v2/flow"
+    storage.store_login_flow_session.assert_awaited_once()
+
+
+async def test_provision_reports_password_stored_during_the_check(mocker):
+    """A grant stored while the old one was checked survives and is reported."""
+    provision = _capture_registered_tools()["nc_auth_provision_access"]
+    fresh = {**_GRANT, "encrypted_password": b"other", "scopes": ["notes.read"]}
+    storage = _storage_with_grant(mocker, "rejected", after_delete=fresh)
+
+    response = await provision(MagicMock())
+
+    assert response.status == "already_provisioned"
+    assert response.requested_scopes == ["notes.read"]
+    storage.store_login_flow_session.assert_not_awaited()
+
+
+@pytest.mark.parametrize("outcome", ["valid", "unknown"])
+async def test_provision_keeps_password_unless_rejected(mocker, outcome):
+    provision = _capture_registered_tools()["nc_auth_provision_access"]
+    storage = _storage_with_grant(mocker, outcome)
+
+    response = await provision(MagicMock())
+
+    assert response.status == "already_provisioned"
+    storage.delete_app_password.assert_not_awaited()
+
+
 # ── Provisioning defaults ──
 
 

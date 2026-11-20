@@ -11,6 +11,14 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.utilities.context_injection import find_context_parameter
 
+# invalidate_scope_cache is re-exported: callers import it from here.
+from nextcloud_mcp_server.auth.scope_cache import (
+    _SCOPE_CACHE_TTL,
+    _scope_cache,
+)
+from nextcloud_mcp_server.auth.scope_cache import (
+    invalidate_scope_cache as invalidate_scope_cache,
+)
 from nextcloud_mcp_server.auth.storage import get_shared_storage
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.request_context import current_context
@@ -656,15 +664,6 @@ def discover_all_scopes(mcp) -> list[str]:
 
 
 # ── Login Flow v2 helpers ────────────────────────────────────────────────
-
-# Scope cache: user_id → (expires_at, scopes)
-_scope_cache: dict[str, tuple[float, list[str] | str | None]] = {}
-_SCOPE_CACHE_TTL = 300  # 5 minutes
-
-
-def invalidate_scope_cache(user_id: str) -> None:
-    """Remove cached scopes for a user (call when scopes are updated)."""
-    _scope_cache.pop(user_id, None)
 
 
 async def _get_stored_scopes(user_id: str) -> list[str] | str | None:
