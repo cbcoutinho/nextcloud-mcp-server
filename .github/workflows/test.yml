@@ -96,9 +96,12 @@ jobs:
         run: |
           wheel=$(ls dist/nextcloud_mcp_server-*.whl)
           req="nextcloud-mcp-server${EXTRA:+[$EXTRA]} @ ./$wheel"
-          # --find-links: the server pins the nextcloud-client of the same
-          # version, which is built alongside it and may not be on PyPI yet.
-          run() { uv run --isolated --no-project --no-build --find-links dist --with "$req" "$@"; }
+          # The server pins the nextcloud-client of the same version. Name the
+          # client wheel built here explicitly: --find-links alone lets uv pick
+          # the PyPI release of that version, which lacks this branch's client
+          # changes (seen on PR #1877).
+          client=$(ls dist/nextcloud_client-*.whl)
+          run() { uv run --isolated --no-project --no-build --with "./$client" --with "$req" "$@"; }
           run nextcloud-mcp-server --help
           # Each extra is either fully there or fully absent (semantic includes
           # documents), and without semantic, semantic search is refused at

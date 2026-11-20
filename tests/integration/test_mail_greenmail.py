@@ -26,6 +26,7 @@ import json
 import smtplib
 import subprocess
 import uuid
+from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -822,3 +823,37 @@ async def test_list_messages_in_uncached_nested_subfolder(
             imap.delete(parent)
         finally:
             imap.logout()
+
+
+async def test_list_messages_iso_date_bounds(nc_mcp_client, provisioned_mail_account):
+    """GH #1876: ISO ``start:``/``end:`` values must not 500.
+
+    Mail binds both as integers against ``sent_at``; the client converts ISO
+    dates to Unix seconds before the request goes out.
+    """
+    message_id = await _seeded_message_id(nc_mcp_client, "Date bound probe")
+    account_id = await _first_account_id(nc_mcp_client)
+    mailboxes = _tool_payload(
+        await nc_mcp_client.call_tool(
+            "nc_mail_list_mailboxes", {"account_id": account_id}
+        )
+    )["results"]
+    inbox = next(m for m in mailboxes if m["name"].upper() == "INBOX")
+    today = datetime.now(UTC).date()
+
+    async def listed_ids(search_filter: str) -> list[int]:
+        results = _tool_payload(
+            await nc_mcp_client.call_tool(
+                "nc_mail_list_messages",
+                {
+                    "mailbox_id": inbox["databaseId"],
+                    "search_filter": search_filter,
+                    "limit": 100,
+                },
+            )
+        )["results"]
+        return [m["databaseId"] for m in results]
+
+    window = f"start:{today - timedelta(days=1)} end:{today}"
+    assert message_id in await listed_ids(window)
+    assert message_id not in await listed_ids(f"end:{today - timedelta(days=2)}")
