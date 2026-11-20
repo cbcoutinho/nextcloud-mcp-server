@@ -192,6 +192,13 @@ php occ user_oidc:provider keycloak-realm \
     --bearer-provisioning=1
 ```
 
+`--check-bearer=1` is not just a Keycloak-side setting: the MCP server's own canonical-UID
+resolution (#1326, `UnifiedTokenVerifier._resolve_canonical_uid`) depends on `user_oidc`
+actually validating the bearer token against this provider. Without it, the OCS `/cloud/user`
+lookup this server makes still runs, but Nextcloud has nothing to map the token to, and the
+resolution silently falls back to the raw OIDC claim, i.e. the exact bug #1326 fixes stays
+unfixed with no error anywhere.
+
 **Step 2: MCP Server Registers with Keycloak (DCR)**
 ```python
 # MCP server startup
