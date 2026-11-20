@@ -50,13 +50,17 @@ DEFAULT_TAG_COLOR = "#0082c9"
 _DATE_BOUND = re.compile(r"(?<!\S)(start|end):(\S+)")
 
 
+class InvalidSearchFilter(ValueError):
+    """A Mail search filter the client refuses to send."""
+
+
 def _to_epoch(token: str, value: str) -> str:
     """Convert one ``start:``/``end:`` value to Unix seconds.
 
     Mail binds these as ``PARAM_INT`` against ``sent_at`` without validating
     them, so an ISO date reaches the database and fails with a 500 (GH #1876).
     """
-    if value.isdigit():
+    if value.isascii() and value.isdigit():
         return value
     try:
         if len(value) == 10:  # bare YYYY-MM-DD
@@ -66,7 +70,7 @@ def _to_epoch(token: str, value: str) -> str:
             return str(int(day.timestamp()))
         moment = datetime.fromisoformat(value)
     except ValueError:
-        raise ValueError(
+        raise InvalidSearchFilter(
             f"{token}: expects an ISO date/datetime or Unix seconds, got {value!r}"
         ) from None
     if moment.tzinfo is None:
@@ -77,7 +81,8 @@ def _to_epoch(token: str, value: str) -> str:
 def normalize_date_bounds(search_filter: str) -> str:
     """Rewrite ISO ``start:``/``end:`` values in a Mail filter to Unix seconds.
 
-    Naive dates are taken as UTC. Raises ``ValueError`` for an unparseable value.
+    Naive dates are taken as UTC. Raises ``InvalidSearchFilter`` for an
+    unparseable value.
     """
     return _DATE_BOUND.sub(lambda m: f"{m[1]}:{_to_epoch(m[1], m[2])}", search_filter)
 

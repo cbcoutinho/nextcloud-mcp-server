@@ -10,7 +10,7 @@ from httpx2 import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, ToolAnnotations
-from nextcloud_client.mail import DEFAULT_TAG_COLOR
+from nextcloud_client.mail import DEFAULT_TAG_COLOR, InvalidSearchFilter
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -214,7 +214,7 @@ async def nc_mail_list_messages(
             total_count=len(messages),
             has_more=len(messages) == effective_limit,
         )
-    except ValueError as e:
+    except InvalidSearchFilter as e:
         raise MCPError(code=-1, message=f"Invalid search_filter: {e}") from e
     except RequestError as e:
         raise MCPError(code=-1, message=f"Network error listing messages: {str(e)}")

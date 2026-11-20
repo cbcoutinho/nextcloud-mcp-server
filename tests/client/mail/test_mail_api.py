@@ -31,7 +31,11 @@ import httpx2
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from nextcloud_client.mail import MailClient, normalize_date_bounds
+from nextcloud_client.mail import (
+    InvalidSearchFilter,
+    MailClient,
+    normalize_date_bounds,
+)
 
 from tests.client.conftest import create_mock_response
 
@@ -200,9 +204,10 @@ def test_normalize_date_bounds_examples(given_filter, expected):
     assert normalize_date_bounds(given_filter) == expected
 
 
-def test_normalize_date_bounds_rejects_garbage():
-    with pytest.raises(ValueError, match="start: expects"):
-        normalize_date_bounds("start:yesterday")
+@pytest.mark.parametrize("value", ["yesterday", "٣"])  # Arabic-Indic 3
+def test_normalize_date_bounds_rejects_garbage(value):
+    with pytest.raises(InvalidSearchFilter, match="start: expects"):
+        normalize_date_bounds(f"start:{value}")
 
 
 async def test_list_messages_sends_epoch_for_iso_bounds(mocker):

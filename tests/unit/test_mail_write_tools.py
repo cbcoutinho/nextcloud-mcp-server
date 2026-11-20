@@ -15,6 +15,7 @@ import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
+from nextcloud_client.mail import InvalidSearchFilter
 from pydantic import ValidationError
 
 from nextcloud_mcp_server.models.auth import ALL_SUPPORTED_SCOPES
@@ -507,3 +508,23 @@ def test_malformed_recipients_fail_validation_naming_the_field(
         )
 
     assert {error["loc"][0] for error in exc_info.value.errors()} == {"to"}
+
+
+async def test_list_messages_reports_an_invalid_filter(mail_tools, fake_mail):
+    """GH #1876: a bad start:/end: value names the filter, not a Mail failure."""
+    fake_mail.list_messages.side_effect = InvalidSearchFilter("start: expects ...")
+    list_messages = mail_tools["nc_mail_list_messages"].fn
+    ctx = _ctx()
+    with pytest.raises(MCPError, match="Invalid search_filter: start: expects"):
+        await list_messages(1, ctx, search_filter="start:yesterday")
+
+
+async def test_list_messages_does_not_blame_the_filter_for_other_value_errors(
+    mail_tools, fake_mail
+):
+    """A JSON decode error is a ValueError too, and must not read as a bad filter."""
+    fake_mail.list_messages.side_effect = json.JSONDecodeError("bad", "", 0)
+    list_messages = mail_tools["nc_mail_list_messages"].fn
+    ctx = _ctx()
+    with pytest.raises(json.JSONDecodeError):
+        await list_messages(1, ctx, search_filter="start:2026-11-01")
