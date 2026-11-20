@@ -24,11 +24,14 @@ the GreenMail integration suite.
 
 import base64
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx2
 import pytest
-from nextcloud_client.mail import MailClient
+from hypothesis import given
+from hypothesis import strategies as st
+from nextcloud_client.mail import MailClient, normalize_date_bounds
 
 from tests.client.conftest import create_mock_response
 
@@ -158,6 +161,58 @@ async def test_list_messages_builds_params(mocker):
     assert kwargs["params"]["cursor"] == 42
     assert kwargs["params"]["filter"] == "hello"
     assert kwargs["params"]["view"] == "threaded"
+
+
+@st.composite
+def iso_bounds(draw):
+    """An ISO datetime in any offset, paired with its Unix seconds."""
+    moment = draw(
+        st.datetimes(
+            min_value=datetime(1971, 1, 1),
+            max_value=datetime(2100, 1, 1),
+            timezones=st.none() | st.timezones(),
+        )
+    ).replace(microsecond=0)
+    aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return moment.isoformat(), str(int(aware.timestamp()))
+
+
+@given(iso_bounds(), st.sampled_from(["start", "end"]))
+def test_normalize_date_bounds_converts_iso_datetimes(bound, token):
+    """GH #1876: Mail binds start:/end: as integers, so ISO must become epoch."""
+    iso, epoch = bound
+    assert normalize_date_bounds(f"is:unread {token}:{iso} from:alice") == (
+        f"is:unread {token}:{epoch} from:alice"
+    )
+
+
+@pytest.mark.parametrize(
+    ("given_filter", "expected"),
+    [
+        ("start:1793491200 end:1794268800", "start:1793491200 end:1794268800"),
+        ("start:2026-11-01", "start:1793491200"),
+        ("end:2026-11-01", "end:1793577599"),  # bare end date includes the day
+        ("start:2026-11-01T00:00:00Z", "start:1793491200"),
+        ("subject:restart:now from:x", "subject:restart:now from:x"),
+    ],
+)
+def test_normalize_date_bounds_examples(given_filter, expected):
+    assert normalize_date_bounds(given_filter) == expected
+
+
+def test_normalize_date_bounds_rejects_garbage():
+    with pytest.raises(ValueError, match="start: expects"):
+        normalize_date_bounds("start:yesterday")
+
+
+async def test_list_messages_sends_epoch_for_iso_bounds(mocker):
+    mock_make_request = mocker.patch.object(
+        MailClient, "_make_request", return_value=create_mock_response(json_data=[])
+    )
+    client = MailClient(mocker.AsyncMock(spec=httpx2.AsyncClient), "testuser")
+    await client.list_messages(10, search_filter="start:2026-11-01")
+
+    assert mock_make_request.call_args.kwargs["params"]["filter"] == "start:1793491200"
 
 
 async def test_list_messages_omits_optional_params(mocker):

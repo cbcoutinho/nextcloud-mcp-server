@@ -25,6 +25,8 @@ some setups it returns HTTP 200 with an empty, non-JSON body (see GH #989).
 
 import base64
 import logging
+import re
+from datetime import UTC, date, datetime, timedelta
 from email.message import Message
 from typing import Any
 from urllib.parse import quote
@@ -44,6 +46,40 @@ logger = logging.getLogger(__name__)
 # defaults cannot drift into creating differently-coloured tags for the same
 # nominal "default".
 DEFAULT_TAG_COLOR = "#0082c9"
+
+_DATE_BOUND = re.compile(r"(?<!\S)(start|end):(\S+)")
+
+
+def _to_epoch(token: str, value: str) -> str:
+    """Convert one ``start:``/``end:`` value to Unix seconds.
+
+    Mail binds these as ``PARAM_INT`` against ``sent_at`` without validating
+    them, so an ISO date reaches the database and fails with a 500 (GH #1876).
+    """
+    if value.isdigit():
+        return value
+    try:
+        if len(value) == 10:  # bare YYYY-MM-DD
+            day = datetime.combine(date.fromisoformat(value), datetime.min.time(), UTC)
+            if token == "end":  # a bare end date includes that whole day
+                day += timedelta(days=1, seconds=-1)
+            return str(int(day.timestamp()))
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(
+            f"{token}: expects an ISO date/datetime or Unix seconds, got {value!r}"
+        ) from None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return str(int(moment.timestamp()))
+
+
+def normalize_date_bounds(search_filter: str) -> str:
+    """Rewrite ISO ``start:``/``end:`` values in a Mail filter to Unix seconds.
+
+    Naive dates are taken as UTC. Raises ``ValueError`` for an unparseable value.
+    """
+    return _DATE_BOUND.sub(lambda m: f"{m[1]}:{_to_epoch(m[1], m[2])}", search_filter)
 
 
 def _ocs_response(response: Response) -> Any:
@@ -265,7 +301,8 @@ class MailClient(BaseNextcloudClient):
             mailbox_id: The mailbox database ID.
             cursor: Pagination cursor (the ``databaseId`` of the last message
                     from the previous page).
-            search_filter: Optional search/filter string.
+            search_filter: Optional search/filter string. ISO ``start:``/
+                    ``end:`` values are converted to Unix seconds.
             limit: Max messages to return (clamped to 1‑100).
             view: ``"singleton"`` or ``"threaded"`` (default is threaded).
 
@@ -279,7 +316,7 @@ class MailClient(BaseNextcloudClient):
         if cursor is not None:
             params["cursor"] = cursor
         if search_filter is not None:
-            params["filter"] = search_filter
+            params["filter"] = normalize_date_bounds(search_filter)
         if view is not None:
             params["view"] = view
 

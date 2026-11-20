@@ -178,7 +178,10 @@ async def nc_mail_list_messages(
               IMAP server-side and is slower)
             * ``tags:`` — comma-separated tag *database ids* (not names,
               get one from nc_mail_create_tag)
-            * ``start:``, ``end:`` — date bounds
+            * ``start:``, ``end:`` — sent-date bounds, as an ISO date or
+              datetime (``2026-11-01``, ``2026-11-01T09:00+01:00``), or Unix
+              seconds. Without an offset the time is taken as UTC. A bare
+              ``end:`` date includes that whole day.
             * ``flags:`` — comma-separated ``read``/``unread``/``starred``/
               ``answered``/``important``/``attachments``
             * ``match:anyof`` — OR the from/to/cc/bcc/subject/body terms
@@ -211,6 +214,8 @@ async def nc_mail_list_messages(
             total_count=len(messages),
             has_more=len(messages) == effective_limit,
         )
+    except ValueError as e:
+        raise MCPError(code=-1, message=f"Invalid search_filter: {e}") from e
     except RequestError as e:
         raise MCPError(code=-1, message=f"Network error listing messages: {str(e)}")
     except HTTPStatusError as e:
