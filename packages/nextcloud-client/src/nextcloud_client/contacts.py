@@ -774,8 +774,10 @@ class ContactsClient(BaseNextcloudClient):
         logger.debug("Found %s addressbooks", len(addressbooks))
         return addressbooks
 
-    async def create_addressbook(self, *, name: str, display_name: str):
-        """Create a new addressbook."""
+    async def create_addressbook(
+        self, *, name: str, display_name: str
+    ) -> dict[str, Any]:
+        """Create an addressbook and return supplied metadata without re-fetching."""
         await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
@@ -797,19 +799,26 @@ class ContactsClient(BaseNextcloudClient):
             "Content-Type": "application/xml",
         }
 
-        await self._make_request("MKCOL", url, content=prop_body, headers=headers)
+        response = await self._make_request(
+            "MKCOL", url, content=prop_body, headers=headers
+        )
+        return {
+            "addressbook": {"uri": name, "displayname": display_name},
+            "status_code": response.status_code,
+        }
 
-    async def delete_addressbook(self, *, name: str):
-        """Delete an addressbook."""
+    async def delete_addressbook(self, *, name: str) -> dict[str, Any]:
+        """Delete an addressbook and return a receipt after the DELETE succeeds."""
         await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{name}/"
-        await self._make_request("DELETE", url)
+        response = await self._make_request("DELETE", url)
+        return {"deleted_name": name, "status_code": response.status_code}
 
     async def create_contact(
         self, *, addressbook: str, uid: str, contact_data: dict[str, Any]
-    ):
-        """Create a new contact."""
+    ) -> dict[str, Any]:
+        """Create a contact and return mutation metadata without a read-after-write."""
         await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         url = f"{carddav_path}/{addressbook}/{uid}.vcf"
@@ -823,9 +832,15 @@ class ContactsClient(BaseNextcloudClient):
             "If-None-Match": "*",
         }
 
-        await self._make_request("PUT", url, content=vcard, headers=headers)
+        response = await self._make_request("PUT", url, content=vcard, headers=headers)
+        return {
+            "uid": uid,
+            "addressbook": addressbook,
+            "status_code": response.status_code,
+            "etag": response.headers.get("etag"),
+        }
 
-    async def delete_contact(self, *, addressbook: str, uid: str):
+    async def delete_contact(self, *, addressbook: str, uid: str) -> dict[str, Any]:
         """Delete a contact regardless of its CardDAV object filename.
 
         The object filename is independent of the vCard ``UID`` and may lack a
@@ -833,12 +848,18 @@ class ContactsClient(BaseNextcloudClient):
         real object name is resolved before deleting rather than assuming
         ``<uid>.vcf`` (issue #874). Falls back to the conventional name when no
         object matches so a genuinely missing contact still surfaces a 404.
+        Returns mutation metadata only after the DELETE succeeds.
         """
         await self._ensure_principal_id()
         carddav_path = self._get_carddav_base_path()
         object_name = await self._resolve_object_name(addressbook, uid) or f"{uid}.vcf"
         url = f"{carddav_path}/{addressbook}/{object_name}"
-        await self._make_request("DELETE", url)
+        response = await self._make_request("DELETE", url)
+        return {
+            "deleted_uid": uid,
+            "addressbook": addressbook,
+            "status_code": response.status_code,
+        }
 
     async def update_contact(
         self,
