@@ -324,9 +324,10 @@ def _parse_pdf_extract(
     # rationale). Layout mode is a poor fit for this worker in four independent
     # ways:
     #
-    # * The import alone costs ~1157 MiB of address space (VmSize 34 -> 1191
-    #   MiB) against our 1536 MiB RLIMIT_AS, leaving ~117 MiB for the parse
-    #   itself -- which is how a healthy document dead-letters (Deck #911).
+    # * The ONNX model costs ~700-1150 MiB of address space (at import in 1.x,
+    #   on the first to_markdown since 2.0) against our 1536 MiB RLIMIT_AS,
+    #   leaving ~117 MiB for the parse itself -- which is how a healthy
+    #   document dead-letters (Deck #911).
     # * Inference aborts under the same cap with "[ONNXRuntimeError] Missing
     #   Input: image_features", failing the parse. It is content-dependent, so
     #   PDFs fail unpredictably rather than consistently. Raising the cap is not
