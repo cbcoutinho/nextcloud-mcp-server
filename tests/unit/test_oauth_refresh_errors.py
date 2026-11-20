@@ -117,12 +117,17 @@ _JSON = st.recursive(
 @example("nul\x00")
 @example("")
 @example(42)
+@example(float("inf"))  # httpx2's json= encoder rejects these, so the
+@example(float("nan"))  # body is built with json.dumps (writes Infinity/NaN)
 def test_description_is_relayed_only_within_the_rfc_charset_and_bound(description):
     """RFC 6749 §5.2: %x20-21 / %x23-5B / %x5D-7E, i.e. printable ASCII minus
     `"` and `\\`. The bound keeps an IdP from relaying arbitrary payloads."""
+    body = {"error": "invalid_grant", "error_description": description}
     response = oauth_routes._refresh_error_response(
         httpx2.Response(
-            400, json={"error": "invalid_grant", "error_description": description}
+            400,
+            content=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
         )
     )
     allowed = (
