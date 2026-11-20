@@ -136,6 +136,17 @@ WEBDAV_SEARCH_MAX_RESULTS = 50000
 # ids OR-ed into one ``find_files_by_ids`` SEARCH. A search page verifies at most
 # a few hundred files, so this is usually a single request.
 FILE_ID_BATCH = 100
+# Order ``search_files_all`` pages by when the caller gives none. Without
+# ``ORDER BY`` the database may return LIMIT/OFFSET pages in any order, so pages
+# can overlap and skip rows. ``fileid`` is not sortable in Nextcloud's SEARCH
+# (``FileSearchBackend``); modification time, name and size are. They are not
+# unique, though: rows that tie on all three (e.g. same-named, same-sized files
+# with one mtime from a bulk copy) can still be skipped at a page boundary.
+WEBDAV_SEARCH_ALL_ORDER = [
+    ("getlastmodified", "ascending"),
+    ("displayname", "ascending"),
+    ("size", "ascending"),
+]
 
 
 def _reject_path_traversal(path: str) -> str:
@@ -1423,7 +1434,8 @@ class WebDAVClient(BaseNextcloudClient):
             scope: Directory path to search in (empty string for user root)
             where_conditions: XML where-clause conditions
             properties: Properties to retrieve (must include ``fileid`` for dedup)
-            order_by: Optional sort order
+            order_by: Sort order; defaults to ``WEBDAV_SEARCH_ALL_ORDER`` so that
+                offset pages are stable, except for rows that tie on every key
             page_size: Results requested per page
             max_results: Hard ceiling; crossing it logs a truncation warning and
                 increments ``webdav_search_truncated_total``
@@ -1431,6 +1443,8 @@ class WebDAVClient(BaseNextcloudClient):
         Returns:
             All matching file/directory dicts, de-duplicated by file id / path.
         """
+        if not order_by:
+            order_by = WEBDAV_SEARCH_ALL_ORDER
         paged = await self._search_offset_paged(
             scope, where_conditions, properties, order_by, page_size, max_results
         )
@@ -1522,7 +1536,10 @@ class WebDAVClient(BaseNextcloudClient):
                 results.append(item)
 
             # A short page means we've reached the end of the result set.
-            if len(page) < page_size:
+            # Nextcloud drops the searched folder itself from the rows only after
+            # LIMIT (``Folder::search``), so one full page can hold
+            # ``page_size - 1`` rows; only a shorter page ends the search.
+            if len(page) < page_size - 1:
                 break
 
             offset += page_size
@@ -1609,7 +1626,13 @@ class WebDAVClient(BaseNextcloudClient):
                     if direction.lower() == "ascending"
                     else "<d:descending/>"
                 )
-                order_elements.append(f"<d:order>{prop_element}{dir_element}</d:order>")
+                # RFC 5323 and searchdav (``Order::xmlDeserialize`` reads
+                # ``{DAV:}prop``) need the property inside ``<d:prop>``; without
+                # it Nextcloud answers 400 "requested order by property is not a
+                # valid property for this scope" for every property.
+                order_elements.append(
+                    f"<d:order><d:prop>{prop_element}</d:prop>{dir_element}</d:order>"
+                )
             orderby_xml = "\n".join(order_elements)
         else:
             orderby_xml = ""

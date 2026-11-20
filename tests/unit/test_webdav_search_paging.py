@@ -10,6 +10,8 @@ The behaviour we pin:
   * automatic fallback to a single bounded fetch when the server *ignores*
     offset (the real Nextcloud 31 behaviour -- a page repeats already-seen rows);
   * a single short page terminates immediately;
+  * a page missing only the searched folder itself does not end the search;
+  * pages are requested in a stable order;
   * crossing ``max_results`` warns + increments the truncation metric;
   * ``_build_search_xml`` emits the offset element only when asked.
 """
@@ -19,7 +21,11 @@ from unittest.mock import AsyncMock
 
 import httpx2
 import pytest
-from nextcloud_client.webdav import FILE_ID_BATCH, WebDAVClient
+from nextcloud_client.webdav import (
+    FILE_ID_BATCH,
+    WEBDAV_SEARCH_ALL_ORDER,
+    WebDAVClient,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -223,3 +229,58 @@ async def test_find_files_by_ids_full_page_raises(mocker):
 
     with pytest.raises(RuntimeError, match="truncated"):
         await client.find_files_by_ids([1, 2])
+
+
+async def test_page_without_the_searched_folder_continues(mocker):
+    """Nextcloud drops the searched folder from a page only after LIMIT, so a
+    full page can hold ``page_size - 1`` rows; that must not end the search."""
+    client = _make_client(mocker)
+    rows = [{"file_id": -1, "path": "/dir"}, *_corpus(250)]
+
+    def fake(*, limit, offset=0, **_):
+        return [r for r in rows[offset : offset + limit] if r["path"] != "/dir"]
+
+    client.search_files = AsyncMock(side_effect=fake)
+
+    results = await client.search_files_all(scope="dir", page_size=100)
+
+    assert [r["file_id"] for r in results] == list(range(250))
+
+
+async def test_pages_are_requested_in_a_stable_order(mocker):
+    """Without ORDER BY, LIMIT/OFFSET pages may overlap or skip rows."""
+    client = _make_client(mocker)
+    client.search_files = AsyncMock(return_value=_corpus(10))
+
+    await client.search_files_all(scope="dir")
+
+    assert client.search_files.await_args.kwargs["order_by"] == WEBDAV_SEARCH_ALL_ORDER
+
+
+async def test_given_order_is_kept(mocker):
+    client = _make_client(mocker)
+    client.search_files = AsyncMock(return_value=_corpus(10))
+    order = [("size", "descending")]
+
+    await client.search_files_all(scope="dir", order_by=order)
+
+    assert client.search_files.await_args.kwargs["order_by"] == order
+
+
+def test_build_search_xml_puts_the_order_property_in_prop(mocker):
+    """searchdav reads the order property from ``{DAV:}prop``; without it
+    Nextcloud answers 400 for every property."""
+    client = _make_client(mocker)
+
+    xml = client._build_search_xml(
+        scope="dir",
+        where_conditions="",
+        properties=["fileid"],
+        order_by=[("getlastmodified", "ascending"), ("size", "descending")],
+        limit=10,
+    )
+
+    assert (
+        "<d:order><d:prop><d:getlastmodified/></d:prop><d:ascending/></d:order>" in xml
+    )
+    assert "<d:order><d:prop><oc:size/></d:prop><d:descending/></d:order>" in xml
