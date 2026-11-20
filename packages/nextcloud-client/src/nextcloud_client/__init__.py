@@ -20,6 +20,7 @@ from .collectives import CollectivesClient
 from .contacts import ContactsClient
 from .cookbook import CookbookClient
 from .deck import DeckClient
+from .fulltextsearch import FullTextSearchClient
 from .groups import GroupsClient
 from .http import nextcloud_httpx_client, nextcloud_httpx_transport
 from .mail import MailClient
@@ -221,6 +222,7 @@ class NextcloudClient:
         self.groups = GroupsClient(self._client, username)
         self.sharing = SharingClient(self._client, username)
         self.shopping_list = ShoppingListClient(self._client, username)
+        self.fulltextsearch = FullTextSearchClient(self._client, username)
 
         # Initialize controllers
         self._notes_search = NotesSearchController()

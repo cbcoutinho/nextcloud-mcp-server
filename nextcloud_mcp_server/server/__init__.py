@@ -12,6 +12,7 @@ from .collectives import configure_collectives_tools
 from .contacts import configure_contacts_tools
 from .cookbook import configure_cookbook_tools
 from .deck import configure_deck_tools
+from .fulltextsearch import configure_fulltextsearch_tools
 from .mail import configure_mail_tools
 from .news import configure_news_tools
 from .notes import configure_notes_tools
@@ -41,6 +42,7 @@ AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
     "mail": configure_mail_tools,
     "talk": configure_talk_tools,
     "shopping_list": configure_shopping_list_tools,
+    "fulltextsearch": configure_fulltextsearch_tools,
 }
 
 # App name → the key it publishes on /ocs/v2.php/cloud/capabilities, for apps
@@ -49,6 +51,7 @@ AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
 # absence of a key is what closes the gate and most apps publish nothing:
 #
 #   notes / tables / deck / cookbook → own key, carries `version`
+#   fulltextsearch                   → own key without `version`
 #   talk                             → `spreed`; the whole block is omitted for
 #                                      a user Talk is disabled for, which is
 #                                      exactly when its tools should vanish
@@ -65,6 +68,7 @@ APP_CAPABILITY_KEY: dict[str, str] = {
     "deck": "deck",
     "cookbook": "cookbook",
     "talk": "spreed",
+    "fulltextsearch": "fulltextsearch",
 }
 
 

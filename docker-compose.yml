@@ -127,6 +127,28 @@ services:
     profiles:
       - collabora
 
+  # Search platform for the Nextcloud Full Text Search apps. Opt-in via the
+  # "fulltextsearch" profile; app-hooks/post-installation/
+  # 15-setup-fulltextsearch.sh installs and configures the apps when this
+  # hostname resolves. Security is off because the service is only reachable on
+  # the compose network and through a port bound to localhost.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.23@sha256:4d0724bb8d78d7a2330693623e26ca4d621079d062ecc8a30b3e1fc180ec14c1
+    restart: always
+    ports:
+      - 127.0.0.1:9200:9200
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    profiles:
+      - fulltextsearch
+
   # infinity: self-hosted embeddings + CROSS-ENCODER RERANKING. Opt-in via the
   # "infinity" profile. The reason it exists here: Ollama serves no rerank
   # models at all, so a self-hoster who wants the rerank stage needs either a
