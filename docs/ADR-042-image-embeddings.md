@@ -109,7 +109,9 @@ Minimum versions: Qdrant server **1.18** for the in-place add (new collections
 created with `image` work on any supported version), and `qdrant-client`
 raised from `>=1.17.0` to `>=1.18.0`, the first release that exposes
 `create_vector_name` and `models.DenseVectorNameConfig` (verified: 1.17.1 has
-neither, 1.18.0 has both).
+neither, 1.18.0 has both). The client bump is **unconditional** (no guarded
+import) and lands in the same implementation PR as the schema step. The
+degrade path below covers an old *server*, not an old client.
 Against an older server the call fails; the server logs an error and leaves
 image indexing disabled rather than refusing to boot — text search must not
 regress because an optional feature can't be provisioned.
@@ -138,6 +140,19 @@ leaves the image point alone. Whole-document deletion (eviction,
 `delete_document_points`) filters on `doc_id`/`doc_type`, so the image point
 shares the file's lifecycle. A unit test pins both behaviours.
 
+**The image point carries the full document payload.** That means `etag`,
+`index_mode`, `embedding_identity`, `acl_principals` and the per-user paths
+(ADR-033), identical to the text points. The image model is recorded
+separately as `image_embedding_identity`. This is required, not cosmetic:
+`find_indexed_content` and `query_document_metadata` answer "is this document
+already indexed?" from an **unordered** `scroll(limit=1)` over the document's
+points. An image point with a partial payload would read as "not indexed"
+whenever that scroll returned it. The scanner would then re-queue the
+document on every cycle, the non-converging loop `prune_stale_chunks` exists
+to close (Deck #1084). Cross-user sharing and release
+(`release_document_for_user`) select by `doc_id`, so they update the image
+point together with the text points.
+
 Consequences of keeping `doc_type="file"`:
 
 - verify-on-read, per-user path payloads (ADR-033), eviction by `doc_id` and
@@ -147,10 +162,19 @@ Consequences of keeping `doc_type="file"`:
   `/api/v1/chunk-context`. A missed skip would silently return an image as an
   empty-text chunk. So the exclusion (`must_not: vector_kind == "image"`) is
   added **centrally**, in `search/access_filter.build_base_filter_conditions`,
-  and the image prefetch is the only caller that opts out. Text consumers
-  that build their own filters (chunk-context, sync-status counts) go through
-  the same helper. A unit test asserts that every text-path filter carries
-  the condition.
+  and the image prefetch is the only caller that opts out. A `must_not` on a
+  `match` condition keeps points that lack the field, so text points (which
+  have no `vector_kind`) pass through it. A test pins this against both a
+  real Qdrant and the qdrant-client local-mode backend, because the two have
+  differed on filter semantics before.
+
+  Text consumers that build their own filters go through the same helper.
+  The implementation PR audits every `scroll`/`count`/`query_points` call in
+  `vector/` and `search/`, which today includes chunk-context, the
+  `total_chunks` and sync-status counts, and the `/api/v1/vector-sync/status`
+  endpoint. A test then asserts that each call site's filter carries the
+  condition. Document-scoped operations (eviction, prune, ACL release) are
+  deliberately excluded, because they must reach the image point.
 
 Card #103 (board 12) proposed `doc_type="image"`. Rejected because every per-type code
 path — verification, deep links, the Astrolabe result renderer — would need a
@@ -226,6 +250,17 @@ effect looks the same. To keep a too-high floor from going unnoticed, the
 search path emits a metric with the number of image-prefetch hits above the
 floor per query. A floor that suppresses everything then shows up as a flat
 zero on a dashboard.
+
+**RRF only.** A prefetch `score_threshold` cuts the candidate list before
+fusion. That is harmless for RRF, which uses ranks. DBSF normalises each
+prefetch by its score distribution, and a list truncated at the floor skews
+that normalisation. So in this iteration the image prefetch is added only
+under `fusion="rrf"`, the default. With `fusion="dbsf"` the search runs
+text-only, and the tool docstring says so. Making DBSF work is follow-up work,
+for example normalising the image list before thresholding.
+
+The probe set and its harness are committed under `tests/` (eval tier, not CI)
+so the floors can be re-measured whenever a model changes.
 
 The second embedding call is the only added query cost; it runs concurrently
 with the text embedding (`anyio` task group). No new MCP tool in the first
