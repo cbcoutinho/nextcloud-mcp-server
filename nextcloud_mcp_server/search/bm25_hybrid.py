@@ -212,14 +212,14 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             return False
         return True
 
-    async def _embed_query_image(self, query: str, settings: Any) -> list | None:
+    async def _embed_query_image(self, query: str, settings: Any) -> list[float] | None:
         """The query embedded into the image model's space, or None.
 
         Never fails the search: an image-side error leaves it text-only, with a
         warning, because text results don't depend on it.
         """
-        if self._image_embedding is not None and self._image_query == query:
-            return self._image_embedding
+        if self._image_query == query:
+            return self._image_embedding  # None if it failed: don't retry it
         try:
             with trace_operation("search.image_embedding"):
                 with query_embedding_budget(settings.search_embedding_timeout_seconds):
@@ -228,7 +228,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             logger.warning(
                 "image query embedding failed; searching text only", exc_info=True
             )
-            return None
+            vec = None
+        # Cached either way, so the per-doc_type loop doesn't pay a failing
+        # (possibly timing-out) call once per doc_type.
         self._image_query, self._image_embedding = query, vec
         return vec
 
@@ -619,7 +621,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         if image_embedding is not None:
             # A floor that is too high shows up as hits flat at zero (§6).
             record_image_search(
-                settings.image_embedding_model or "",
+                settings.image_embedding_model or "unknown",
                 sum((r.metadata or {}).get("match") == "image" for r in results),
             )
 

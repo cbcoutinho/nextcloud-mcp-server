@@ -294,8 +294,10 @@ def _to_semantic_results(
                 excerpt=r.excerpt,
                 match=metadata.get("match", "text"),
                 score=r.score,
-                chunk_index=metadata.get("chunk_index", 0),
-                total_chunks=metadata.get("total_chunks", 1),
+                # From the result, not metadata: metadata carries None for a
+                # point without chunks (an ADR-042 image point).
+                chunk_index=r.chunk_index,
+                total_chunks=r.total_chunks,
                 chunk_start_offset=r.chunk_start_offset,
                 chunk_end_offset=r.chunk_end_offset,
                 page_number=r.page_number,

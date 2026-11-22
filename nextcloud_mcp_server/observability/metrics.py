@@ -313,12 +313,12 @@ vector_sync_image_points = Gauge(
 )
 image_search_queries_total = Counter(
     "mcp_image_search_queries_total",
-    "Hybrid searches that ran the image prefetch (ADR-042)",
+    "Hybrid search calls that ran the image prefetch, one per doc_type searched",
     ["model"],
 )
 image_search_hits_total = Counter(
     "mcp_image_search_hits_total",
-    "Image results (above the score floor) returned by hybrid searches",
+    "Image results above the score floor, summed over those calls",
     ["model"],
 )
 

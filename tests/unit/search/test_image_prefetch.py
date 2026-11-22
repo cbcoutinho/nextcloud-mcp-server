@@ -154,3 +154,29 @@ async def test_image_query_embedded_once_across_doc_types(env):
     await algo.search("q", "alice", doc_type="file")
     await algo.search("q", "alice", doc_type="note")
     assert provider.embed_for_image_space.await_count == 1
+
+
+async def test_a_failed_image_embedding_is_not_retried_per_doc_type(env):
+    provider, _ = env
+    provider.embed_for_image_space.side_effect = RuntimeError("down")
+    algo = BM25HybridSearchAlgorithm()
+    await algo.search("q", "alice", doc_type="file")
+    await algo.search("q", "alice", doc_type="note")
+    assert provider.embed_for_image_space.await_count == 1
+
+
+async def test_an_image_hit_converts_to_the_public_model(env):
+    """No chunk fields on an image point: the tool must not choke on None."""
+    from nextcloud_mcp_server.server.semantic import _to_semantic_results
+
+    results = await BM25HybridSearchAlgorithm().search("q", "alice")
+    [image] = [r for r in results if r.metadata.get("match") == "image"]
+    [row] = _to_semantic_results(
+        [image], browser_base=None, fusion="rrf", algorithm="hybrid", rerank_model=None
+    )
+    assert (row.match, row.excerpt, row.chunk_index, row.total_chunks) == (
+        "image",
+        "",
+        0,
+        1,
+    )
