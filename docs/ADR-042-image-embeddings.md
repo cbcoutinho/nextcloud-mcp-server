@@ -10,7 +10,10 @@ board 10, card #1537.
 **Acceptance criterion:** before this ADR moves to Accepted, the per-model
 image score floors in §6 must be re-validated on a probe set of at least 50
 images and 100 queries (matching, near-miss and distractor queries), and the
-measured floors recorded here.
+measured floors recorded here. Until then the implementation ships with no
+default floors: image search is enabled only when the operator sets
+`IMAGE_SEARCH_SCORE_THRESHOLD` (the unknown-model rule in §7 applies to every
+model), so unvalidated defaults cannot ship.
 
 ## Context
 
@@ -112,10 +115,10 @@ retry because the model id is part of `tiers_sig`. Text and
 sparse vectors are never touched. The alias flip remains the tool for a
 *text*-model change, as before.
 
-Minimum versions: Qdrant server **1.18** for the in-place add (the dev and
-CI stack runs `qdrant/qdrant:v1.20.1` in `docker-compose.yml`, so the
-integration lanes exercise it) (new collections
-created with `image` work on any supported version), and `qdrant-client`
+Minimum versions: Qdrant server **1.18** for the in-place add. New
+collections created with `image` work on any supported version. The dev and
+CI stack runs `qdrant/qdrant:v1.20.1` (`docker-compose.yml`), so the
+integration lanes exercise the in-place path. `qdrant-client` is
 raised from `>=1.17.0` to `>=1.18.0`, the first release that exposes
 `create_vector_name` and `models.DenseVectorNameConfig` (verified: 1.17.1 has
 neither, 1.18.0 has both). The client bump is **unconditional** (no guarded
@@ -187,8 +190,11 @@ Consequences of keeping `doc_type="file"`:
   endpoint. A test then asserts that each call site's filter carries the
   condition. It finds the call sites by walking the AST of `vector/` and
   `search/` for Qdrant client calls, not from a hand-maintained list, so a
-  new call site that skips the helper fails the test. Document-scoped operations (eviction, prune, ACL release) are
-  deliberately excluded, because they must reach the image point.
+  new call site that skips the helper fails the test. The walk fails
+  closed: a Qdrant call it cannot attribute to a filter, such as one made
+  through an unrecognised wrapper, fails the test rather than being skipped.
+  Document-scoped operations (eviction, prune, ACL release) are excluded
+  through an explicit allowlist, because they must reach the image point.
 
 Card #103 (board 12) proposed `doc_type="image"`. Rejected because every per-type code
 path — verification, deep links, the Astrolabe result renderer — would need a
@@ -206,7 +212,7 @@ new branch for what is, to Nextcloud, just a file.
   opt out of those (ADR-031).
 - **Input limits.** The provider exposes `image_input_limits` (accepted MIME
   types, max bytes, max pixels), which is added to the PR #800 surface. Those
-  MIME types are what discovery adds to `indexable_mime_types`. The gateway
+  MIME types bound what discovery adds (see **Formats**). The gateway
   accepts `image/jpeg`, `image/png`, `image/gif` and `image/webp` (#1537).
   The worker downscales an image that exceeds the pixel or byte limit before
   embedding. A file above `IMAGE_EMBED_MAX_SOURCE_BYTES` (default 50 MB) is
@@ -237,7 +243,10 @@ new branch for what is, to Nextcloud, just a file.
   written. Retrying the same bytes cannot succeed, so dead-lettering them
   would only add noise.
 
-  **Classification is by error type, not by status code alone.** Bedrock
+  **Classification is by error type, not by status code alone.** A unit
+  test pins the full classification table, not just the resulting behaviour:
+  bare 400, `ThrottlingException`, 429, 5xx and timeout retry; gateway 422
+  and Bedrock input `ValidationException` skip. Bedrock
   answers some throttling and validation cases with 400, and a misclassified
   transient error would be stuck until the content or the model changed. So
   only two responses count as permanent: the gateway's 422 for an invalid
@@ -295,7 +304,8 @@ The two models' scales differ, so the floor is a **per-model** default keyed
 on the image model id. The provisional values are the midpoints of those
 windows, about 0.29 for Titan and 0.25 for Cohere v4. They are overridable via
 `IMAGE_SEARCH_SCORE_THRESHOLD`. Three probes on a single set are not evidence,
-so the acceptance criterion in Status gates them.
+so the acceptance criterion in Status gates them. They are candidates, not
+shipped defaults, until it is met.
 
 The two failure directions are not symmetric. A floor that is too low lets
 irrelevant images into the results, which is visible. A floor that is **too
@@ -341,8 +351,11 @@ for it.
   older Qdrant (no `create_vector_name`) or a size mismatch never sends a
   prefetch to a vector that doesn't exist. **Ingest is gated on the same
   flag**: while it is false, no image embedding is computed or paid for. The
-  flag is decided at startup only. A collection whose `create_vector_name`
-  failed stays text-only until the next restart retries it. This also means
+  flag is decided once per collection, when `ensure_collection` first runs
+  for it: at startup for collections that already exist, and on first use
+  for a tenant collection created later. A collection whose
+  `create_vector_name` failed stays text-only until the next restart retries
+  it. This also means
   `/api/v1/status.image_search` does not change between restarts, so
   Astrolabe may cache it.
 - **A floor is required.** The per-model floors in §6 exist for the known
@@ -387,7 +400,9 @@ for it.
 - **Storage.** One extra vector per indexed image (4 KiB at 1024-d float32,
   6 KiB at 1536-d), plus an HNSW graph for the `image` vector.
 - **Billing.** Image embedding calls are metered separately from
-  `tokens_embedded` (images are priced per image, not per token).
+  `tokens_embedded` (images are priced per image, not per token). A model
+  swap (§3) is cheap in schema terms but **re-bills every indexed image**:
+  it is a full image re-embed.
 - **Docs.** `docs/configuration.md` (new env vars:
   `BEDROCK_IMAGE_EMBEDDING_MODEL`, `BEDROCK_IMAGE_OUTPUT_DIM`,
   `IMAGE_EMBED_MAX_SOURCE_BYTES`, `IMAGE_SEARCH_SCORE_THRESHOLD`), the
