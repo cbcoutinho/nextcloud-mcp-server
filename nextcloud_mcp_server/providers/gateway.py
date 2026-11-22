@@ -331,11 +331,10 @@ class GatewayProvider(OpenAIProvider):
         try:
             catalog = await self._fetch_models()
         except Exception:  # noqa: BLE001 — any failure means "not confirmed"
-            logger.error(
+            logger.exception(
                 "Could not read gateway /v1/models to confirm image model %s; "
                 "image embeddings stay off",
                 model,
-                exc_info=True,
             )
             return False
         entry = next((e for e in catalog if e.get("id") == model), None)
