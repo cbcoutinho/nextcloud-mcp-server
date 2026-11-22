@@ -5,6 +5,27 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.214.0 (2026-11-22)
+
+### Feat
+
+- **providers**: image embeddings through the embedding gateway (ADR-042)
+- **providers**: provider-agnostic image embedding capability (ADR-042)
+
+### Fix
+
+- **providers**: refuse a gateway response that drops or duplicates items
+- **providers**: pin the gateway image width at confirmation; pact invalid_image
+- **providers**: fail on a chunk that returns the wrong number of vectors
+- **providers**: keep model-level Bedrock ValidationExceptions retryable
+- **providers**: check image width per chunk; test index rebasing at max_batch > 1
+- **providers**: attribute every Bedrock image rejection to one image
+
+### Refactor
+
+- **providers**: use logger.exception for the catalogue read failure (Sonar S8572)
+- **providers**: address Sonar findings in the image capability
+
 ## v0.213.5 (2026-11-22)
 
 ### Fix
