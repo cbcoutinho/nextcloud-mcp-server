@@ -74,6 +74,12 @@ class TestFit:
             r, g, b = out.convert("RGB").getpixel((4, 4))
             assert r > 200 and b < 60  # red: frame 0, not frame 1
 
+    def test_over_pillows_pixel_ceiling_is_refused(self, monkeypatch):
+        """Pillow only warns between 1x and 2x its ceiling; _fit refuses."""
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 50)
+        with pytest.raises(Image.DecompressionBombError):
+            image_ingest._fit(_png(), PNG, _limits())
+
 
 class TestEmbedDocumentImage:
     @pytest.fixture
@@ -109,6 +115,12 @@ class TestEmbedDocumentImage:
         result = await image_ingest.embed_document_image(source, PNG, self._settings())
         assert result == (None, image_ingest.SKIP_REJECTED)
         provider.embed_image.assert_not_awaited()
+
+    async def test_unconvertible_mode_is_a_skip_not_a_retry(self, provider, mocker):
+        mocker.patch.object(image_ingest, "_fit", side_effect=ValueError("mode"))
+        source = MemoryDocumentSource(_png(), PNG, "/a.png")
+        result = await image_ingest.embed_document_image(source, PNG, self._settings())
+        assert result == (None, image_ingest.SKIP_REJECTED)
 
     async def test_provider_rejection_is_a_skip(self, provider):
         provider.embed_image.side_effect = ImageInputRejected("invalid_image", 0)
@@ -295,6 +307,28 @@ class TestIndexDocument:
         assert "chunk_index" not in payload and "excerpt" not in payload
         env.mark.assert_not_awaited()
         env.qdrant.delete.assert_not_awaited()  # nothing stale to drop
+
+    async def test_failed_text_processor_still_indexes_the_image(self, env, mocker):
+        """OCR finding no words in a photo must not cost it its image point."""
+        mocker.patch.object(get_registry(), "find_processor", return_value=object())
+        mocker.patch.object(
+            get_registry(),
+            "process_source",
+            AsyncMock(
+                return_value=ProcessingResult(
+                    text="",
+                    metadata={"parse_failed_reason": "empty_document"},
+                    processor="ocr",
+                    success=False,
+                )
+            ),
+        )
+        await processor._index_document(self._task(), env.nc, env.qdrant, tier=None)
+
+        (call,) = env.qdrant.upsert.await_args_list
+        (point,) = call.kwargs["points"]
+        assert point.id == payload_keys.image_point_id("7")
+        env.mark.assert_not_awaited()
 
     async def test_skip_with_no_text_dead_letters_under_the_image_key(self, env):
         env.embed.return_value = (None, image_ingest.SKIP_REJECTED)

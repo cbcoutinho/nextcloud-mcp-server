@@ -79,13 +79,18 @@ def _fit(data: bytes, mime_type: str, limits: ImageInputLimits) -> ImageInput:
     """Downscale/re-encode only when the model's limits require it.
 
     An animated GIF/WebP is re-encoded from its first frame. Raises
-    ``OSError`` (Pillow's ``UnidentifiedImageError`` included) or
-    ``DecompressionBombError`` for an image that can't be decoded.
+    ``OSError`` (Pillow's ``UnidentifiedImageError`` included),
+    ``DecompressionBombError`` or ``ValueError`` (a mode ``convert`` can't
+    handle) for an image that can't be decoded.
     """
     from PIL import Image  # noqa: PLC0415
 
     with Image.open(io.BytesIO(data)) as img:
         pixels = img.width * img.height
+        # Pillow only warns between 1x and 2x its ceiling; a small, highly
+        # compressed file must not decode to a huge bitmap in the worker.
+        if Image.MAX_IMAGE_PIXELS is not None and pixels > Image.MAX_IMAGE_PIXELS:
+            raise Image.DecompressionBombError(f"{pixels} pixels")
         over_pixels = limits.max_pixels is not None and pixels > limits.max_pixels
         over_bytes = limits.max_bytes is not None and len(data) > limits.max_bytes
         if not (over_pixels or over_bytes or getattr(img, "is_animated", False)):
@@ -137,7 +142,7 @@ async def embed_document_image(
         image = await anyio.to_thread.run_sync(
             _fit, data, base_mime(content_type), limits
         )
-    except (OSError, Image.DecompressionBombError) as exc:
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
         logger.warning(
             "Image %s could not be decoded (%s); skipping its image embedding",
             name,

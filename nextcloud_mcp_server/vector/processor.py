@@ -1698,12 +1698,26 @@ async def _index_document_inner(
                 # Embedded before anything is written: a transient failure raises
                 # and retries the whole job, so text and image points land
                 # together or not at all (ADR-042 §5).
-                if image_scope and result.success:
+                if image_scope:
                     assert source is not None
                     image_vector, image_skip = await embed_document_image(
                         source, content_type, settings
                     )
-                    if image_vector is None and not result.text.strip():
+                    if not result.success:
+                        # The text side failed (e.g. OCR on a picture with no
+                        # words). The image is still indexable on its own; with
+                        # no vector either, the text failure stands.
+                        if image_vector is not None:
+                            logger.info(
+                                "Text extraction failed for %s (%s); indexing "
+                                "its image only",
+                                file_path,
+                                result.metadata.get("parse_failed_reason", "error"),
+                            )
+                            result = ProcessingResult(
+                                text="", metadata={}, processor=result.processor
+                            )
+                    elif image_vector is None and not result.text.strip():
                         # Nothing to write. Dead-letter the skip on the terminal
                         # path below, or the scanner re-queues it every cycle.
                         result = ProcessingResult(
