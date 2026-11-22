@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+_NO_IMAGE_SUPPORT = "Image embeddings not supported by this provider"
+
 
 @dataclass(frozen=True)
 class ImageInput:
@@ -230,7 +232,7 @@ class Provider(ABC):
     _image_dimension: int | None = None
     _image_confirmed: bool = False
 
-    async def confirm_image_embeddings(self) -> bool:
+    async def confirm_image_embeddings(self) -> bool:  # NOSONAR async by interface
         """Confirm the configured image model really takes images.
 
         Image embeddings are enabled on confirmation, never on configuration
@@ -254,7 +256,7 @@ class Provider(ABC):
 
     def get_image_dimension(self) -> int:
         """Vector width of the image embedding space."""
-        raise NotImplementedError("Image embeddings not supported by this provider")
+        raise NotImplementedError(_NO_IMAGE_SUPPORT)
 
     async def embed_for_image_space(self, text: str) -> list[float]:
         """Embed a text query into the *image* model's space.
@@ -262,7 +264,7 @@ class Provider(ABC):
         Deliberately separate from :meth:`embed`: the image model and the text
         model produce incompatible spaces, so text→image search must use this.
         """
-        raise NotImplementedError("Image embeddings not supported by this provider")
+        raise NotImplementedError(_NO_IMAGE_SUPPORT)
 
     async def _embed_image_chunk(self, images: list[ImageInput]) -> list[list[float]]:
         """Embed at most ``image_input_limits.max_batch`` images in one request.
@@ -270,7 +272,7 @@ class Provider(ABC):
         Raise :class:`ImageInputRejected` with an index *relative to this
         chunk*; :meth:`embed_image_batch` rebases it onto the caller's batch.
         """
-        raise NotImplementedError("Image embeddings not supported by this provider")
+        raise NotImplementedError(_NO_IMAGE_SUPPORT)
 
     async def embed_image_batch(self, images: list[ImageInput]) -> list[list[float]]:
         """Embed images into the image space, one vector per input, in order.

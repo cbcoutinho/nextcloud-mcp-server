@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # The gateway caps decoded images at 5 MiB, and the worker downscales below the
 # provider limit anyway, so the same conservative cap keeps both paths uniform.
 _IMAGE_MAX_BYTES = 5 * 1024 * 1024
+_JSON = "application/json"
 
 
 @dataclass(frozen=True)
@@ -253,8 +254,8 @@ class BedrockProvider(Provider):
             response = self.client.invoke_model(
                 modelId=self.embedding_model,
                 body=json.dumps(request_body),
-                accept="application/json",
-                contentType="application/json",
+                accept=_JSON,
+                contentType=_JSON,
             )
 
             response_body = json.loads(response["body"].read())
@@ -455,8 +456,8 @@ class BedrockProvider(Provider):
                 self.client.invoke_model,
                 modelId=self.image_embedding_model,
                 body=json.dumps(body),
-                accept="application/json",
-                contentType="application/json",
+                accept=_JSON,
+                contentType=_JSON,
             )
         )
         return self._parse_image_response(json.loads(response["body"].read()))
