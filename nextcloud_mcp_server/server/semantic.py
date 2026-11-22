@@ -292,6 +292,7 @@ def _to_semantic_results(
                 relevance_source=relevance_source,
                 category=metadata.get("category", ""),
                 excerpt=r.excerpt,
+                match=metadata.get("match", "text"),
                 score=r.score,
                 chunk_index=metadata.get("chunk_index", 0),
                 total_chunks=metadata.get("total_chunks", 1),
@@ -409,6 +410,7 @@ async def _expand_results_with_context(
                         title=result.title,
                         category=result.category,
                         excerpt=result.excerpt,
+                        match=result.match,
                         score=result.score,
                         # This site REBUILDS the row rather than
                         # copying it, so any field omitted here
@@ -718,6 +720,10 @@ async def nc_semantic_search(  # NOSONAR(S107)
     Documents indexed keyword-only (``keyword-index`` tag) carry no dense
     vector and so contribute via the BM25 sparse side only. They appear in the
     same unified result set.
+
+    When image embeddings are on (ADR-042), hybrid search with fusion="rrf"
+    also matches images by what they show; such results have `match: "image"`
+    and no excerpt. fusion="dbsf" searches text only.
 
     Requires VECTOR_SYNC_ENABLED=true. Supports indexing of notes, files,
     news items, deck cards, and mail messages.

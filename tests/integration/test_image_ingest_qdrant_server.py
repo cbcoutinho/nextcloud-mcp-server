@@ -119,3 +119,45 @@ async def test_count_images_on_a_server():
     finally:
         await client.delete_collection(name)
         await client.close()
+
+
+async def test_image_prefetch_floor_on_a_server():
+    """Step 5: a prefetch ``score_threshold`` drops images before RRF fusion."""
+    client = AsyncQdrantClient(url=_URL, api_key=_API_KEY, https=False)
+    try:
+        await client.get_collections()
+    except Exception as e:  # noqa: BLE001 - no server: skip, not fail
+        await client.close()
+        pytest.skip(f"no Qdrant server at {_URL}: {e}")
+    name = f"imgfloor_{uuid.uuid4().hex[:8]}"
+    vec = m.VectorParams(size=2, distance=m.Distance.COSINE)
+    await client.create_collection(name, vectors_config={"dense": vec, "image": vec})
+    try:
+        await client.upsert(
+            name,
+            points=[
+                m.PointStruct(id=1, vector={"dense": [1, 0]}),
+                m.PointStruct(id=2, vector={"image": [0, 1]}),
+            ],
+            wait=True,
+        )
+
+        async def fused(image_query: list[float]) -> set[int]:
+            response = await client.query_points(
+                name,
+                prefetch=[
+                    m.Prefetch(query=[1, 0], using="dense", limit=10),
+                    m.Prefetch(
+                        query=image_query, using="image", limit=10, score_threshold=0.5
+                    ),
+                ],
+                query=m.FusionQuery(fusion=m.Fusion.RRF),
+                limit=10,
+            )
+            return {int(p.id) for p in response.points}
+
+        assert await fused([0, 1]) == {1, 2}
+        assert await fused([1, 0]) == {1}  # cosine 0 is under the floor
+    finally:
+        await client.delete_collection(name)
+        await client.close()

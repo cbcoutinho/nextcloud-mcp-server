@@ -81,3 +81,33 @@ async def test_tagged_png_is_embedded(nc_mcp_client, tagged_png):
     )
     # Image-only files count as documents (they have no chunk_index 0 point).
     assert status["indexed_documents"] >= 1
+
+
+async def test_status_advertises_image_search():
+    async with httpx2.AsyncClient() as http:
+        body = (await http.get("http://localhost:8000/api/v1/status")).json()
+    assert body["image_search"] is True
+
+
+async def test_hybrid_search_returns_the_image(nc_mcp_client, tagged_png):
+    """Step 5: the image prefetch surfaces an image-only file as match=image.
+
+    The CI floor admits every image (the test model's vectors are hashes), so
+    any query reaches it once it is indexed; the path filter keeps it ours.
+    """
+    folder = tagged_png["path"].rsplit("/", 1)[0]
+    deadline = time.monotonic() + 150
+    hits: list = []
+    while time.monotonic() < deadline:
+        result = await nc_mcp_client.call_tool(
+            "nc_semantic_search",
+            {"query": "a photo", "doc_types": ["file"], "path_prefixes": [folder]},
+        )
+        assert not result.is_error, result
+        hits = json.loads(result.content[0].text)["results"]
+        if hits:
+            break
+        await anyio.sleep(5)
+    assert [(str(h["id"]), h["match"]) for h in hits] == [
+        (tagged_png["file_id"], "image")
+    ]

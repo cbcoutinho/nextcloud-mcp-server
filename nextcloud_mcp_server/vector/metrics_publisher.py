@@ -45,6 +45,7 @@ from nextcloud_mcp_server.observability.metrics import (
     update_qdrant_chunk_density_snapshot,
     update_vector_sync_dead_lettered_documents,
     update_vector_sync_estimated_vector_bytes,
+    update_vector_sync_image_points,
     update_vector_sync_indexed_chunks,
     update_vector_sync_indexed_documents,
     update_vector_sync_pending_documents,
@@ -61,7 +62,10 @@ from nextcloud_mcp_server.vector.placeholder import (
     exclude_image_points,
     get_placeholder_filter,
 )
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.vector.qdrant_client import (
+    get_qdrant_client,
+    image_vector_ready,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +344,17 @@ async def publish_vector_sync_metrics(
         )
     except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
         logger.warning("Failed to publish dead-lettered-documents gauge: %s", exc)
+
+    # Indexed image points, next to the image-search hit counter (ADR-042 §6).
+    if image_vector_ready():
+        try:
+            qdrant_client = await get_qdrant_client()
+            images = await count_images(
+                qdrant_client, settings.get_collection_name(), exact=False
+            )
+            update_vector_sync_image_points(images.embedded)
+        except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
+            logger.warning("Failed to publish image-points gauge: %s", exc)
 
 
 async def vector_sync_metrics_task(

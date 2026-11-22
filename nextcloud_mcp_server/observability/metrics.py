@@ -303,6 +303,25 @@ vector_sync_dead_lettered_documents = Gauge(
     "Documents parked as permanently-failed (dead-letter tombstones in Qdrant)",
 )
 
+# ADR-042 §6: a score floor that is too high silently removes every image from
+# every result. These separate "floor too high" (image points indexed, hits flat
+# at zero) from "no images indexed" (both zero). Labelled by image model only,
+# never per query or per user.
+vector_sync_image_points = Gauge(
+    "mcp_vector_sync_image_points",
+    "Files with an image embedding in the vector store (ADR-042)",
+)
+image_search_queries_total = Counter(
+    "mcp_image_search_queries_total",
+    "Hybrid searches that ran the image prefetch (ADR-042)",
+    ["model"],
+)
+image_search_hits_total = Counter(
+    "mcp_image_search_hits_total",
+    "Image results (above the score floor) returned by hybrid searches",
+    ["model"],
+)
+
 # Dense-vector RAM footprint of the collection — the real cost driver for hybrid
 # search (billing is on source bytes, not vector RAM). Two views published by the
 # periodic vector_sync metrics task so operators can watch the "density risk"
@@ -1668,6 +1687,17 @@ def update_vector_sync_indexed_chunks(count: int) -> None:
 def update_vector_sync_dead_lettered_documents(count: int) -> None:
     """Set the dead-lettered-documents gauge."""
     vector_sync_dead_lettered_documents.set(count)
+
+
+def update_vector_sync_image_points(count: int) -> None:
+    """Set the indexed-image-points gauge."""
+    vector_sync_image_points.set(count)
+
+
+def record_image_search(model: str, hits: int) -> None:
+    """Count one image-prefetch search and the image results it returned."""
+    image_search_queries_total.labels(model=model).inc()
+    image_search_hits_total.labels(model=model).inc(hits)
 
 
 def update_vector_sync_estimated_vector_bytes(byte_estimate: float) -> None:

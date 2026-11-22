@@ -59,6 +59,17 @@ _server_start_time = time.time()
 SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid", "exact")
 
 
+def _image_search_ready(settings: Settings) -> bool:
+    if not settings.vector_sync_enabled:
+        return False
+    # Deferred: the vector stack is only importable when vector sync is on.
+    from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
+        image_vector_ready,
+    )
+
+    return image_vector_ready()
+
+
 def supported_search_types(settings: Settings) -> list[str]:
     """Search algorithms this server can actually serve, given its config.
 
@@ -381,6 +392,11 @@ async def get_server_status(request: Request) -> JSONResponse:
         # when unconfigured, so a client can distinguish "server says no" from
         # "server too old to know about reranking".
         "rerank_available": rerank_available(settings),
+        # ADR-042 §7: hybrid search also matches images. The effective
+        # capability (image_vector_ready), not the configured model, so a client
+        # renders image results only when the server can produce them. Decided
+        # once per process, so a client may cache it until the version changes.
+        "image_search": _image_search_ready(settings),
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
     }

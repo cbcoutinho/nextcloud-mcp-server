@@ -1342,6 +1342,20 @@ first to see the volume: `nc_get_vector_sync_status` and
 paid for), `image_embedded` and `image_skipped`. A file whose only point is its
 image counts in `indexed_documents`.
 
+**Search.** `hybrid` search (the default) adds an image prefetch that embeds the
+query into the image model's space, one extra embedding call per search, run
+alongside the text one. Images scoring below `IMAGE_SEARCH_SCORE_THRESHOLD` are
+dropped before fusion, so a query no image matches returns text only. Image
+results carry `match: "image"` (`metadata.match` on the REST routes) and no
+excerpt, so `rerank` leaves them in retrieval order after the scored rows.
+`semantic`, `bm25`, `exact` and `fusion="dbsf"` stay text-only.
+`GET /api/v1/status` reports `image_search: true` when this is active.
+
+**Tuning the floor.** A floor set too high hides every image without an error.
+Compare `mcp_image_search_hits_total` (image results returned, by model) with
+`mcp_vector_sync_image_points` (images indexed): hits flat at zero while images
+are indexed means the floor is too high.
+
 Existing collections gain the `image` vector in place; notes and files are not
 re-indexed. To switch to a model of a different width, delete the vector with
 Qdrant's `delete_vector_name(<collection>, "image")` and restart.
