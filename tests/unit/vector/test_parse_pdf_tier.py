@@ -243,3 +243,13 @@ def test_uses_tier_ladder(ocr_images_registry):
     image_reader.supports.return_value = True
     reg.register(image_reader, priority=20)
     assert not processor._uses_tier_ladder(reg, "image/png")
+
+
+@pytest.mark.parametrize(
+    "content_type", ["application/pdf; charset=binary", "IMAGE/PNG; q=1"]
+)
+def test_tier_lookup_ignores_content_type_parameters(ocr_images_registry, content_type):
+    """The tier path now passes the source's own content type (not the PDF
+    constant) to the processor lookup, so parameters must not break the match."""
+    reg, _ = ocr_images_registry
+    assert reg._processor_for_tier("ocr", content_type) is not None
