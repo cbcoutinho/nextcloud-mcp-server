@@ -124,8 +124,9 @@ raised from `>=1.17.0` to `>=1.18.0`, the first release that exposes
 neither, 1.18.0 has both). The client bump is **unconditional** (no guarded
 import) and lands in the same implementation PR as the schema step. The
 degrade path below covers an old *server*, not an old client.
-Against an older server the call fails; the server logs an error and leaves
-image indexing disabled rather than refusing to boot — text search must not
+Against an older Qdrant server the call fails. The MCP server then logs an
+ERROR that names the restart needed to retry, and leaves image indexing
+disabled for that collection rather than refusing to boot — text search must not
 regress because an optional feature can't be provisioned.
 
 ### 4. Image points belong to the file, not a new doc type
@@ -177,7 +178,10 @@ Consequences of keeping `doc_type="file"`:
   `/api/v1/chunk-context`. A missed skip would silently return an image as an
   empty-text chunk. So the exclusion (`must_not: vector_kind == "image"`) is
   added **centrally**, in `search/access_filter.build_base_filter_conditions`,
-  and the image prefetch is the only caller that opts out. A `must_not` on a
+  and the image prefetch is the only caller that drops that one condition.
+  It still applies every other condition from the helper, including the
+  ownership/ACL and path filters, so image results are access-controlled
+  exactly like text results. A `must_not` on a
   `match` condition keeps points that lack the field, so text points (which
   have no `vector_kind`) pass through it. A test pins this against both a
   real Qdrant and the qdrant-client local-mode backend, because the two have
@@ -235,10 +239,15 @@ new branch for what is, to Nextcloud, just a file.
 
   The trade-off is accepted on purpose: while the image provider is down,
   tagged images are not text-indexed either, because the text and image
-  points of one document succeed or fail together. A transient failure
+  points of one document succeed or fail together. A bounded-retry fallback
+  to text-only (`image_skipped_reason="provider_unavailable"`) was rejected:
+  it would mark documents indexed without their image vector during an
+  outage, and nothing would re-queue them afterwards. A long outage instead
+  shows up as a growing retry and dead-letter count, which is visible and
+  self-heals once the dead-letter markers are cleared. A transient failure
   (timeout, 5xx, 429) retries as usual. A **permanent** rejection of the
-  input (the provider or gateway answers 400/422 for that image, for example
-  a corrupt file or an unsupported encoding) is not retried. The image point
+  input (classified as below, for example a corrupt file or an unsupported
+  encoding) is not retried. The image point
   is recorded as skipped with the reason, and the document's text chunks are
   written. Retrying the same bytes cannot succeed, so dead-lettering them
   would only add noise.
@@ -266,7 +275,9 @@ new branch for what is, to Nextcloud, just a file.
     writes the existing terminal dead-letter marker (`mark_dead_letter`,
     `vector/dead_letter.py`). That marker is content-addressed on `etag` plus
     `tiers_sig`, and the scanner honours it for every user. The image model id
-    is part of `tiers_sig`, so new content or a model change makes the
+    is part of `tiers_sig` **for image MIME types only**, so swapping the
+    image model never re-queues PDFs or other documents. New content or a
+    model change makes the
     document retryable again.
 - **Formats.** `indexable_mime_types` gains the intersection of the
   provider's accepted types and what the worker can decode for downscaling.
@@ -319,6 +330,9 @@ zero on a dashboard. Sync status and a gauge report the number of indexed
 image points next to it. That separates "the floor is too high" (images
 indexed, zero hits) from "no images indexed" (both zero).
 
+The threshold behaviour is tested against both a real Qdrant and local
+mode, like the `must_not` semantics in §4.
+
 **RRF only.** A prefetch `score_threshold` cuts the candidate list before
 fusion. That is harmless for RRF, which uses ranks. DBSF normalises each
 prefetch by its score distribution, and a list truncated at the floor skews
@@ -358,8 +372,10 @@ for it.
   it. This also means
   `/api/v1/status.image_search` does not change between restarts, so
   Astrolabe may cache it.
-- **A floor is required.** The per-model floors in §6 exist for the known
-  model ids. For any other image model, `image_vector_ready` stays false
+- **A floor is required.** Until the Status acceptance criterion is met,
+  **every** model takes the path described next, because no default floors
+  ship. After acceptance, the validated per-model floors from §6 apply to
+  the known model ids. For any other image model, `image_vector_ready` stays false
   unless the operator sets `IMAGE_SEARCH_SCORE_THRESHOLD` explicitly, and a
   startup warning says so. Running without a floor would bring back the
   RRF cannot-abstain problem, so it is never the silent default.
@@ -420,3 +436,7 @@ for it.
 4. Query: image prefetch with per-model floor and hit metric, `image_search`
    status field, Astrolabe pact and integration test.
 5. `GatewayProvider` image methods and consumer pact (gateway side: #1537).
+
+Each step ships its own tests in the same PR, per the repo's API-surface
+rule: unit tests for every step, plus an integration (e2e) test for steps 3
+and 4, and Pact coverage for steps 4 and 5.
