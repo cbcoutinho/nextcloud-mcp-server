@@ -20,6 +20,7 @@ Placeholders contain:
 import logging
 import time
 import uuid
+from typing import Any
 
 import anyio
 from qdrant_client import AsyncQdrantClient, models
@@ -341,10 +342,14 @@ async def update_placeholder_status(
         qdrant_client = await get_qdrant_client()
         settings = get_settings()
 
-        # Update payload using set_payload
+        payload: dict[str, Any] = {"status": status}
+        if status in ("failed", "completed"):
+            # No longer queued: out of image_pending, which counts image work
+            # still to be paid for. A re-queue's placeholder write re-stamps it.
+            payload[payload_keys.IMAGE_PENDING] = False
         await qdrant_client.set_payload(
             collection_name=settings.get_collection_name(),
-            payload={"status": status},
+            payload=payload,
             points=Filter(
                 must=[
                     FieldCondition(key="user_id", match=MatchValue(value=user_id)),

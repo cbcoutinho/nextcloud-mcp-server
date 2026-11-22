@@ -116,3 +116,40 @@ async def test_route_reports_image_counts(counts):
         1,
     )
     assert body["indexed_documents"] == 3 + 2
+
+
+@pytest.mark.parametrize(("status", "pending"), [("processing", 1), ("failed", 0)])
+async def test_a_failed_placeholder_leaves_image_pending(monkeypatch, status, pending):
+    """image_pending is spend still to come: a file marked failed isn't."""
+    from nextcloud_mcp_server.vector import placeholder
+
+    client = AsyncQdrantClient(location=":memory:")
+    vec = models.VectorParams(size=2, distance=models.Distance.COSINE)
+    await client.create_collection("c", vectors_config={"dense": vec})
+    await client.upsert(
+        "c",
+        points=[
+            models.PointStruct(
+                id=1,
+                vector={"dense": [1, 0]},
+                payload={
+                    "user_id": "alice",
+                    "doc_id": "7",
+                    "doc_type": "file",
+                    "is_placeholder": True,
+                    payload_keys.IMAGE_PENDING: True,
+                },
+            )
+        ],
+    )
+    settings = MagicMock()
+    settings.get_collection_name.return_value = "c"
+    monkeypatch.setattr(placeholder, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        placeholder, "get_qdrant_client", AsyncMock(return_value=client)
+    )
+
+    await placeholder.update_placeholder_status("7", "file", "alice", status)
+
+    assert (await count_images(client, "c")).pending == pending
+    await client.close()

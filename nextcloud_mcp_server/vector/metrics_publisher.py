@@ -140,6 +140,9 @@ async def count_images(
         ),
         "embedded": Filter(must=[image]),
         "image_only": Filter(must=[image, _match(payload_keys.IMAGE_ONLY, True)]),
+        # With no ``must``, Qdrant requires at least one ``should`` to match: a
+        # skip recorded on chunk 0 or on a dead-letter marker, one per document.
+        # Pinned on a real server by test_count_images_on_a_server.
         "skipped": Filter(
             must_not=[
                 IsEmptyCondition(
