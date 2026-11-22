@@ -142,6 +142,75 @@ def test_the_gateway_provider_prefix_resolves_to_the_same_curve():
     assert bare_src == prefixed_src == RELEVANCE_CALIBRATED
 
 
+# Every fitted non-bge reranker, as the gateway names it (Deck #1536).
+_GATEWAY_RERANKERS = [
+    "bedrock/amazon.rerank-v1:0",
+    "bedrock/cohere.rerank-v3-5:0",
+    "openrouter/cohere/rerank-v3.5",
+    "openrouter/cohere/rerank-4-pro",
+    "openrouter/voyageai/rerank-2.5",
+]
+
+
+@pytest.mark.parametrize("model", _GATEWAY_RERANKERS)
+def test_gateway_rerankers_resolve_to_a_calibrated_curve(model):
+    """The prefix strips to the curve's key; `openrouter/cohere/...` keeps its
+    org segment, so it needs its own key rather than reusing Bedrock's."""
+    prefixed = _rel(rerank_score=0.3, rerank_model=model)
+    bare = _rel(rerank_score=0.3, rerank_model=model.partition("/")[2])
+
+    assert prefixed[1] == RELEVANCE_CALIBRATED
+    assert prefixed == pytest.approx(bare)
+
+
+@pytest.mark.parametrize("model", _GATEWAY_RERANKERS)
+@given(a=st.floats(0, 1), b=st.floats(0, 1))
+def test_every_fitted_curve_is_monotone(model, a, b):
+    lo, hi = sorted((a, b))
+    assert (
+        _rel(rerank_score=lo, rerank_model=model)[0]
+        <= _rel(rerank_score=hi, rerank_model=model)[0]
+    )
+
+
+def test_amazon_low_raw_scale_is_not_reported_as_near_zero():
+    """The bug behind #1536: amazon's raw scores sit near 0.0015, which the
+    uncalibrated clamp showed as ~0% — an empty bar for a typical hit. Its
+    curve maps the fit mean to roughly the corpus base rate instead.
+
+    Deliberately tied to the shipped parameters: a refit moves this value and
+    should update the expectation consciously."""
+    value, _ = _rel(rerank_score=0.0015, rerank_model="bedrock/amazon.rerank-v1:0")
+
+    assert value == pytest.approx(0.18, abs=0.02)
+
+
+# Expected values computed from the fit script's full-precision output
+# (curves.json), not from the constants in relevance.py, so a mistyped
+# constant fails here. Refitting a curve means updating its row.
+@pytest.mark.parametrize(
+    ("model", "raw", "expected"),
+    [
+        ("bedrock/amazon.rerank-v1:0", 0.01, 0.315436),
+        ("bedrock/cohere.rerank-v3-5:0", 0.4, 0.483268),
+        ("openrouter/cohere/rerank-4-pro", 0.7, 0.109144),
+        ("openrouter/voyageai/rerank-2.5", 0.6, 0.407123),
+    ],
+)
+def test_shipped_constants_match_the_fit_output(model, raw, expected):
+    assert _rel(rerank_score=raw, rerank_model=model)[0] == pytest.approx(
+        expected, abs=1e-4
+    )
+
+
+def test_openrouter_cohere_v35_shares_the_bedrock_curve():
+    """Same model behind two routes; its scores matched Bedrock's to 0.0009
+    on every rescored pair, so one curve serves both."""
+    assert _rel(rerank_score=0.4, rerank_model="openrouter/cohere/rerank-v3.5") == _rel(
+        rerank_score=0.4, rerank_model="bedrock/cohere.rerank-v3-5:0"
+    )
+
+
 def test_an_unfitted_reranker_is_reported_uncalibrated_not_guessed():
     """Better to say "no fitted mapping" than to apply another model's curve —
     that is how a number acquires a meaning it cannot back."""
@@ -204,6 +273,18 @@ def test_all_curves_share_one_fit_base_rate():
     assert relevance_fit_base_rate(RELEVANCE_CALIBRATED) == pytest.approx(
         relevance_fit_base_rate(RELEVANCE_ORDINAL)
     )
+
+
+def test_every_cross_encoder_curve_was_fitted_at_the_same_prevalence():
+    """relevance_fit_base_rate raises on disagreement; pin each curve
+    explicitly too, so adding a reranker fitted on a different pool fails
+    with its name rather than a generic ValueError."""
+    from nextcloud_mcp_server.search.relevance import _CROSS_ENCODER_CURVES
+
+    assert len(_CROSS_ENCODER_CURVES) > 1
+    for model, curve in _CROSS_ENCODER_CURVES.items():
+        assert curve.fit_base_rate == pytest.approx(0.178), model
+        assert curve.source == RELEVANCE_CALIBRATED, model
 
 
 def test_the_fit_base_rate_is_published_with_the_number():
