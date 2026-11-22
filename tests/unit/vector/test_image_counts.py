@@ -87,10 +87,13 @@ def counts(monkeypatch):
     )
     for module in (semantic, metrics_publisher):
         monkeypatch.setattr(module, "count_indexed", AsyncMock(return_value=(3, 30)))
-        monkeypatch.setattr(module, "count_images", AsyncMock(return_value=images))
         monkeypatch.setattr(
             module, "estimate_hybrid_vector_bytes", AsyncMock(return_value=(30, 0))
         )
+    # Both surfaces reach it through metrics_publisher.count_images_or_zero.
+    monkeypatch.setattr(
+        metrics_publisher, "count_images", AsyncMock(return_value=images)
+    )
     monkeypatch.setattr(semantic, "get_qdrant_client", AsyncMock())
     monkeypatch.setattr(qdrant_module, "get_qdrant_client", AsyncMock())
 
@@ -153,3 +156,14 @@ async def test_a_failed_placeholder_leaves_image_pending(monkeypatch, status, pe
 
     assert (await count_images(client, "c")).pending == pending
     await client.close()
+
+
+async def test_a_failing_image_count_leaves_the_text_figures(counts, monkeypatch):
+    """The image count is its own failure domain (e.g. an unmigrated index)."""
+    monkeypatch.setattr(
+        metrics_publisher, "count_images", AsyncMock(side_effect=RuntimeError("x"))
+    )
+    result = await semantic.nc_get_vector_sync_status(MagicMock())
+    assert (result.indexed_documents, result.indexed_chunks) == (3, 30)
+    assert result.hybrid_chunks == 30  # computed alongside, not zeroed with it
+    assert result.image_embedded == 0

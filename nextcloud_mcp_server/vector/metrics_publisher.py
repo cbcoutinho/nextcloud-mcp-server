@@ -164,6 +164,21 @@ async def count_images(
     return ImageCounts(**counts)
 
 
+async def count_images_or_zero(
+    qdrant_client: AsyncQdrantClient, collection: str
+) -> ImageCounts:
+    """:func:`count_images` for the status surfaces, zeros on failure.
+
+    Its own failure domain: an image-count error (e.g. an index the startup
+    migration hasn't created yet) must not also zero the text figures.
+    """
+    try:
+        return await count_images(qdrant_client, collection)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to count image points: %s", e, exc_info=True)
+        return ImageCounts()
+
+
 async def count_hybrid_chunks(
     qdrant_client: AsyncQdrantClient, collection: str, *, exact: bool = True
 ) -> int:

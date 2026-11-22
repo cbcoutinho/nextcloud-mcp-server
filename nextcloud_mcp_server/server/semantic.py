@@ -60,7 +60,7 @@ from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.metrics_publisher import (
     ImageCounts,
-    count_images,
+    count_images_or_zero,
     count_indexed,
     estimate_hybrid_vector_bytes,
 )
@@ -1195,9 +1195,6 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
             indexed_documents, indexed_chunks = await count_indexed(
                 qdrant_client, settings.get_collection_name()
             )
-            # Image-only files have no chunk_index == 0 point to be counted by.
-            images = await count_images(qdrant_client, settings.get_collection_name())
-            indexed_documents += images.image_only
             # Hybrid chunks (dense-bearing) drive the vector-RAM footprint;
             # keyword-index chunks are sparse-only and cost no dense RAM (#624).
             # Shared helper so this and the HTTP status route can't drift.
@@ -1209,6 +1206,13 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
                 settings.get_collection_name(),
                 settings.vector_ram_hnsw_overhead_factor,
             )
+            # Last, and zeros on its own failure: the image figures can't take
+            # the text ones down with them. Image-only files have no
+            # chunk_index == 0 point to be counted by.
+            images = await count_images_or_zero(
+                qdrant_client, settings.get_collection_name()
+            )
+            indexed_documents += images.image_only
         except Exception as e:
             logger.warning(
                 "Failed to query Qdrant for indexed counts: %s", e, exc_info=True
