@@ -70,6 +70,11 @@ _OCR_CONNECT_TIMEOUT_SECONDS = 10.0
 OCR_BATCH_PENDING_KEY = "ocr_batch_pending"
 OCR_BATCH_RETRY_IN_KEY = "ocr_batch_retry_in"
 
+# Standalone image types the OCR tier claims when DOCUMENT_OCR_IMAGES is on
+# (#1882). Every backend accepts them: the gateway (surya/Mistral) and docling
+# natively, direct Mistral as an ``image_url`` chunk.
+OCR_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
+
 # Ceiling on how long one batch-OCR poll may defer. The gateway's Retry-After is
 # honoured (floored at the poll interval), but capped here so a malformed header
 # (e.g. an accidental extra zero) can't stall a document for an absurd duration.
@@ -344,10 +349,13 @@ class _MistralOcrBackend(_OcrBackend):
         # through the SDK; on expiry this raises TimeoutError, which the
         # OcrProcessor turns into a clean parse failure.
         ocr_timeout = get_settings().document_ocr_timeout_seconds
+        # Mistral OCR takes images as ``image_url`` chunks; ``document_url`` is
+        # for PDFs (and other documents) only.
+        kind = "image_url" if mime_type.startswith("image/") else "document_url"
         with anyio.fail_after(ocr_timeout):
             resp = await self._client.ocr.process_async(
                 model=self._model,
-                document={"type": "document_url", "document_url": data_url},
+                document={"type": kind, kind: data_url},
             )
         pages = [(p.index, p.markdown or "") for p in (resp.pages or [])]
         return _pages_to_text(pages)
@@ -689,6 +697,10 @@ class OcrProcessor(DocumentProcessor):
 
     @property
     def supported_mime_types(self) -> set[str]:
+        # Read per call so tests (and set_override) can flip the flag.
+        settings = get_settings()
+        if settings.document_ocr_enabled and settings.document_ocr_images:
+            return {"application/pdf", *OCR_IMAGE_MIME_TYPES}
         return {"application/pdf"}
 
     async def process(

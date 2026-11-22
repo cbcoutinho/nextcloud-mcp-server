@@ -22,7 +22,9 @@ from .word import DocxProcessor
 # ``ocr`` tier — its backend (gateway vs direct Mistral), model (Mistral, surya,
 # …), and sync/batch mode are all chosen from settings. It is reached only when
 # ``document_ocr_enabled`` is set. OCR gets the lowest priority so it's never the
-# non-tiered default for PDFs.
+# non-tiered default for PDFs. With ``document_ocr_images`` it also claims
+# PNG/JPEG/WebP (#1882); any other image processor (Docling, Tesseract, ...)
+# still wins those by priority.
 #
 # This module is imported lazily (first parse), never at app startup, so reading
 # settings here does not drag the parse stack onto the startup path (#877).

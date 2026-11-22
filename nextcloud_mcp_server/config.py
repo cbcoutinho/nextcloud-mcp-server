@@ -446,6 +446,10 @@ _DEFAULTS: dict[str, Any] = {
     # Seconds between batch-job polls (the procrastinate re-enqueue delay). Each
     # poll re-runs the tier; keep it well above a few seconds.
     "document_ocr_batch_poll_seconds": 120,
+    # OCR standalone PNG/JPEG/WebP images (screenshots, photos of documents) as
+    # well as scanned PDFs (#1882). Opt-in: every image becomes a paid/GPU OCR
+    # call. No effect unless DOCUMENT_OCR_ENABLED is also set.
+    "document_ocr_images": False,
     # Observability
     "metrics_enabled": True,
     "metrics_port": 9090,
@@ -1639,6 +1643,9 @@ class Settings:
     # polled indefinitely — the gateway owns the OCR lifecycle (Deck #523), so
     # there is no worker-side give-up deadline.
     document_ocr_batch_poll_seconds: int = 120
+    # Also OCR standalone PNG/JPEG/WebP images (#1882). Requires
+    # document_ocr_enabled; opt-in because each image is a paid/GPU OCR call.
+    document_ocr_images: bool = False
     # OCR escalation triggers (tier-0), per-tenant tunable. A page is OCR-worthy
     # if near-empty (< min_page_chars) OR low text-quality (< min_text_quality)
     # OR (when detect_scanned, image-analysis only runs when OCR is enabled)
@@ -1790,6 +1797,13 @@ class Settings:
                 "is disabled; page-packing only runs inside page-aware chunking, so "
                 "this setting has no effect. Enable DOCUMENT_CHUNK_PAGE_AWARE to "
                 "activate packing."
+            )
+
+        if self.document_ocr_images and not self.document_ocr_enabled:
+            logger.warning(
+                "DOCUMENT_OCR_IMAGES is enabled but DOCUMENT_OCR_ENABLED is "
+                "disabled; standalone images are only OCR'd when OCR is enabled, "
+                "so this setting has no effect."
             )
 
         # Surface the keep-alive opt-out at startup so an operator who set it to

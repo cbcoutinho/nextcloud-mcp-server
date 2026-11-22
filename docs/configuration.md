@@ -922,6 +922,31 @@ DOCUMENT_OCR_MODEL=mistral/mistral-ocr-latest  # provider-namespaced model id
   (Ignored by the `docling` backend, which uses the docling-serve instance's own
   OCR engine.)
 
+#### OCR for standalone images — `DOCUMENT_OCR_IMAGES`
+
+```dotenv
+DOCUMENT_OCR_IMAGES=true               # also OCR PNG/JPEG/WebP files (default: false)
+```
+
+With `DOCUMENT_OCR_ENABLED=true`, setting `DOCUMENT_OCR_IMAGES=true` makes the OCR
+tier also read standalone `image/png`, `image/jpeg` and `image/webp` files
+(screenshots, photos of documents) through the configured OCR backend, so a
+tagged image is indexed as text like a scanned PDF (#1882). It does nothing while
+`DOCUMENT_OCR_ENABLED` is off (a startup warning says so).
+
+- **Cost:** every tagged image becomes one OCR call — billed per page by Mistral, or
+  GPU time for surya. It is off by default for that reason; narrow
+  `VECTOR_SYNC_INDEXABLE_MIME_TYPES` if only some folders should pay for it.
+- **Priority:** OCR is the lowest-priority processor, so an image processor that
+  is already configured (the images-only Docling processor, Tesseract, …) keeps
+  handling images. The flag only covers images nothing else reads.
+- **Per-tier deployments** (Postgres ingest queue): an image skips the
+  `fast`/`structured` tiers and hops straight to the `ingest-ocr` queue (escalation
+  reason `image`), so it runs where the GPU scales and where `DOCUMENT_OCR_MODE=batch`
+  can defer its poll. The in-process pipeline OCRs it inline.
+- Images carry no PDF text layer, so no highlight bounding boxes are stored for
+  them; search results still cite the text.
+
 #### Docling (docling-serve) — photographed / scanned / handwritten text
 
 [docling](https://github.com/docling-project/docling) has notably stronger OCR

@@ -376,7 +376,7 @@ def test_docling_wins_image_routing_but_not_pdf():
     # and docling never appears as a PDF tier candidate for any tier.
     assert registry.find_processor("application/pdf").name == "fake-images"
     for t in ("fast", "structured", "ocr"):
-        picked = registry._pdf_processor_for_tier(t)
+        picked = registry._processor_for_tier(t)
         assert picked is None or picked.name != "docling"
 
 
