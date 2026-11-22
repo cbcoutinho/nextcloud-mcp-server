@@ -119,7 +119,24 @@ check (`find_indexed_content`, which already compares `etag` and
 configured image model. An image whose `etag` is unchanged but whose identity
 differs therefore reads as stale and is re-queued. Dead-lettered documents
 retry because the model id is part of `tiers_sig`. Text and
-sparse vectors are never touched. The alias flip remains the tool for a
+sparse vectors are never touched.
+
+**The identity rule, so that the check cannot loop.** The
+`image_embedding_identity` comparison applies only to documents that are
+(a) an image MIME type the configured model accepts, (b) `hybrid`, and
+(c) in a collection with `image_vector_ready`. Every point such a document
+writes carries `image_embedding_identity` set to the configured model,
+whether the image point was written or **skipped** (permanent rejection or
+size cap, §5). A skipped document records the skip next to the identity,
+not instead of it. So a skip reads as fresh until the content or the model
+changes. `keyword-index` documents, other MIME types and collections without
+the vector never take part in the comparison.
+
+**When the feature is first enabled**, existing hybrid image documents carry
+no `image_embedding_identity`. Each one is re-queued **once**, to backfill
+its image point. That is intended, and it is the same path as a model swap.
+The volume shows in sync status as pending images before it is spent, and it
+is bounded by queue concurrency. The alias flip remains the tool for a
 *text*-model change, as before.
 
 Minimum versions: Qdrant server **1.18** for the in-place add. New
@@ -232,7 +249,10 @@ new branch for what is, to Nextcloud, just a file.
   byte limit before embedding, and the provider chunks batches to the
   per-request cap. A file above `IMAGE_EMBEDDING_MAX_SOURCE_BYTES` (default
   50 MB) is not embedded at all: it is recorded as skipped, not failed, and
-  counted in sync status.
+  counted in sync status. A size-cap skip is recorded exactly like a
+  permanent rejection (below): `image_skipped_reason` on the text points if
+  there are any, otherwise the terminal dead-letter marker. A document with
+  no points and no record would re-queue every cycle.
 - **Processing, one write.** For one document job the worker extracts text
   and computes every embedding (text chunks and image) first. It then writes
   them in a single upsert, followed by `prune_stale_chunks`. "No processor
@@ -336,7 +356,10 @@ rank comparable to a genuine text hit. Cosine *is* meaningful within one
 model's space, and PR #800's eval gives a starting window: matches ≥ 0.40 /
 distractors ≤ 0.18 (Titan), matches ≥ 0.38 / distractors ≤ 0.11 (Cohere v4).
 The two models' scales differ, so the floor is a **per-model** default keyed
-on the image model id. The key is the model's own id with any gateway routing
+on the image model id **and output width**: `IMAGE_EMBEDDING_DIMENSIONS`
+truncation changes the score distribution, so a floor holds only at the width
+it was measured at, and the probe set records that width. The model part of the
+key is the model's own id with any gateway routing
 namespace stripped (`bedrock/amazon.titan-embed-image-v1` and
 `amazon.titan-embed-image-v1` share a floor), because the score scale belongs
 to the model, not to the provider that serves it. The provisional values are the midpoints of those
@@ -478,6 +501,12 @@ the gateway can reach.
   authenticated `/api/v1/search` are not. That is the existing ADR-029
   phase-4 gap, tracked on board 11. The implementation PR adds image
   results to that card instead of leaving them silently uncovered.
+- **Data egress.** Image bytes are sent to the configured embedding
+  upstream (Bedrock, the gateway and whatever it routes to, or a future
+  OpenAI-compatible endpoint). Indexing is opt-in per folder through tags,
+  but operators with privacy requirements should know that images leave the
+  deployment unless the provider is self-hosted. `docs/configuration.md`
+  says so next to `IMAGE_EMBEDDING_MODEL`.
 - **Storage.** One extra vector per indexed image (4 KiB at 1024-d float32,
   6 KiB at 1536-d), plus an HNSW graph for the `image` vector.
 - **Billing.** Image embedding calls are metered separately from
@@ -503,13 +532,30 @@ the gateway can reach.
    #1247).
 3. Schema: create or extend the `image` vector, per-collection validation,
    `image_vector_ready`, version floor.
+   - The startup log lists **every** reason `image_vector_ready` is false for
+     a collection (old Qdrant, size mismatch, model not confirmed, no floor
+     configured).
 4. Ingest: discovery, `image_point_id`, single-write failure semantics,
    central `vector_kind` exclusion, sync-status counts.
+   - Dual-backend test: a range filter skips points without `chunk_index`,
+     so prune leaves the image point alone.
+   - `tiers_sig` is made mode-aware if it isn't already (`index_mode` joins
+     the image-type signature), so a marker written under one mode never
+     suppresses a retry under the other.
+   - The identity rule from §3, with tests for a skipped image, a
+     `keyword-index` image and first-enable backfill.
 5. Query: image prefetch with per-model floor and hit metric, `image_search`
    status field, Astrolabe pact and integration test.
+   - The hit metric is labelled by image model only, never per query or per
+     user.
+   - With `fusion="dbsf"` the image prefetch is skipped, and a debug log
+     says so.
 6. Follow-ups: direct OpenAI-compatible targets (OpenRouter, self-hosted),
    each once its wire format is pinned.
 
 Each step ships its own tests in the same PR, per the repo's API-surface
-rule: unit tests for every step, an integration (e2e) test for steps 4 and
-5, and Pact coverage for steps 2 and 5.
+rule: unit tests for every step, an integration (e2e) test for steps 3, 4
+and 5, and Pact coverage for steps 2 and 5. Step 3's integration test runs
+the in-place add against the CI Qdrant (`v1.20.1`). The old-Qdrant degrade
+path is covered by a unit test that fails `create_vector_name`, since CI does
+not run an old server.
