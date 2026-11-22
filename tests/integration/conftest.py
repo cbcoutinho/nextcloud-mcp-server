@@ -42,6 +42,7 @@ async def reset_all_singletons():
     # Store originals for restoration after test
     originals = {
         "qdrant_client": qdrant_module._qdrant_client,
+        "image_vector_ready": qdrant_module._image_vector_ready,
         "bm25_service": bm25_module._bm25_service,
         "provider": registry_module._provider,
         "vector_sync_state": (
@@ -68,6 +69,7 @@ async def reset_all_singletons():
 
     # Reset all singletons to None/fresh state
     qdrant_module._qdrant_client = None
+    qdrant_module._image_vector_ready = False  # decided with the client
     bm25_module._bm25_service = None
     registry_module._provider = None
     app_module._vector_sync_state.document_send_stream = None
@@ -90,6 +92,7 @@ async def reset_all_singletons():
 
     # Restore originals
     qdrant_module._qdrant_client = originals["qdrant_client"]
+    qdrant_module._image_vector_ready = originals["image_vector_ready"]
     bm25_module._bm25_service = originals["bm25_service"]
     registry_module._provider = originals["provider"]
     (

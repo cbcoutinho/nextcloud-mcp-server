@@ -118,3 +118,13 @@ async def test_an_old_server_degrades_instead_of_raising(
     with caplog.at_level(logging.ERROR, logger=LOGGER):
         assert await _ensure(client) is False
     assert "needs Qdrant >= 1.18; restart to retry" in caplog.text
+
+
+async def test_a_confirmed_model_with_no_width_stays_off(client, monkeypatch, caplog):
+    """Never ready over a vector that was never created."""
+    _configure(monkeypatch, model=SIMPLE_IMAGE_MODEL)
+    monkeypatch.setattr(SimpleProvider, "get_image_dimension", lambda self: None)
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        assert await _ensure(client) is False
+    assert "image" not in await _vectors(client)
+    assert "reported no width" in caplog.text

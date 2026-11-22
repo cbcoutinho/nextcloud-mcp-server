@@ -209,6 +209,11 @@ async def _ensure_image_vector(
     width: int | None = None
     if await provider.confirm_image_embeddings():
         width = provider.get_image_dimension()
+        if not width:
+            # Confirmed but no width: there is nothing to size the vector with,
+            # so it must not read as ready over a vector that doesn't exist.
+            reasons.append(f"{type(provider).__name__} reported no width for {model!r}")
+            width = None
     else:
         reasons.append(
             f"{type(provider).__name__} did not confirm {model!r} as an image model"
@@ -238,6 +243,9 @@ async def _ensure_image_vector(
                     collection_name,
                 )
             except Exception as exc:  # noqa: BLE001 — old server, auth, network
+                # The reason line below carries the message; the traceback is
+                # what tells an old-server 404 from an auth failure.
+                logger.debug("create_vector_name failed", exc_info=True)
                 reasons.append(
                     f"could not add the {IMAGE_VECTOR_NAME!r} vector (needs Qdrant "
                     f">= 1.18; restart to retry): {exc}"

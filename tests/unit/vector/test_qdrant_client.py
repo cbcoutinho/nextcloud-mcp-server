@@ -1005,11 +1005,14 @@ def reset_qdrant_singleton():
     """
     original_client = qdrant_module._qdrant_client
     original_lock = qdrant_module._qdrant_init_lock
+    original_ready = qdrant_module._image_vector_ready
     qdrant_module._qdrant_client = None
     qdrant_module._qdrant_init_lock = None
+    qdrant_module._image_vector_ready = False
     yield
     qdrant_module._qdrant_client = original_client
     qdrant_module._qdrant_init_lock = original_lock
+    qdrant_module._image_vector_ready = original_ready
 
 
 def _stub_provisional(mocker, get_collection_side_effect):
