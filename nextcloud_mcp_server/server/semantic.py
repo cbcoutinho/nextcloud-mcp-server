@@ -1210,7 +1210,9 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
                 settings.vector_ram_hnsw_overhead_factor,
             )
         except Exception as e:
-            logger.warning("Failed to query Qdrant for indexed counts: %s", e)
+            logger.warning(
+                "Failed to query Qdrant for indexed counts: %s", e, exc_info=True
+            )
             # Continue with zeroed counts
 
         # Determine status

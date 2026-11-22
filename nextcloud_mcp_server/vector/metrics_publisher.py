@@ -131,30 +131,34 @@ async def count_images(
         return FieldCondition(key=key, match=MatchValue(value=value))
 
     image = _match(payload_keys.VECTOR_KIND, payload_keys.VECTOR_KIND_IMAGE)
-    return ImageCounts(
-        pending=await _count(
-            Filter(
-                must=[
-                    _match("is_placeholder", True),
-                    _match(payload_keys.IMAGE_PENDING, True),
-                ]
-            )
+    filters = {
+        "pending": Filter(
+            must=[
+                _match("is_placeholder", True),
+                _match(payload_keys.IMAGE_PENDING, True),
+            ]
         ),
-        embedded=await _count(Filter(must=[image])),
-        image_only=await _count(
-            Filter(must=[image, _match(payload_keys.IMAGE_ONLY, True)])
+        "embedded": Filter(must=[image]),
+        "image_only": Filter(must=[image, _match(payload_keys.IMAGE_ONLY, True)]),
+        "skipped": Filter(
+            must_not=[
+                IsEmptyCondition(
+                    is_empty=PayloadField(key=payload_keys.IMAGE_SKIPPED_REASON)
+                )
+            ],
+            should=[_match("chunk_index", 0), _match(DEAD_LETTER_KEY, True)],
         ),
-        skipped=await _count(
-            Filter(
-                must_not=[
-                    IsEmptyCondition(
-                        is_empty=PayloadField(key=payload_keys.IMAGE_SKIPPED_REASON)
-                    )
-                ],
-                should=[_match("chunk_index", 0), _match(DEAD_LETTER_KEY, True)],
-            )
-        ),
-    )
+    }
+    counts: dict[str, int] = {}
+
+    async def _run(name: str, flt: Filter) -> None:
+        counts[name] = await _count(flt)  # distinct keys per task
+
+    # Concurrent: this runs on every status poll.
+    async with anyio.create_task_group() as tg:
+        for name, flt in filters.items():
+            tg.start_soon(_run, name, flt)
+    return ImageCounts(**counts)
 
 
 async def count_hybrid_chunks(

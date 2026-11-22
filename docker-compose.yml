@@ -232,7 +232,8 @@ services:
       # Image embeddings (ADR-042) on the Simple provider's test-only model, so
       # the integration lane exercises image ingest, status and search end to
       # end. Its vectors are content hashes with no meaning, so the floor admits
-      # every hit: tests assert the plumbing, not relevance.
+      # every hit: tests assert the plumbing, not relevance. Never copy these
+      # two into a real deployment.
       - IMAGE_EMBEDDING_MODEL=simple-image-hash
       - IMAGE_SEARCH_SCORE_THRESHOLD=-1
       # Required to enable the /webhooks/nextcloud receiver (GHSA-8vh3-g2qg-2h2c).

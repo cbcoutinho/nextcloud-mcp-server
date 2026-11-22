@@ -16,6 +16,7 @@ import pytest
 from qdrant_client import AsyncQdrantClient, models
 
 from nextcloud_mcp_server.api import management
+from nextcloud_mcp_server.auth import scope_authorization
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.server import semantic
 from nextcloud_mcp_server.vector import ingest_status, metrics_publisher, payload_keys
@@ -68,6 +69,13 @@ def counts(monkeypatch):
     images = ImageCounts(pending=4, embedded=5, image_only=2, skipped=1)
     for module in (semantic, management):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
+    # BasicAuth for the tool's @require_scopes, whatever deployment mode the
+    # environment selects (CI runs with login flow on).
+    monkeypatch.setattr(
+        scope_authorization,
+        "get_settings",
+        lambda: SimpleNamespace(enable_login_flow=False),
+    )
     monkeypatch.setattr(
         ingest_status,
         "get_ingest_pending",
