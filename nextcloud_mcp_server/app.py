@@ -3284,26 +3284,20 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
                         client_info = params.get("clientInfo", {})
 
                         logger.info(
-                            "🔌 MCP client connected: %s v%s",
+                            "🔌 MCP client connected: %s v%s protocol=%s",
                             client_info.get("name", "unknown"),
                             client_info.get("version", "unknown"),
+                            params.get("protocolVersion", "unknown"),
                         )
 
-                        # Log capabilities in a structured way
-                        cap_summary = []
-                        # Check for presence using 'in' not truthiness (empty dict {} counts as having capability)
-                        if "roots" in capabilities:
-                            cap_summary.append("roots")
-                        if "sampling" in capabilities:
-                            cap_summary.append("sampling")
-                        if "experimental" in capabilities:
-                            cap_summary.append(
-                                f"experimental({len(capabilities['experimental'])} features)"
-                            )
-
+                        # Key presence, not truthiness: an empty {} still declares
+                        # the capability. Extensions (e.g. MCP Apps,
+                        # io.modelcontextprotocol/ui) are listed by name.
                         logger.info(
-                            "📋 Client capabilities: %s",
-                            ", ".join(cap_summary) if cap_summary else "none",
+                            "📋 Client capabilities: %s extensions: %s",
+                            ",".join(sorted(capabilities)) or "none",
+                            ",".join(sorted(capabilities.get("extensions") or {}))
+                            or "none",
                         )
                         # Log full capabilities at INFO level to diagnose capability issues
                         logger.info(
