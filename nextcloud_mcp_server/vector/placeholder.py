@@ -27,6 +27,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.providers import get_provider
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -363,6 +364,25 @@ async def update_placeholder_status(
             "Failed to update placeholder status for %s_%s: %s", doc_type, doc_id, e
         )
         # Don't raise - status updates are non-critical
+
+
+def exclude_image_points() -> Filter:
+    """``must`` condition that drops image points and keeps text points.
+
+    Text points carry no ``vector_kind``, and a ``must_not`` on a ``match``
+    keeps points that lack the field. Every text read (search, chunk-context,
+    chunk counts) adds this, through :func:`build_base_filter_conditions` or
+    directly; ``tests/unit/vector/test_image_point_exclusion.py`` checks each
+    Qdrant call site does.
+    """
+    return Filter(
+        must_not=[
+            FieldCondition(
+                key=payload_keys.VECTOR_KIND,
+                match=MatchValue(value=payload_keys.VECTOR_KIND_IMAGE),
+            )
+        ]
+    )
 
 
 def get_placeholder_filter() -> FieldCondition:

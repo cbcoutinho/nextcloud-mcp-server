@@ -18,7 +18,10 @@ from nextcloud_mcp_server.search.access_filter import build_ownership_filter
 from nextcloud_mcp_server.utils.validation import is_valid_nextcloud_doc_id
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 from nextcloud_mcp_server.vector.mail_content import build_mail_content
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+from nextcloud_mcp_server.vector.placeholder import (
+    exclude_image_points,
+    get_placeholder_filter,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -60,6 +63,7 @@ async def _get_chunk_from_qdrant(
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
+                    exclude_image_points(),
                     build_ownership_filter(user_id, accessible_owners),
                     FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
                     FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
@@ -137,6 +141,7 @@ async def _get_chunk_by_index_from_qdrant(
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
+                    exclude_image_points(),
                     build_ownership_filter(user_id, accessible_owners),
                     FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
                     FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
@@ -203,6 +208,7 @@ async def _get_deck_metadata_from_qdrant(
             collection_name=settings.get_collection_name(),
             scroll_filter=Filter(
                 must=[
+                    exclude_image_points(),
                     FieldCondition(key="user_id", match=MatchValue(value=user_id)),
                     FieldCondition(key="doc_id", match=MatchValue(value=card_id)),
                     FieldCondition(key="doc_type", match=MatchValue(value="deck_card")),
@@ -282,6 +288,7 @@ async def get_chunk_bbox_and_page_from_qdrant(
                 collection_name=settings.get_collection_name(),
                 scroll_filter=Filter(
                     must=[
+                        exclude_image_points(),
                         get_placeholder_filter(),
                         FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
                         build_ownership_filter(user_id, accessible_owners),
@@ -299,6 +306,7 @@ async def get_chunk_bbox_and_page_from_qdrant(
                 collection_name=settings.get_collection_name(),
                 scroll_filter=Filter(
                     must=[
+                        exclude_image_points(),
                         get_placeholder_filter(),
                         FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
                         build_ownership_filter(user_id, accessible_owners),

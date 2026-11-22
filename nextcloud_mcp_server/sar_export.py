@@ -50,7 +50,10 @@ from nextcloud_mcp_server.vector.oauth_sync import (
     NotProvisionedError,
     resolve_background_client,
 )
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+from nextcloud_mcp_server.vector.placeholder import (
+    exclude_image_points,
+    get_placeholder_filter,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -200,6 +203,7 @@ async def _indexed_chunks(
     qdrant = await get_qdrant_client()
     scroll_filter = Filter(
         must=[
+            exclude_image_points(),
             build_ownership_filter(user_id, owners),
             FieldCondition(key="doc_id", match=MatchValue(value=item.doc_id)),
             FieldCondition(key="doc_type", match=MatchValue(value=item.doc_type)),

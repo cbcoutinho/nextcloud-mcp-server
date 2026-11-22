@@ -51,7 +51,8 @@ class TestCountIndexed:
         # (placeholder filter + chunk_index), the distinct-document trick.
         chunks_filter = qc.count.await_args_list[0].kwargs["count_filter"]
         docs_filter = qc.count.await_args_list[1].kwargs["count_filter"]
-        assert _must_keys(chunks_filter) == ["is_placeholder"]
+        # The trailing None is exclude_image_points (a nested Filter, ADR-042).
+        assert _must_keys(chunks_filter) == ["is_placeholder", None]
         assert _must_keys(docs_filter) == ["is_placeholder", "chunk_index"]
 
     async def test_placeholder_filter_excludes_placeholders(self) -> None:
@@ -107,9 +108,11 @@ class TestCountHybridChunks:
 
         flt = qc.count.await_args.kwargs["count_filter"]
         # Excludes placeholders AND restricts to the hybrid (dense-bearing) mode.
-        assert _must_keys(flt) == ["is_placeholder", "index_mode"]
+        # None is exclude_image_points (a nested Filter): image points are
+        # hybrid too, but they are not chunks (ADR-042).
+        assert _must_keys(flt) == ["is_placeholder", None, "index_mode"]
         assert flt.must[0].match.value is False
-        assert flt.must[1].match.value == "hybrid"
+        assert flt.must[2].match.value == "hybrid"
 
     async def test_exact_kwarg_forwarded(self) -> None:
         qc = AsyncMock()

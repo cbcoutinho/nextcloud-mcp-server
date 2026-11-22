@@ -23,6 +23,7 @@ from qdrant_client.models import (
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.providers import get_provider
+from nextcloud_mcp_server.vector import payload_keys
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,9 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     # at startup without operator intervention.
     "owner_id": PayloadSchemaType.KEYWORD,
     "doc_type": PayloadSchemaType.KEYWORD,
+    # Every text read excludes image points with must_not vector_kind == image
+    # (ADR-042 §4), so the field needs an index for strict mode.
+    payload_keys.VECTOR_KIND: PayloadSchemaType.KEYWORD,
     "is_placeholder": PayloadSchemaType.BOOL,
     # dead_letter is the bool used by the durable terminal-failure marker lookup
     # (see vector/dead_letter.py: ``_dead_letter_filter`` ANDs

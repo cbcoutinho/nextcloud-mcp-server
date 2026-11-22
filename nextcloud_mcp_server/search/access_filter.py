@@ -43,7 +43,10 @@ from qdrant_client.models import (
 )
 
 from nextcloud_mcp_server.vector import payload_keys
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+from nextcloud_mcp_server.vector.placeholder import (
+    exclude_image_points,
+    get_placeholder_filter,
+)
 
 if TYPE_CHECKING:
     from nextcloud_mcp_server.vector.folder_ancestors import FileIdResolver
@@ -374,8 +377,13 @@ def build_base_filter_conditions(
     path_prefixes: Iterable[str] | None = None,
     path_prefix_folder_ids: list[str] | None = None,
     shared_root_ids: list[str] | None = None,
+    include_image_points: bool = False,
 ) -> list[Condition]:
     """Build the common ``must`` conditions shared by every search algorithm.
+
+    Image points (ADR-042) are excluded unless ``include_image_points`` is set,
+    which only the image prefetch does: it keeps every other condition here,
+    so image results are access-controlled exactly like text results.
 
     This is the single place the structured-filter contract (ADR-027) lives, so
     both the BM25-hybrid (MCP tool) and dense-only (visualization/API) algorithms
@@ -425,6 +433,8 @@ def build_base_filter_conditions(
         get_placeholder_filter(),
         build_ownership_filter(user_id, accessible_owners, shared_root_ids),
     ]
+    if not include_image_points:
+        conditions.append(exclude_image_points())
 
     if doc_type:
         conditions.append(

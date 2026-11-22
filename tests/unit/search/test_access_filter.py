@@ -360,9 +360,10 @@ class TestBuildBaseFilterConditions:
 
     @pytest.mark.unit
     def test_minimal_is_placeholder_plus_ownership(self) -> None:
-        # No doc_type, no date bounds -> exactly placeholder + ownership.
+        # No doc_type, no date bounds -> placeholder + ownership + the
+        # image-point exclusion (ADR-042 §4).
         conditions = build_base_filter_conditions("alice", None)
-        assert len(conditions) == 2
+        assert len(conditions) == 3
         # No modified_at Range condition present.
         assert not any(
             isinstance(c, FieldCondition) and c.key == "modified_at" for c in conditions
@@ -525,7 +526,7 @@ class TestBuildBaseFilterConditions:
             modified_before=200,
             path_prefix="/Projects",
         )
-        assert len(conditions) == 5
+        assert len(conditions) == 6
 
 
 _folders = st.sampled_from(["", " ", "/A", " /A ", "/B", "/B\t", "/C"]) | st.from_regex(

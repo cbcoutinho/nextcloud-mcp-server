@@ -50,7 +50,10 @@ from nextcloud_mcp_server.usage import UsageEvent, UsageEventStore
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.dead_letter import DEAD_LETTER_KEY
 from nextcloud_mcp_server.vector.ingest_status import get_ingest_pending
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+from nextcloud_mcp_server.vector.placeholder import (
+    exclude_image_points,
+    get_placeholder_filter,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -72,7 +75,7 @@ async def count_indexed(
     """
     chunks_result = await qdrant_client.count(
         collection_name=collection,
-        count_filter=Filter(must=[get_placeholder_filter()]),
+        count_filter=Filter(must=[get_placeholder_filter(), exclude_image_points()]),
         exact=exact,
     )
     docs_result = await qdrant_client.count(
@@ -102,6 +105,7 @@ async def count_hybrid_chunks(
         count_filter=Filter(
             must=[
                 get_placeholder_filter(),
+                exclude_image_points(),
                 FieldCondition(
                     key=payload_keys.INDEX_MODE,
                     match=MatchValue(value=payload_keys.INDEX_MODE_HYBRID),

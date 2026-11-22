@@ -74,3 +74,28 @@ def point_id(tenant_id: str, doc_id: str, chunk_index: int) -> str:
         {"tenant_id": tenant_id, "doc_id": doc_id, "chunk_index": chunk_index}
     ).decode("utf-8")
     return str(uuid.uuid5(NAMESPACE, name))
+
+
+# ADR-042 §4: an image embedding is a point of the same file document, marked
+# ``vector_kind="image"``. Text points carry no ``vector_kind`` at all, so a
+# ``must_not vector_kind == image`` filter keeps them (see
+# ``search.access_filter.exclude_image_points``).
+VECTOR_KIND = "vector_kind"
+VECTOR_KIND_IMAGE = "image"
+# The image model that produced (or permanently skipped) a document's image
+# point. Compared by the scanner, like EMBEDDING_IDENTITY for text.
+IMAGE_EMBEDDING_IDENTITY = "image_embedding_identity"
+# Why a document's image was not embedded (permanent rejection, size cap).
+IMAGE_SKIPPED_REASON = "image_skipped_reason"
+
+
+def image_point_id(tenant_id: str, doc_id: str) -> str:
+    """Deterministic id of a document's single image point (ADR-042 §4).
+
+    Built from a different key set than :func:`point_id`, so it can never
+    collide with a chunk id, and a re-index overwrites the point in place.
+    """
+    name = canonical_json(
+        {"tenant_id": tenant_id, "doc_id": doc_id, VECTOR_KIND: VECTOR_KIND_IMAGE}
+    ).decode("utf-8")
+    return str(uuid.uuid5(NAMESPACE, name))
