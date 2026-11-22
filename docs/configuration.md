@@ -1289,10 +1289,9 @@ Behaviour worth knowing:
 
 #### Image Embeddings (`IMAGE_EMBEDDING_MODEL`) — in progress
 
-> **Not wired to indexing or search yet.** This release adds the provider
-> capability and the Qdrant schema from [ADR-042](ADR-042-image-embeddings.md).
-> Setting these variables adds the `image` vector to the collection, but does
-> not index images yet. The ingest and query steps follow in later releases.
+> **Indexed, not yet searchable.** Tagged images are embedded at ingest
+> ([ADR-042](ADR-042-image-embeddings.md) §5), but search does not query the
+> `image` vector until the query step ships in a later release.
 >
 > **`IMAGE_SEARCH_SCORE_THRESHOLD` is required.** No validated per-model score
 > floors ship yet. Without a floor the feature stays off and startup logs a
@@ -1306,6 +1305,7 @@ by **the same provider as text embeddings**, so the settings name no vendor:
 IMAGE_EMBEDDING_MODEL=cohere.embed-v4:0   # model id on the active provider
 IMAGE_EMBEDDING_DIMENSIONS=1024           # optional; must be a width the model supports
 IMAGE_SEARCH_SCORE_THRESHOLD=0.3          # required; cosine floor for image hits
+IMAGE_EMBEDDING_MAX_SOURCE_BYTES=52428800 # optional; larger files are skipped (default 50 MB)
 ```
 
 The feature is enabled only once the provider **confirms** that the model
@@ -1319,6 +1319,25 @@ not in a single line:
   **1.18** (error; text search is unaffected, restart to retry);
 - the collection's `image` vector has a different size than the model
   produces (error).
+
+**What gets embedded.** Images in a `vector-index`-tagged folder whose type the
+model accepts (and the worker can decode for downscaling) are discovered even
+when no text processor reads them. `keyword-index` files are never embedded:
+that tag opts out of paid embeddings. Each image is downscaled to the model's
+pixel and byte limits, and an animated GIF/WebP is embedded from its first
+frame. When `VECTOR_SYNC_INDEXABLE_MIME_TYPES` is set explicitly, list the image
+types there too; an explicit list is taken as given. HEIC/HEIF is not supported.
+
+**Skips and retries.** A file over `IMAGE_EMBEDDING_MAX_SOURCE_BYTES`, or one the
+model rejects as unusable (corrupt, unsupported encoding), is skipped and not
+retried until its content or the image model changes. If text was extracted
+from it (e.g. by OCR), the text is still indexed. Any other failure, such as a
+timeout or an unavailable provider, retries the whole document: its text and
+image are written together or not at all.
+
+**Cost.** Turning the feature on, or switching the image model, re-queues every
+tagged hybrid image once, one paid embedding call per image. Tag a small folder
+first to see the volume.
 
 Existing collections gain the `image` vector in place; notes and files are not
 re-indexed. To switch to a model of a different width, delete the vector with
@@ -1504,6 +1523,7 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `IMAGE_EMBEDDING_MODEL` | ⚠️ Optional | - | Image embedding model id on the active provider (ADR-042). Unset = image embeddings off. Enabled only once the provider confirms the model takes images. See *Image Embeddings* above. |
 | `IMAGE_EMBEDDING_DIMENSIONS` | ⚠️ Optional | - | Output width for the image model, if it supports truncation. Must be one of the model's supported widths, or the feature stays off. |
 | `IMAGE_SEARCH_SCORE_THRESHOLD` | ⚠️ Optional | - | Cosine score floor for image hits, within [-1, 1]. Required for image embeddings to turn on (no default floors ship yet). |
+| `IMAGE_EMBEDDING_MAX_SOURCE_BYTES` | ⚠️ Optional | `52428800` | Image files larger than this many bytes are skipped, not embedded (ADR-042 §5). |
 | `EMBEDDING_DIMENSIONS` | ⚠️ Optional | - | Matryoshka output width requested from the active embedding provider (OpenAI/Ollama/gateway). Unset = the model's full width. Only valid for MRL-trained models — nothing upstream validates this, and truncating a non-MRL model silently degrades recall. The width joins the collection name and embedding identity, so changing it forces a new collection and a re-embed; an endpoint that ignores the parameter fails at startup rather than indexing at the wrong width. See *Matryoshka Truncation* above. |
 | `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `2048` | Characters per chunk for document embedding |
 | `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `200` | Overlapping characters between chunks (must be < chunk size) |

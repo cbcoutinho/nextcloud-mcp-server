@@ -170,6 +170,7 @@ async def process_document_task(
     owner_id: str | None = None,
     index_mode: str = payload_keys.INDEX_MODE_HYBRID,
     size_bytes: int | None = None,
+    content_type: str | None = None,
     **_forward_compat: Any,
 ) -> None:
     """Worker entry: rebuild the DocumentTask, resolve creds, run the pipeline.
@@ -210,6 +211,7 @@ async def process_document_task(
         owner_id=owner_id,
         index_mode=index_mode,
         size_bytes=size_bytes,
+        content_type=content_type,
     )
     try:
         nc_client = await _resolve_client(user_id)

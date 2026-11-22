@@ -22,6 +22,7 @@ mapping lives in the queue layer, which imports :class:`EscalateError` from here
 
 from __future__ import annotations
 
+import mimetypes
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -34,7 +35,25 @@ from nextcloud_mcp_server.config import get_document_processor_config
 TIER_LADDER: tuple[str, ...] = ("fast", "structured", "ocr")
 
 
-def escalation_tiers_signature(settings: Any) -> str:
+def image_tiers_suffix(settings: Any, file_path: str | None, index_mode: str) -> str:
+    """The image part of the dead-letter key, for image files only (ADR-042 §5).
+
+    A skipped image is dead-lettered against the image model and the index mode
+    that skipped it, so a model change or a retag retries it. Other files get
+    ``""``, so changing the image model never re-queues a PDF.
+
+    Keyed on the path's extension rather than a MIME type because the scanner and
+    every worker-side caller have the path, and only some have the type.
+    """
+    mime = mimetypes.guess_type(file_path or "")[0] or ""
+    if not mime.startswith("image/"):
+        return ""
+    return f";img={settings.get_image_embedding_identity()};mode={index_mode}"
+
+
+def escalation_tiers_signature(
+    settings: Any, *, file_path: str | None = None, index_mode: str = ""
+) -> str:
     """A stable string fingerprint of the runtime escalation-tier configuration.
 
     Used by the document dead-letter marker (``vector/dead_letter.py``) as part of
@@ -101,7 +120,7 @@ def escalation_tiers_signature(settings: Any) -> str:
         f"maxmb={settings.document_max_pdf_size_mb:g};"
         f"mdpages={settings.document_markdown_max_pages:g};"
         f"procs={optional_processors}"
-    )
+    ) + image_tiers_suffix(settings, file_path, index_mode)
 
 
 @dataclass(frozen=True)

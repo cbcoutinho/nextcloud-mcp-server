@@ -196,6 +196,10 @@ class DocumentTask:
     # deferred by a pre-upgrade producer) -> the post-download guard still
     # applies. Defaulted so old in-flight job payloads deserialize unchanged.
     size_bytes: int | None = None
+    # WebDAV getcontenttype at scan time, for files. Lets the worker's dedup
+    # race-guard apply the image-identity freshness rule (ADR-042 §3) before the
+    # download tells it the type. None = unknown (same producers as size_bytes).
+    content_type: str | None = None
 
 
 # Track documents potentially deleted (grace period before actual deletion)
@@ -1111,9 +1115,14 @@ async def scan_user_documents(
             # which the scanner (API role) must not load at module import.
             from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
                 escalation_tiers_signature,
+                image_tiers_suffix,
+            )
+            from nextcloud_mcp_server.vector.image_ingest import (  # noqa: PLC0415
+                in_image_scope,
             )
 
-            tiers_sig = escalation_tiers_signature(get_settings())
+            # Computed once; image files add a per-file suffix below.
+            base_tiers_sig = escalation_tiers_signature(get_settings())
 
             # ADR-033 Phase 3: one folder-path -> fileid cache for this whole scan
             # pass, so the lazy folder-ancestor backfill (in claim_existing_index)
@@ -1162,6 +1171,17 @@ async def scan_user_documents(
                 # "unknown" so the processor falls back to the post-download
                 # guard rather than gating on a bogus zero.
                 size_bytes = file_info.get("size") or None
+                content_type = file_info.get("content_type") or None
+                # ADR-042 §3: the image model that must have produced this file's
+                # image point, or None when the file takes no part in the rule.
+                image_identity = (
+                    settings.get_image_embedding_identity()
+                    if content_type and in_image_scope(content_type, index_mode)
+                    else None
+                )
+                tiers_sig = base_tiers_sig + image_tiers_suffix(
+                    settings, file_path, index_mode
+                )
 
                 # ADR-033 Phase 2: record THIS user's mount path for the file
                 # (dedup hit or fresh index below), so search can substitute the
@@ -1198,6 +1218,7 @@ async def scan_user_documents(
                     current_path=file_path,
                     webdav=nc_client.webdav,
                     folder_ancestor_cache=folder_ancestor_cache,
+                    image_identity=image_identity,
                 ):
                     _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(
@@ -1248,6 +1269,7 @@ async def scan_user_documents(
                             etag=etag,
                             index_mode=index_mode,
                             size_bytes=size_bytes,
+                            content_type=content_type,
                         )
                     )
                     file_queued += 1
@@ -1311,6 +1333,14 @@ async def scan_user_documents(
                                 format(placeholder_age, ".1f"),
                                 format(stale_threshold, ".1f"),
                             )
+                    elif image_identity is not None and (
+                        existing_metadata.get(payload_keys.IMAGE_EMBEDDING_IDENTITY)
+                        != image_identity
+                    ):
+                        # ADR-042 §3: unchanged content whose image point is
+                        # missing (feature just enabled) or from another image
+                        # model. Re-queued once; the re-index stamps the identity.
+                        needs_indexing = True
                     elif (
                         # Default hybrid: points indexed before INDEX_MODE existed
                         # carry no key and were dense+sparse, so they read as
@@ -1356,6 +1386,7 @@ async def scan_user_documents(
                                 etag=etag,
                                 index_mode=index_mode,
                                 size_bytes=size_bytes,
+                                content_type=content_type,
                             )
                         )
                         file_queued += 1

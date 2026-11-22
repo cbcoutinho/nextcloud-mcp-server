@@ -176,11 +176,13 @@ the file's `doc_id`, and a payload marker `vector_kind="image"` (text points
 are implicitly `"text"`).
 
 **It has no `chunk_index`, and its id comes from a separate name.** It is
-`uuid5(NAMESPACE, canonical_json({"tenant_id", "doc_id", "vector_kind":
-"image"}))`, built by a new `payload_keys.image_point_id()` next to
-`point_id()`. The id is deterministic, so a re-index overwrites the point in
-place. It cannot collide with a chunk id, because the canonical JSON has a
-different key set. A reserved chunk index was rejected for two reasons:
+`uuid5(NAMESPACE_DNS, "file:<doc_id>:image")`, built by
+`payload_keys.image_point_id()`: the same scheme as the chunk ids the ingest
+worker writes (`"file:<doc_id>:chunk:<i>"`), so it is independent of the
+collection name, like them. (An earlier draft keyed it on a tenant id, which
+the worker's point ids don't use.) The id is deterministic, so a re-index
+overwrites the point in place. It cannot collide with a chunk id, because no
+chunk name ends in `:image`. A reserved chunk index was rejected for two reasons:
 
 - `prune_stale_chunks` deletes every point of the document with
   `chunk_index >= kept_chunks` after each re-index. A high sentinel would be

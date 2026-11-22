@@ -11,6 +11,7 @@ until someone decides which it is.
 
 import ast
 import pathlib
+import uuid
 
 import pytest
 from qdrant_client import AsyncQdrantClient, models
@@ -172,7 +173,11 @@ async def test_must_not_keeps_text_points_and_drops_image_points():
 
 
 def test_image_point_id_is_stable_and_never_a_chunk_id():
-    image_id = payload_keys.image_point_id("t", "42")
-    assert image_id == payload_keys.image_point_id("t", "42")
-    assert image_id != payload_keys.image_point_id("t", "43")
-    assert image_id not in {payload_keys.point_id("t", "42", i) for i in range(1000)}
+    image_id = payload_keys.image_point_id("42")
+    assert image_id == payload_keys.image_point_id("42")
+    assert image_id != payload_keys.image_point_id("43")
+    # The chunk ids the ingest worker actually writes (vector/processor.py).
+    chunk_ids = {
+        str(uuid.uuid5(uuid.NAMESPACE_DNS, f"file:42:chunk:{i}")) for i in range(1000)
+    }
+    assert image_id not in chunk_ids

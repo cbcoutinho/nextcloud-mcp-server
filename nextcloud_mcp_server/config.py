@@ -228,6 +228,8 @@ _DEFAULTS: dict[str, Any] = {
     # by the same provider as text. Unset model = image embeddings off.
     "image_embedding_model": None,
     "image_embedding_dimensions": None,
+    # Image files larger than this are skipped, not embedded (ADR-042 §5).
+    "image_embedding_max_source_bytes": 50 * 1024 * 1024,
     # Score floor for the image prefetch (ADR-042 §6). Required: no validated
     # per-model defaults ship yet, and without a floor image search stays off.
     "image_search_score_threshold": None,
@@ -808,6 +810,11 @@ _dynaconf = Dynaconf(
             condition=lambda v: v is None or v >= 1,
             messages={"condition": "IMAGE_EMBEDDING_DIMENSIONS must be >= 1 when set"},
         ),
+        Validator(
+            "IMAGE_EMBEDDING_MAX_SOURCE_BYTES",
+            condition=lambda v: v >= 1,
+            messages={"condition": "IMAGE_EMBEDDING_MAX_SOURCE_BYTES must be >= 1"},
+        ),
         # Cosine similarity, so a floor outside [-1, 1] is a typo, not a choice.
         Validator(
             "IMAGE_SEARCH_SCORE_THRESHOLD",
@@ -1367,8 +1374,16 @@ class Settings:
             from nextcloud_mcp_server.document_processors import (  # noqa: PLC0415
                 get_registry,
             )
+            from nextcloud_mcp_server.vector.image_ingest import (  # noqa: PLC0415
+                image_mime_types,
+            )
 
-            return tuple(sorted(get_registry().supported_mime_types()))
+            # Plus the image types the image model embeds (ADR-042 §5), so a
+            # tagged image is found even when no text processor reads it. An
+            # explicit list (below) is taken as given.
+            return tuple(
+                sorted(get_registry().supported_mime_types() | image_mime_types())
+            )
         return tuple(split_csv(self.vector_sync_indexable_mime_types))
 
     # Mail tag (an IMAP keyword) restricting which messages are indexed — the
@@ -1443,6 +1458,7 @@ class Settings:
     # provider and only enabled once that provider confirms it takes images.
     image_embedding_model: str | None = None
     image_embedding_dimensions: int | None = None
+    image_embedding_max_source_bytes: int = 50 * 1024 * 1024
     image_search_score_threshold: float | None = None
 
     # Simple (fallback) provider — dimension when no real provider configured
@@ -2131,6 +2147,14 @@ class Settings:
         if self.embedding_dimensions is None:
             return model
         return f"{model}-{self.embedding_dimensions}"
+
+    def get_image_embedding_identity(self) -> str:
+        """``image_embedding_identity``: the image model, widened like the text
+        identity, so a width change re-embeds like a model change (ADR-042 §3)."""
+        model = self.image_embedding_model or ""
+        if self.image_embedding_dimensions is None:
+            return model
+        return f"{model}-{self.image_embedding_dimensions}"
 
     def get_embedding_provider_family(self) -> str:
         """

@@ -89,13 +89,11 @@ IMAGE_EMBEDDING_IDENTITY = "image_embedding_identity"
 IMAGE_SKIPPED_REASON = "image_skipped_reason"
 
 
-def image_point_id(tenant_id: str, doc_id: str) -> str:
-    """Deterministic id of a document's single image point (ADR-042 §4).
+def image_point_id(doc_id: str) -> str:
+    """Deterministic id of a file's single image point (ADR-042 §4).
 
-    Built from a different key set than :func:`point_id`, so it can never
-    collide with a chunk id, and a re-index overwrites the point in place.
+    Same scheme as the chunk ids the ingest worker writes
+    (``uuid5(NAMESPACE_DNS, "file:<doc_id>:chunk:<i>")``), with an ``image``
+    suffix no chunk id can take, so a re-index overwrites the point in place.
     """
-    name = canonical_json(
-        {"tenant_id": tenant_id, "doc_id": doc_id, VECTOR_KIND: VECTOR_KIND_IMAGE}
-    ).decode("utf-8")
-    return str(uuid.uuid5(NAMESPACE, name))
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"file:{doc_id}:image"))
