@@ -76,10 +76,13 @@ def create_provider() -> Provider:
             embedding_model=settings.bedrock_embedding_model,
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
+            image_embedding_model=settings.image_embedding_model,
+            image_embedding_dimensions=settings.image_embedding_dimensions,
         )
 
     # 2. OpenAI
     if settings.openai_api_key:
+        _warn_image_model_unsupported(settings.image_embedding_model, "OpenAI")
         logger.info(
             "Using OpenAI provider: base_url=%s, embedding_model=%s",
             settings.openai_base_url or "default",
@@ -94,6 +97,7 @@ def create_provider() -> Provider:
 
     # 3. Mistral
     if settings.mistral_api_key:
+        _warn_image_model_unsupported(settings.image_embedding_model, "Mistral")
         logger.info(
             "Using Mistral provider: base_url=%s, embedding_model=%s",
             settings.mistral_base_url or "default",
@@ -107,6 +111,7 @@ def create_provider() -> Provider:
 
     # 4. Ollama
     if settings.ollama_base_url:
+        _warn_image_model_unsupported(settings.image_embedding_model, "Ollama")
         logger.info(
             "Using Ollama provider: %s, embedding_model=%s",
             settings.ollama_base_url,
@@ -128,7 +133,26 @@ def create_provider() -> Provider:
         "Using SimpleProvider for testing/development. "
         "For production, configure Bedrock, OpenAI, Mistral, or Ollama."
     )
-    return SimpleProvider(dimension=settings.simple_embedding_dimension)
+    return SimpleProvider(
+        dimension=settings.simple_embedding_dimension,
+        image_embedding_model=settings.image_embedding_model,
+    )
+
+
+def _warn_image_model_unsupported(image_model: str | None, provider: str) -> None:
+    """Say so when IMAGE_EMBEDDING_MODEL is set on a provider without image support.
+
+    The capability stays off either way (ADR-042 §8); the warning keeps a
+    configured-but-ignored model from reading as a silently broken feature.
+    """
+    if image_model:
+        logger.warning(
+            "IMAGE_EMBEDDING_MODEL=%s is set, but the %s provider has no image "
+            "embedding support; image embeddings stay off. Route images through "
+            "the embedding gateway (EMBEDDING_PROVIDER=gateway) or Bedrock.",
+            image_model,
+            provider,
+        )
 
 
 # Singleton instance

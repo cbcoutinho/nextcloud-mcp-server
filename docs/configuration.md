@@ -1287,6 +1287,36 @@ Behaviour worth knowing:
   (~98–99% at 512-of-1536) are measured on far smaller corpora than a
   production index; measure recall on your own data before narrowing.
 
+#### Image Embeddings (`IMAGE_EMBEDDING_MODEL`) — in progress
+
+> **Not wired to indexing or search yet.** This release adds only the
+> provider capability from [ADR-042](ADR-042-image-embeddings.md). Setting
+> these variables does not index images yet. The schema, ingest and query
+> steps follow in later releases.
+
+Image embeddings place images and text queries in one joint vector space, so a
+text query can find a photo that contains no words. The image model is served
+by **the same provider as text embeddings**, so the settings name no vendor:
+
+```bash
+IMAGE_EMBEDDING_MODEL=cohere.embed-v4:0   # model id on the active provider
+IMAGE_EMBEDDING_DIMENSIONS=1024           # optional; must be a width the model supports
+```
+
+The feature is enabled only once the provider **confirms** that the model
+takes images, never from configuration alone. Once startup wiring lands, a
+model that is set but not confirmed will log an error and stay off.
+
+| Provider | Image models |
+|---|---|
+| Amazon Bedrock | `amazon.titan-embed-image-v1` (PNG/JPEG; 256/384/1024) and `cohere.embed-v4:0` (PNG/JPEG/WebP/GIF; 256/512/1024/1536), optionally behind a cross-region inference profile such as `eu.cohere.embed-v4:0` |
+| Embedding gateway | Coming in the next release |
+| OpenAI-compatible, Mistral, Ollama | Not supported; a configured model logs a warning and stays off |
+
+**Data egress:** once indexing is wired, image bytes are sent to the
+configured embedding upstream. Images leave the deployment unless that
+provider is self-hosted.
+
 ### Document Chunking Configuration
 
 The server chunks documents before embedding to handle documents larger than the embedding model's context window. Chunk size and overlap can be tuned based on your embedding model and content type.
@@ -1454,6 +1484,8 @@ equivalent.** Operators who need a runtime toggle should open an issue.
 | `BEDROCK_EMBEDDING_MODEL` | ⚠️ Optional | - | Bedrock embedding model ID |
 | `BEDROCK_GENERATION_MODEL` | ⚠️ Optional | - | Bedrock generation model ID |
 | `SIMPLE_EMBEDDING_DIMENSION` | ⚠️ Optional | `384` | Dimension for the fallback Simple provider |
+| `IMAGE_EMBEDDING_MODEL` | ⚠️ Optional | - | Image embedding model id on the active provider (ADR-042). Unset = image embeddings off. Enabled only once the provider confirms the model takes images. See *Image Embeddings* above. |
+| `IMAGE_EMBEDDING_DIMENSIONS` | ⚠️ Optional | - | Output width for the image model, if it supports truncation. Must be one of the model's supported widths, or the feature stays off. |
 | `EMBEDDING_DIMENSIONS` | ⚠️ Optional | - | Matryoshka output width requested from the active embedding provider (OpenAI/Ollama/gateway). Unset = the model's full width. Only valid for MRL-trained models — nothing upstream validates this, and truncating a non-MRL model silently degrades recall. The width joins the collection name and embedding identity, so changing it forces a new collection and a re-embed; an endpoint that ignores the parameter fails at startup rather than indexing at the wrong width. See *Matryoshka Truncation* above. |
 | `DOCUMENT_CHUNK_SIZE` | ⚠️ Optional | `2048` | Characters per chunk for document embedding |
 | `DOCUMENT_CHUNK_OVERLAP` | ⚠️ Optional | `200` | Overlapping characters between chunks (must be < chunk size) |

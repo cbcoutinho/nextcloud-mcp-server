@@ -6,6 +6,7 @@ from dataclasses import MISSING, fields
 from unittest.mock import patch
 
 import pytest
+from dynaconf.validator import ValidationError
 
 from nextcloud_mcp_server.config import (
     _COMPUTED_FIELDS,
@@ -206,6 +207,37 @@ class TestGetSettings:
         settings = get_settings()
         assert settings.embedding_dimensions is None
         assert settings.get_embedding_identity() == settings.get_embedding_model_name()
+
+    @patch.dict(
+        os.environ,
+        {
+            "IMAGE_EMBEDDING_MODEL": "cohere.embed-v4:0",
+            "IMAGE_EMBEDDING_DIMENSIONS": "1024",
+        },
+        clear=True,
+    )
+    def test_get_settings_image_embedding_from_env(self):
+        """IMAGE_EMBEDDING_* reach settings (ADR-042 §7), dimensions as an int."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.image_embedding_model == "cohere.embed-v4:0"
+        assert settings.image_embedding_dimensions == 1024
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_image_embedding_off_by_default(self):
+        """Unset IMAGE_EMBEDDING_MODEL means image embeddings are off."""
+        _reload_config()
+        settings = get_settings()
+        assert settings.image_embedding_model is None
+        assert settings.image_embedding_dimensions is None
+
+    @patch.dict(os.environ, {"IMAGE_EMBEDDING_DIMENSIONS": "0"}, clear=True)
+    def test_image_embedding_dimensions_must_be_positive(self):
+        """A zero width would size the image vector at nothing; reject it up front."""
+        with pytest.raises(
+            ValidationError, match="IMAGE_EMBEDDING_DIMENSIONS must be >= 1"
+        ):
+            _reload_config()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_empty_discovery_threshold_default(self):

@@ -1,5 +1,7 @@
 """Unit tests for create_provider() — dynaconf-driven auto-detection."""
 
+import logging
+
 import pytest
 
 from nextcloud_mcp_server.config import _reload_config
@@ -36,6 +38,8 @@ def _clear_provider_envs(monkeypatch: pytest.MonkeyPatch) -> None:
         "OLLAMA_VERIFY_SSL",
         "SIMPLE_EMBEDDING_DIMENSION",
         "EMBEDDING_DIMENSIONS",
+        "IMAGE_EMBEDDING_MODEL",
+        "IMAGE_EMBEDDING_DIMENSIONS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -204,3 +208,47 @@ def test_registry_bedrock_wins_when_aws_region_set(clean_provider_env):
 
     provider = get_provider()
     assert isinstance(provider, BedrockProvider)
+
+
+@pytest.mark.unit
+def test_registry_threads_image_settings_to_bedrock(clean_provider_env):
+    """IMAGE_EMBEDDING_* reach the Bedrock provider (ADR-042 §7)."""
+    if not BOTO3_AVAILABLE:
+        pytest.skip("boto3 not installed")
+
+    clean_provider_env.setenv("AWS_REGION", "eu-west-1")
+    clean_provider_env.setenv("IMAGE_EMBEDDING_MODEL", "cohere.embed-v4:0")
+    clean_provider_env.setenv("IMAGE_EMBEDDING_DIMENSIONS", "512")
+    _reload_config()
+
+    provider = get_provider()
+    assert isinstance(provider, BedrockProvider)
+    assert provider.image_embedding_model == "cohere.embed-v4:0"
+    assert provider._requested_image_dimensions == 512
+
+
+@pytest.mark.unit
+def test_registry_threads_image_model_to_simple(clean_provider_env):
+    """The fallback gets the model too; it confirms only the test sentinel."""
+    clean_provider_env.setenv("IMAGE_EMBEDDING_MODEL", "simple-image-hash")
+    _reload_config()
+
+    provider = get_provider()
+    assert isinstance(provider, SimpleProvider)
+    assert provider.image_embedding_model == "simple-image-hash"
+
+
+@pytest.mark.unit
+def test_registry_warns_when_provider_has_no_image_support(clean_provider_env, caplog):
+    """A configured image model on a text-only provider is said, not ignored."""
+    clean_provider_env.setenv("OPENAI_API_KEY", "openai-key")
+    clean_provider_env.setenv("IMAGE_EMBEDDING_MODEL", "some-image-model")
+    _reload_config()
+
+    with caplog.at_level(
+        logging.WARNING, logger="nextcloud_mcp_server.providers.registry"
+    ):
+        provider = get_provider()
+    assert isinstance(provider, OpenAIProvider)
+    assert provider.supports_image_embeddings is False
+    assert "has no image embedding support" in caplog.text

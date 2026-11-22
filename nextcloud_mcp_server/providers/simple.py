@@ -10,7 +10,28 @@ import math
 import re
 from collections import Counter
 
-from .base import Provider
+from .base import ImageInput, ImageInputLimits, Provider
+
+# The only IMAGE_EMBEDDING_MODEL value SimpleProvider confirms (ADR-042 §8).
+# SimpleProvider is also the autodetect fallback, so confirming any configured
+# model would let a production deployment with a broken provider config index
+# meaningless image vectors and look healthy. Tests opt in by name.
+SIMPLE_IMAGE_MODEL = "simple-image-hash"
+
+_SIMPLE_IMAGE_MIME_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/gif", "image/webp"}
+)
+
+
+def _hash_vector(payload: bytes, dimension: int) -> list[float]:
+    """Deterministic unit vector derived from ``payload`` (no meaning, test-only)."""
+    stream = hashlib.shake_256(payload).digest(2 * dimension)
+    raw = [
+        int.from_bytes(stream[i : i + 2], "big") / 32767.5 - 1.0
+        for i in range(0, len(stream), 2)
+    ]
+    norm = math.sqrt(sum(x * x for x in raw)) or 1.0
+    return [x / norm for x in raw]
 
 
 class SimpleProvider(Provider):
@@ -25,13 +46,17 @@ class SimpleProvider(Provider):
     Not suitable for production but good for testing semantic search infrastructure.
     """
 
-    def __init__(self, dimension: int = 384):
+    def __init__(self, dimension: int = 384, image_embedding_model: str | None = None):
         """Initialize simple embedding provider.
 
         Args:
-            dimension: Embedding dimension (default: 384)
+            dimension: Embedding dimension (default: 384), shared by the
+                text and image spaces.
+            image_embedding_model: ``IMAGE_EMBEDDING_MODEL``. Image embeddings
+                are confirmed only for :data:`SIMPLE_IMAGE_MODEL`.
         """
         self.dimension = dimension
+        self.image_embedding_model = image_embedding_model
 
     @property
     def supports_embeddings(self) -> bool:
@@ -126,6 +151,30 @@ class SimpleProvider(Provider):
             Vector dimension
         """
         return self.dimension
+
+    async def confirm_image_embeddings(self) -> bool:
+        """Confirm only the explicit test sentinel (see :data:`SIMPLE_IMAGE_MODEL`)."""
+        self._image_confirmed = self.image_embedding_model == SIMPLE_IMAGE_MODEL
+        return self._image_confirmed
+
+    @property
+    def image_input_limits(self) -> ImageInputLimits | None:
+        if self.image_embedding_model != SIMPLE_IMAGE_MODEL:
+            return None
+        return ImageInputLimits(mime_types=_SIMPLE_IMAGE_MIME_TYPES, max_batch=64)
+
+    def get_image_dimension(self) -> int:
+        self._require_image_support()
+        return self.dimension
+
+    async def _embed_image_chunk(self, images: list[ImageInput]) -> list[list[float]]:
+        return [
+            _hash_vector(b"image:" + image.data, self.dimension) for image in images
+        ]
+
+    async def embed_for_image_space(self, text: str) -> list[float]:
+        self._require_image_support()
+        return _hash_vector(b"text:" + text.encode(), self.dimension)
 
     async def close(self) -> None:
         """Close the provider (no-op for simple provider)."""

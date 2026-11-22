@@ -224,6 +224,10 @@ _DEFAULTS: dict[str, Any] = {
     # the model's full width). Provider-agnostic: only one provider is active
     # at a time, so a single knob covers openai/ollama/gateway.
     "embedding_dimensions": None,
+    # Image embeddings (ADR-042). Provider-agnostic: the image model is served
+    # by the same provider as text. Unset model = image embeddings off.
+    "image_embedding_model": None,
+    "image_embedding_dimensions": None,
     # Simple (fallback) embedding dimension
     "simple_embedding_dimension": 384,
     # Document chunking
@@ -795,6 +799,11 @@ _dynaconf = Dynaconf(
             "EMBEDDING_DIMENSIONS",
             condition=lambda v: v is None or v >= 1,
             messages={"condition": "EMBEDDING_DIMENSIONS must be >= 1 when set"},
+        ),
+        Validator(
+            "IMAGE_EMBEDDING_DIMENSIONS",
+            condition=lambda v: v is None or v >= 1,
+            messages={"condition": "IMAGE_EMBEDDING_DIMENSIONS must be >= 1 when set"},
         ),
         Validator("SEARCH_RERANK_POOL_SIZE", gte=1),
         Validator("SEARCH_RERANK_MAX_CONCURRENCY", gte=1),
@@ -1418,6 +1427,11 @@ class Settings:
     # models — nothing upstream validates this (Ollama happily truncates a
     # non-MRL model, with silent recall loss), so it is the operator's call.
     embedding_dimensions: int | None = None
+
+    # Image embeddings (ADR-042 §7). The model id is resolved on the active
+    # provider and only enabled once that provider confirms it takes images.
+    image_embedding_model: str | None = None
+    image_embedding_dimensions: int | None = None
 
     # Simple (fallback) provider — dimension when no real provider configured
     simple_embedding_dimension: int = 384
