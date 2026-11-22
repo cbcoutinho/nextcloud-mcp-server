@@ -28,6 +28,7 @@ isotonic staircase fitted on 60 effective samples is memorising.
 import json
 import math
 import os
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -217,6 +218,8 @@ def main():
     doc = load(sys.argv[2])
     chunk = load(sys.argv[3]) if len(sys.argv) > 3 else []
     label = sys.argv[4] if len(sys.argv) > 4 else "bge_reranker_v2_m3"
+    if not re.fullmatch(r"[\w.-]+", label):
+        raise SystemExit(f"label must be [A-Za-z0-9_.-]+, got {label!r}")
 
     out = {}
     for name, field in (

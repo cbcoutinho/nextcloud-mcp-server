@@ -185,6 +185,24 @@ def test_amazon_low_raw_scale_is_not_reported_as_near_zero():
     assert value == pytest.approx(0.18, abs=0.02)
 
 
+# Expected values computed from the fit script's full-precision output
+# (curves.json), not from the constants in relevance.py, so a mistyped
+# constant fails here. Refitting a curve means updating its row.
+@pytest.mark.parametrize(
+    ("model", "raw", "expected"),
+    [
+        ("bedrock/amazon.rerank-v1:0", 0.01, 0.315436),
+        ("bedrock/cohere.rerank-v3-5:0", 0.4, 0.483268),
+        ("openrouter/cohere/rerank-4-pro", 0.7, 0.109144),
+        ("openrouter/voyageai/rerank-2.5", 0.6, 0.407123),
+    ],
+)
+def test_shipped_constants_match_the_fit_output(model, raw, expected):
+    assert _rel(rerank_score=raw, rerank_model=model)[0] == pytest.approx(
+        expected, abs=1e-4
+    )
+
+
 def test_openrouter_cohere_v35_shares_the_bedrock_curve():
     """Same model behind two routes; its scores matched Bedrock's to 0.0009
     on every rescored pair, so one curve serves both."""

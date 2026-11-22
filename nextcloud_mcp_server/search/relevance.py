@@ -118,6 +118,9 @@ class _Curve:
 
 
 # Shared by the Bedrock and OpenRouter routes of Cohere rerank v3.5 (below).
+# Known weakness: its top bins are non-monotone. Rows shown at 70-90% were
+# only ~27% relevant out-of-fold (n=34), which a monotone Platt map cannot
+# represent. A refit on more queries is the fix, not a per-model cap.
 _COHERE_V35 = _Curve(
     a=0.945386,
     b=-1.769075,
