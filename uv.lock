@@ -2450,7 +2450,7 @@ requires-dist = [
     { name = "python-docx", marker = "extra == 'documents'", specifier = ">=1.2.0" },
     { name = "python-json-logger", specifier = ">=3.2.0" },
     { name = "python-pptx", marker = "extra == 'documents'", specifier = ">=1.0.2" },
-    { name = "qdrant-client", marker = "extra == 'semantic'", specifier = ">=1.17.0" },
+    { name = "qdrant-client", marker = "extra == 'semantic'", specifier = ">=1.18.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "starlette", specifier = "<1.11" },
     { name = "uvicorn", specifier = ">=0.30" },

@@ -228,6 +228,9 @@ _DEFAULTS: dict[str, Any] = {
     # by the same provider as text. Unset model = image embeddings off.
     "image_embedding_model": None,
     "image_embedding_dimensions": None,
+    # Score floor for the image prefetch (ADR-042 §6). Required: no validated
+    # per-model defaults ship yet, and without a floor image search stays off.
+    "image_search_score_threshold": None,
     # Simple (fallback) embedding dimension
     "simple_embedding_dimension": 384,
     # Document chunking
@@ -804,6 +807,14 @@ _dynaconf = Dynaconf(
             "IMAGE_EMBEDDING_DIMENSIONS",
             condition=lambda v: v is None or v >= 1,
             messages={"condition": "IMAGE_EMBEDDING_DIMENSIONS must be >= 1 when set"},
+        ),
+        # Cosine similarity, so a floor outside [-1, 1] is a typo, not a choice.
+        Validator(
+            "IMAGE_SEARCH_SCORE_THRESHOLD",
+            condition=lambda v: v is None or -1 <= v <= 1,
+            messages={
+                "condition": "IMAGE_SEARCH_SCORE_THRESHOLD must be within [-1, 1]"
+            },
         ),
         Validator("SEARCH_RERANK_POOL_SIZE", gte=1),
         Validator("SEARCH_RERANK_MAX_CONCURRENCY", gte=1),
@@ -1432,6 +1443,7 @@ class Settings:
     # provider and only enabled once that provider confirms it takes images.
     image_embedding_model: str | None = None
     image_embedding_dimensions: int | None = None
+    image_search_score_threshold: float | None = None
 
     # Simple (fallback) provider — dimension when no real provider configured
     simple_embedding_dimension: int = 384
