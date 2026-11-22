@@ -3,7 +3,13 @@
 ## Status
 
 Proposed — 2026-11-22. Tracked on Deck board 12, card #103. Builds on the
-provider surface in PR #800 (GH #703).
+provider surface in PR #800 (GH #703). The embedding-gateway side is Deck
+board 10, card #1537.
+
+**Acceptance criterion:** before this ADR moves to Accepted, the per-model
+image score floors in §6 must be re-validated on a probe set of at least 50
+images and 100 queries (matching, near-miss and distractor queries), and the
+measured floors recorded here.
 
 ## Context
 
@@ -101,7 +107,9 @@ sparse vectors are never touched. The alias flip remains the tool for a
 
 Minimum versions: Qdrant server **1.18** for the in-place add (new collections
 created with `image` work on any supported version), and `qdrant-client`
-raised from `>=1.17.0` to the first release exposing `create_vector_name`.
+raised from `>=1.17.0` to `>=1.18.0`, the first release that exposes
+`create_vector_name` and `models.DenseVectorNameConfig` (verified: 1.17.1 has
+neither, 1.18.0 has both).
 Against an older server the call fails; the server logs an error and leaves
 image indexing disabled rather than refusing to boot — text search must not
 regress because an optional feature can't be provisioned.
@@ -110,18 +118,41 @@ regress because an optional feature can't be provisioned.
 
 The image point is a point of the **same file document**: `doc_type="file"`,
 the file's `doc_id`, and a payload marker `vector_kind="image"` (text points
-are implicitly `"text"`). Its id is `point_id(tenant, doc_id, <reserved image
-chunk index>)` so it is re-written, not duplicated, on re-index.
+are implicitly `"text"`).
+
+**It has no `chunk_index`, and its id comes from a separate name.** It is
+`uuid5(NAMESPACE, canonical_json({"tenant_id", "doc_id", "vector_kind":
+"image"}))`, built by a new `payload_keys.image_point_id()` next to
+`point_id()`. The id is deterministic, so a re-index overwrites the point in
+place. It cannot collide with a chunk id, because the canonical JSON has a
+different key set. A reserved chunk index was rejected for two reasons:
+
+- `prune_stale_chunks` deletes every point of the document with
+  `chunk_index >= kept_chunks` after each re-index. A high sentinel would be
+  deleted on every run.
+- A `-1` sentinel would leak into code that assumes indices are non-negative
+  (context expansion, ordering, `total_chunks`).
+
+A Qdrant range filter does not match a point that lacks the field, so prune
+leaves the image point alone. Whole-document deletion (eviction,
+`delete_document_points`) filters on `doc_id`/`doc_type`, so the image point
+shares the file's lifecycle. A unit test pins both behaviours.
 
 Consequences of keeping `doc_type="file"`:
 
 - verify-on-read, per-user path payloads (ADR-033), eviction by `doc_id` and
   the `path_prefixes` filter work with no new code;
-- text-only consumers must skip `vector_kind="image"` points: context
-  expansion, `exact` search, chunk counts in `nc_get_vector_sync_status`, and
-  `/api/v1/chunk-context`.
+- text-only consumers must skip image points: context expansion, `exact`
+  search, chunk counts in `nc_get_vector_sync_status`, and
+  `/api/v1/chunk-context`. A missed skip would silently return an image as an
+  empty-text chunk. So the exclusion (`must_not: vector_kind == "image"`) is
+  added **centrally**, in `search/access_filter.build_base_filter_conditions`,
+  and the image prefetch is the only caller that opts out. Text consumers
+  that build their own filters (chunk-context, sync-status counts) go through
+  the same helper. A unit test asserts that every text-path filter carries
+  the condition.
 
-Card #103 proposed `doc_type="image"`. Rejected because every per-type code
+Card #103 (board 12) proposed `doc_type="image"`. Rejected because every per-type code
 path — verification, deep links, the Astrolabe result renderer — would need a
 new branch for what is, to Nextcloud, just a file.
 
@@ -135,14 +166,35 @@ new branch for what is, to Nextcloud, just a file.
 - **Index mode.** Only `hybrid` documents get an image vector. An image
   embedding is a paid embedding call, and `keyword-index` exists precisely to
   opt out of those (ADR-031).
-- **Processing.** The worker embeds the image (downscaled to the model's
-  input limits first) and upserts the image point alongside whatever text
-  chunks the processor produced. "No processor claims this type" is no longer
-  a failure for an image when the image point succeeded.
-- **Failures.** A failed image embedding is a hard error into the existing
-  retry → dead-letter path, as for dense text (ADR-031). It is not swallowed
-  to "index the text and move on", which would leave a document that looks
-  indexed but can never match visually.
+- **Input limits.** The provider exposes `image_input_limits` (accepted MIME
+  types, max bytes, max pixels), which is added to the PR #800 surface. Those
+  MIME types are what discovery adds to `indexable_mime_types`. The gateway
+  accepts `image/jpeg`, `image/png`, `image/gif` and `image/webp` (#1537).
+  The worker downscales an image that exceeds the pixel or byte limit before
+  embedding. A file above `IMAGE_EMBED_MAX_SOURCE_BYTES` (default 50 MB) is
+  not embedded at all: it is recorded as skipped, not failed, and counted in
+  sync status.
+- **Processing, one write.** For one document job the worker extracts text
+  and computes every embedding (text chunks and image) first. It then writes
+  them in a single upsert, followed by `prune_stale_chunks`. "No processor
+  claims this type" is not a failure for an image when the image embedding
+  succeeds.
+- **Failures and retries.** Any embedding failure (text or image) fails the
+  job before the upsert, so nothing partial is written. The job then goes
+  through the existing retry → dead-letter path (ADR-031). An image embedding
+  that succeeds while the text path fails therefore writes neither, and the
+  same holds the other way round. Because both kinds of point id are
+  deterministic, a retry's upsert is idempotent. An image with no text
+  processor whose image embedding fails dead-letters like any other failed
+  document. It is never recorded as "indexed with nothing", which would look
+  indexed while being unfindable.
+- **Cost.** The first sync of a large tagged image tree issues one paid call
+  per image. Spend is bounded by the existing ingest queue concurrency and the
+  source-size cap above. `nc_get_vector_sync_status` reports pending,
+  embedded and skipped image counts, so an operator can see the volume before
+  it is spent, by tagging a folder and reading the pending count. A hard
+  spend ceiling is out of scope here. In the cloud the gateway meters
+  `images_embedded` (#1537).
 
 ### 6. Query: an extra prefetch, with a score floor
 
@@ -157,11 +209,23 @@ RRF merges text-only and image-only points without reweighting.
 abstain: without a floor, the top-k images enter the fused list for *every*
 query, including "Q3 budget spreadsheet", and RRF gives the best of them a
 rank comparable to a genuine text hit. Cosine *is* meaningful within one
-model's space, and PR #800's eval gives a usable window: matches ≥ 0.40 /
+model's space, and PR #800's eval gives a starting window: matches ≥ 0.40 /
 distractors ≤ 0.18 (Titan), matches ≥ 0.38 / distractors ≤ 0.11 (Cohere v4).
-The floor is a per-model default (initially 0.25 for both), overridable via
-`IMAGE_SEARCH_SCORE_THRESHOLD`. It must be re-validated on a larger probe set
-before this ADR is accepted.
+The two models' scales differ, so the floor is a **per-model** default keyed
+on the image model id. The provisional values are the midpoints of those
+windows, about 0.29 for Titan and 0.25 for Cohere v4. They are overridable via
+`IMAGE_SEARCH_SCORE_THRESHOLD`. Three probes on a single set are not evidence,
+so the acceptance criterion in Status gates them.
+
+The two failure directions are not symmetric. A floor that is too low lets
+irrelevant images into the results, which is visible. A floor that is **too
+high** silently removes every image-only file from all results, which nobody
+notices. Short or abstract queries ("summer", "that thing from Tuesday") also
+score low against every image. Here the floor is doing its job, but the
+effect looks the same. To keep a too-high floor from going unnoticed, the
+search path emits a metric with the number of image-prefetch hits above the
+floor per query. A floor that suppresses everything then shows up as a flat
+zero on a dashboard.
 
 The second embedding call is the only added query cost; it runs concurrently
 with the text embedding (`anyio` task group). No new MCP tool in the first
@@ -174,18 +238,35 @@ for it.
 - Enabled when the configured provider reports `supports_image_embeddings`
   (`BEDROCK_IMAGE_EMBEDDING_MODEL` set). Absent → no `image` vector is
   created and behaviour is identical to today.
+- **Effective capability, decided once per collection.** `ensure_collection`
+  validates each collection independently: one deployment has one provider,
+  so one image model, but every tenant collection is checked and, if needed,
+  extended on its own. The outcome is cached per collection as
+  `image_vector_ready`. It is true only when the provider supports image
+  embeddings **and** the collection has an `image` vector of the right size.
+  The query side adds the image prefetch only when that flag is true, so an
+  older Qdrant (no `create_vector_name`) or a size mismatch never sends a
+  prefetch to a vector that doesn't exist.
 - No new `supported_search_types` entry: image retrieval is a property of
-  `hybrid`/`semantic`, not a fifth algorithm. `/api/v1/status` gains an
-  `image_search: bool` so Astrolabe can render image results (thumbnail via
-  `/core/preview`, deep link via `nc_webdav_view_image`) only when the server
-  produces them.
+  `hybrid`/`semantic`, not a fifth algorithm. `/api/v1/status` gains
+  `image_search: bool`, which reports `image_vector_ready`, the effective
+  capability, not the provider flag. Astrolabe renders image results
+  (thumbnail via `/core/preview`, deep link via `nc_webdav_view_image`) only
+  when it is true.
 
 ## Consequences
 
-- **Bedrock-only at first.** Astrolabe Cloud embeds through the embedding
-  gateway, which has no image endpoint, so the cloud does not get image search
-  from this ADR alone. Adding `/v1/embeddings` image input to the gateway,
-  with a consumer pact on this side, is a separate card. Ollama, OpenAI and
+- **Bedrock directly, or through the gateway.** Astrolabe Cloud embeds
+  through the embedding gateway. Its image support (Deck board 10, card #1537)
+  extends `POST /v1/embeddings`: an `input` item may be
+  `{"type": "image", "data": <base64>, "mime_type": ...}`, and a plain string
+  sent to an image model id is embedded into that image space. `GET
+  /v1/models` advertises `input_modalities`. `GatewayProvider` sets
+  `supports_image_embeddings` when `"image"` is in `input_modalities`, takes
+  `get_image_dimension` from `dimension`, and implements
+  `embed_for_image_space` as a text input to the image model. It carries a
+  consumer pact against the provider state `"the gateway serves an image
+  embedding model"`. Ollama, OpenAI and
   Mistral providers keep the default `NotImplementedError`; users whose only
   provider is Mistral (the GH #1882 reporter) get document images through the
   OCR text path, not this one.
@@ -205,10 +286,12 @@ for it.
 
 ## Implementation order
 
-1. Rebase PR #800; add `SimpleProvider.embed_image`.
-2. Schema: create/extend the `image` vector, dimension validation, version
-   floor.
-3. Ingest: discovery, image point, failure semantics, sync-status counts.
-4. Query: image prefetch with score floor, `image_search` status field,
-   pacts + integration test.
-5. Separately: embedding-gateway image input (cloud).
+1. Provider surface: land PR #800 (rebased, or superseded if it has gone
+   stale), add `image_input_limits`, and add `SimpleProvider.embed_image`.
+2. Schema: create or extend the `image` vector, per-collection validation,
+   `image_vector_ready`, version floor.
+3. Ingest: discovery, `image_point_id`, single-write failure semantics,
+   central `vector_kind` exclusion, sync-status counts.
+4. Query: image prefetch with per-model floor and hit metric, `image_search`
+   status field, Astrolabe pact and integration test.
+5. `GatewayProvider` image methods and consumer pact (gateway side: #1537).
