@@ -4,8 +4,8 @@
 
 Proposed — 2026-11-22. Tracked on Deck board 12, card #103 (all card numbers
 in this ADR are Deck cards, not GitHub issues). Builds on the
-provider surface in PR #800 (GH #703). The embedding-gateway side is Deck
-board 10, card #1537.
+provider surface first prototyped in PR #800 (GH #703). The embedding-gateway
+side is Deck board 10, card #1537 (astrolabe-cloud-website#1247).
 
 **Acceptance criterion:** before this ADR moves to Accepted, the per-model
 image score floors in §6 must be re-validated on a probe set of at least 50
@@ -34,6 +34,13 @@ a text query embedded into the *image* space, kept separate from `embed()` so
 the two spaces cannot be mixed by a config typo. The indexer, the query side
 and this ADR were left as follow-ups.
 
+Bedrock is one source of such models, not the design's subject. Joint
+text↔image embedding models are also available through OpenRouter and as
+self-hosted models behind OpenAI-compatible servers, and the embedding gateway
+can route to any of them by model id. So this ADR specifies a
+**provider-agnostic** capability. A provider either implements it, or reports
+it as unsupported and the feature stays off. Configuration names no vendor.
+
 Constraints inherited from earlier decisions:
 
 - **ADR-015** — features are enabled by provider capability flags, never by
@@ -58,8 +65,8 @@ An image file tagged for hybrid indexing gets:
   Tesseract, Mistral OCR once GH #1882 lands), stored in `dense` + `sparse`
   exactly as today. No text → no text chunks, which is correct and not an
   error; and
-- **one image point** carrying only the `image` vector, when the provider
-  `supports_image_embeddings`.
+- **one image point** carrying only the `image` vector, when the configured
+  provider supports image embeddings (§7).
 
 This removes the "which processor should an image route to" question raised on
 GH #1882: there is no routing decision. A scanned receipt becomes findable by
@@ -103,7 +110,7 @@ enabled:
 (`update_collection` cannot add a vector name; earlier planning assumed it
 could.)
 
-**Image-model swap** (Titan → Cohere, 1024 → 1536) no longer needs a
+**Image-model swap** (for example 1024-d → 1536-d) no longer needs a
 `_v2` collection and alias flip: `delete_vector_name("image")`, then
 `create_vector_name` at the new size, then re-enqueue image files. Re-queueing
 is not manual. When image embeddings are enabled, the scanner's freshness
@@ -214,14 +221,18 @@ new branch for what is, to Nextcloud, just a file.
 - **Index mode.** Only `hybrid` documents get an image vector. An image
   embedding is a paid embedding call, and `keyword-index` exists precisely to
   opt out of those (ADR-031).
-- **Input limits.** The provider exposes `image_input_limits` (accepted MIME
-  types, max bytes, max pixels), which is added to the PR #800 surface. Those
-  MIME types bound what discovery adds (see **Formats**). The gateway
-  accepts `image/jpeg`, `image/png`, `image/gif` and `image/webp` (#1537).
-  The worker downscales an image that exceeds the pixel or byte limit before
-  embedding. A file above `IMAGE_EMBED_MAX_SOURCE_BYTES` (default 50 MB) is
-  not embedded at all: it is recorded as skipped, not failed, and counted in
-  sync status.
+- **Input limits.** Every image-capable provider exposes
+  `image_input_limits` **for the configured model**. That covers accepted
+  MIME types, max bytes per image, max pixels, and max images per request.
+  Each provider fills it from the most authoritative source it has (§8): the
+  gateway reads `image_mime_types` from `/v1/models` and applies its request
+  caps of 5 MiB decoded per image and 16 images per request; Bedrock uses a
+  static per-model table. Those MIME types bound what discovery adds (see
+  **Formats**). The worker downscales an image that exceeds the pixel or
+  byte limit before embedding, and the provider chunks batches to the
+  per-request cap. A file above `IMAGE_EMBEDDING_MAX_SOURCE_BYTES` (default
+  50 MB) is not embedded at all: it is recorded as skipped, not failed, and
+  counted in sync status.
 - **Processing, one write.** For one document job the worker extracts text
   and computes every embedding (text chunks and image) first. It then writes
   them in a single upsert, followed by `prune_stale_chunks`. "No processor
@@ -252,19 +263,28 @@ new branch for what is, to Nextcloud, just a file.
   written. Retrying the same bytes cannot succeed, so dead-lettering them
   would only add noise.
 
-  **Classification is by error type, not by status code alone.** A unit
-  test pins the full classification table, not just the resulting behaviour:
-  bare 400, `ThrottlingException`, 429, 5xx and timeout retry; gateway 422
-  and Bedrock input `ValidationException` skip. Bedrock
-  answers some throttling and validation cases with 400, and a misclassified
-  transient error would be stuck until the content or the model changed. So
-  only two responses count as permanent: the gateway's 422 for an invalid
-  image item (bad base64, unsupported `mime_type`) and Bedrock's
-  `ValidationException` naming the input. Everything else retries, including
-  bare 400s, `ThrottlingException`, 429, 5xx and timeouts. The gateway's 400
-  for an image sent to a text-only model is a configuration error that would
-  hit every image. It fails loudly at startup through the advertisement
-  check, not per document.
+  **Classification is by error type, never by status code alone.** Each
+  provider maps its own errors to one provider-agnostic exception,
+  `ImageInputRejected(reason)`, which is the only signal the worker treats
+  as permanent. Anything else is transient and retries. A misclassified
+  transient error would stay stuck until the content or the model changed,
+  so a provider raises it only for a response that names the input as
+  unusable. Each provider has a unit test pinning its full classification
+  table, not just the resulting behaviour:
+
+  | Provider | Permanent (`ImageInputRejected`) | Retried |
+  |---|---|---|
+  | Gateway | 422 with `detail.code` = `invalid_image`, `unsupported_mime_type` | `image_too_large`, `too_many_images` (client bugs, logged at ERROR), list-shaped 422, other 4xx, 429, 5xx, timeouts |
+  | Bedrock | `ValidationException` naming the input | bare 400, `ThrottlingException`, 429, 5xx, timeouts |
+
+  The gateway puts `{"code", "index", "message"}` in a dict-shaped `detail`
+  on every image 422. Other 422s keep FastAPI's list shape. The provider
+  branches on `isinstance(detail, dict) and "code" in detail` and never
+  parses `message`. `image_too_large` and `too_many_images` mean the client
+  skipped downscaling or chunking. They must never be recorded as a skip
+  against the image. A rejection of the configuration (the gateway's 400 for
+  an image sent to a text-only model) would hit every image, so it fails
+  loudly at startup through the capability check, not per document.
 
   The skip is recorded so that the scanner honours it:
   - **with text chunks**, the text points carry `image_skipped_reason`. The
@@ -280,18 +300,22 @@ new branch for what is, to Nextcloud, just a file.
     model change makes the
     document retryable again.
 - **Formats.** `indexable_mime_types` gains the intersection of the
-  provider's accepted types and what the worker can decode for downscaling.
-  An animated GIF or WebP is embedded from its first frame. HEIC/HEIF, which
-  phones produce by default, is **out of scope** for now:
-  neither Bedrock model nor the gateway accepts it, and converting it would
-  need a new decoder dependency.
+  configured model's accepted types and what the worker can decode for
+  downscaling. Accepted types differ per model, which is why the list is read
+  from the provider and never hardcoded. Titan Multimodal takes only PNG and
+  JPEG, while Cohere v4 also takes WebP and GIF. An `unsupported_mime_type`
+  skip therefore applies to the current model only: the model id is in
+  `tiers_sig`, so a model change retries it. An animated GIF or WebP is
+  embedded from its first frame. HEIC/HEIF, which phones produce by default,
+  is **out of scope** for now: none of the models above accepts it, and
+  converting it would need a new decoder dependency.
 - **Cost.** The first sync of a large tagged image tree issues one paid call
   per image. Spend is bounded by the existing ingest queue concurrency and the
   source-size cap above. `nc_get_vector_sync_status` reports pending,
   embedded and skipped image counts, so an operator can see the volume before
   it is spent, by tagging a folder and reading the pending count. A hard
-  spend ceiling is out of scope here. In the cloud the gateway meters
-  `images_embedded` (#1537).
+  spend ceiling is out of scope here. Behind the gateway, spend is metered
+  gateway-side as `images_embedded` (#1537).
 
 ### 6. Query: an extra prefetch, with a score floor
 
@@ -312,7 +336,10 @@ rank comparable to a genuine text hit. Cosine *is* meaningful within one
 model's space, and PR #800's eval gives a starting window: matches ≥ 0.40 /
 distractors ≤ 0.18 (Titan), matches ≥ 0.38 / distractors ≤ 0.11 (Cohere v4).
 The two models' scales differ, so the floor is a **per-model** default keyed
-on the image model id. The provisional values are the midpoints of those
+on the image model id. The key is the model's own id with any gateway routing
+namespace stripped (`bedrock/amazon.titan-embed-image-v1` and
+`amazon.titan-embed-image-v1` share a floor), because the score scale belongs
+to the model, not to the provider that serves it. The provisional values are the midpoints of those
 windows, about 0.29 for Titan and 0.25 for Cohere v4. They are overridable via
 `IMAGE_SEARCH_SCORE_THRESHOLD`. Three probes on a single set are not evidence,
 so the acceptance criterion in Status gates them. They are candidates, not
@@ -352,9 +379,25 @@ for it.
 
 ### 7. Configuration and advertisement
 
-- Enabled when the configured provider reports `supports_image_embeddings`
-  (`BEDROCK_IMAGE_EMBEDDING_MODEL` set). Absent → no `image` vector is
-  created and behaviour is identical to today.
+- **Provider-agnostic settings.** The image model is served by the same
+  provider the registry selected for text embeddings: one provider per
+  deployment, as today.
+
+  | Setting | Meaning |
+  |---|---|
+  | `IMAGE_EMBEDDING_MODEL` | Image model id on the active provider. Unset (default) means image embeddings are off. |
+  | `IMAGE_EMBEDDING_DIMENSIONS` | Optional output width for models that support truncation. Mirrors `EMBEDDING_DIMENSIONS`. |
+  | `IMAGE_EMBEDDING_MAX_SOURCE_BYTES` | Files above this are skipped, not embedded (default 50 MB). |
+  | `IMAGE_SEARCH_SCORE_THRESHOLD` | Floor for the image prefetch (§6). |
+
+  An operator who wants text and images from different upstreams (say,
+  Mistral text and a Bedrock image model) points both at the gateway, which
+  routes per model id. A second provider slot is not added.
+- **Enabled only on confirmation, never on configuration alone.** Image
+  embeddings are on when `IMAGE_EMBEDDING_MODEL` is set **and** the provider
+  confirms that the model takes images (§8). A model that is set but not
+  confirmed logs an ERROR at startup and leaves the feature off. Unset means
+  no `image` vector is created and behaviour is identical to today.
 - **Effective capability, decided once per collection.** `ensure_collection`
   validates each collection independently: one deployment has one provider,
   so one image model, but every tenant collection is checked and, if needed,
@@ -386,27 +429,49 @@ for it.
   (thumbnail via `/core/preview`, deep link via `nc_webdav_view_image`) only
   when it is true.
 
+### 8. Provider contract
+
+The `Provider` base class gains one optional capability. Every member
+defaults to "unsupported", so providers without image support need no
+changes:
+
+- `supports_image_embeddings` — true only after confirmation (below);
+- `get_image_dimension()`;
+- `image_input_limits` — MIME types, max bytes, max pixels, max images per
+  request (§5);
+- `embed_image_batch(images)`, which chunks to the per-request cap itself;
+- `embed_for_image_space(query)` — a text query embedded into the image
+  model's space;
+- errors that name the input as unusable raise `ImageInputRejected` (§5).
+
+How each provider confirms the capability and learns its limits:
+
+| Provider | Confirmation and limits | Status |
+|---|---|---|
+| Embedding gateway | `/v1/models`: `"image"` in `input_modalities`, plus `dimension` and `image_mime_types` on the model entry. Caps of 5 MiB and 16 images per request. Wire format: image items in `/v1/embeddings` `input`, `{"type": "image", "data": <base64>, "mime_type": ...}`. A plain string sent to the image model id is embedded into the image space. Consumer pact against provider state `"the gateway serves an image embedding model"`. | First implementation. Gateway side in astrolabe-cloud-website#1247. |
+| Bedrock | Static per-model table for known image models (Titan Multimodal, Cohere v4): dimension, MIME types, limits. An unknown id is not confirmed. | From the PR #800 prototype. |
+| OpenAI-compatible (`OpenAIProvider` with `OPENAI_BASE_URL`: OpenRouter, self-hosted servers) | No standard wire format or advertisement for image embeddings exists across these endpoints. Support is added per target once its format is pinned by an integration test, with confirmation by a one-image probe at startup. Until then the capability stays off. Through the gateway these models are already reachable, with one wire format. | Follow-up. |
+| Ollama, Mistral | No image embedding support today; capability off. | — |
+| `SimpleProvider` | Deterministic hash-seeded image vectors, always confirmed. Makes CI's e2e test hermetic without credentials. | With the base class. |
+
+The gateway row is the recommended route for anything beyond Bedrock. It
+gives one wire format, model advertisement and metering for every upstream
+the gateway can reach.
+
 ## Consequences
 
-- **Bedrock directly, or through the gateway.** Astrolabe Cloud embeds
-  through the embedding gateway. Its image support (Deck board 10, card #1537)
-  extends `POST /v1/embeddings`: an `input` item may be
-  `{"type": "image", "data": <base64>, "mime_type": ...}`, and a plain string
-  sent to an image model id is embedded into that image space. `GET
-  /v1/models` advertises `input_modalities`. `GatewayProvider` sets
-  `supports_image_embeddings` when `"image"` is in `input_modalities`, takes
-  `get_image_dimension` from `dimension`, and implements
-  `embed_for_image_space` as a text input to the image model. It carries a
-  consumer pact against the provider state `"the gateway serves an image
-  embedding model"`. Ollama, OpenAI and
-  Mistral providers keep the default `NotImplementedError`; users whose only
-  provider is Mistral (the GH #1882 reporter) get document images through the
-  OCR text path, not this one.
+- **Provider coverage at first ship** is the gateway and Bedrock (§8), plus
+  `SimpleProvider` for tests. Astrolabe Cloud gets image search through the
+  gateway. Self-hosted deployments get it through Bedrock, or through any
+  model a gateway routes to. Direct OpenAI-compatible support (OpenRouter,
+  self-hosted servers) follows per target. A user whose only provider is
+  Mistral (the GH #1882 reporter) gets document images through the OCR text
+  path, not this one.
 - **API surface.** The `/api/v1/status` field and the image results returned
   by `/api/v1/search` change a contract Astrolabe consumes: the Astrolabe
   consumer pact and this repo's provider verification must cover them, and an
   integration test must index and retrieve an image end-to-end. CI has no
-  Bedrock credentials, so `SimpleProvider` gains a deterministic
+  provider credentials, so `SimpleProvider` gains a deterministic
   `embed_image` (hash-seeded vector) to make that test hermetic. Remaining
   gap: provider verification covers only the public endpoints, so
   `image_search` on `/api/v1/status` is verified but image results on the
@@ -420,23 +485,31 @@ for it.
   swap (§3) is cheap in schema terms but **re-bills every indexed image**:
   it is a full image re-embed.
 - **Docs.** `docs/configuration.md` (new env vars:
-  `BEDROCK_IMAGE_EMBEDDING_MODEL`, `BEDROCK_IMAGE_OUTPUT_DIM`,
-  `IMAGE_EMBED_MAX_SOURCE_BYTES`, `IMAGE_SEARCH_SCORE_THRESHOLD`), the
+  `IMAGE_EMBEDDING_MODEL`, `IMAGE_EMBEDDING_DIMENSIONS`,
+  `IMAGE_EMBEDDING_MAX_SOURCE_BYTES`, `IMAGE_SEARCH_SCORE_THRESHOLD`; PR #800's
+  `BEDROCK_IMAGE_EMBEDDING_MODEL` / `BEDROCK_IMAGE_OUTPUT_DIM` never shipped
+  and are replaced, not deprecated), the
   `nc_semantic_search` docstring, and a correction to ADR-032's "PDF-only"
   sentence.
 
 ## Implementation order
 
-1. Provider surface: land PR #800 (rebased, or superseded if it has gone
-   stale), add `image_input_limits`, and add `SimpleProvider.embed_image`.
-2. Schema: create or extend the `image` vector, per-collection validation,
+1. Provider-agnostic surface: the base-class capability (§8),
+   `ImageInputRejected`, the `IMAGE_EMBEDDING_*` settings and capability
+   confirmation, `SimpleProvider.embed_image`, and Bedrock from the PR #800
+   prototype (superseding #800).
+2. `GatewayProvider` image support: confirmation from `/v1/models`, chunking
+   to 16, the 422-code classification, and the consumer pact (gateway side:
+   #1247).
+3. Schema: create or extend the `image` vector, per-collection validation,
    `image_vector_ready`, version floor.
-3. Ingest: discovery, `image_point_id`, single-write failure semantics,
+4. Ingest: discovery, `image_point_id`, single-write failure semantics,
    central `vector_kind` exclusion, sync-status counts.
-4. Query: image prefetch with per-model floor and hit metric, `image_search`
+5. Query: image prefetch with per-model floor and hit metric, `image_search`
    status field, Astrolabe pact and integration test.
-5. `GatewayProvider` image methods and consumer pact (gateway side: #1537).
+6. Follow-ups: direct OpenAI-compatible targets (OpenRouter, self-hosted),
+   each once its wire format is pinned.
 
 Each step ships its own tests in the same PR, per the repo's API-surface
-rule: unit tests for every step, plus an integration (e2e) test for steps 3
-and 4, and Pact coverage for steps 4 and 5.
+rule: unit tests for every step, an integration (e2e) test for steps 4 and
+5, and Pact coverage for steps 2 and 5.
