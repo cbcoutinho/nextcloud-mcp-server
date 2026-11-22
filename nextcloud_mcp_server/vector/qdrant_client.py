@@ -248,17 +248,24 @@ async def _ensure_image_vector(
     provider = get_provider()
     reasons: list[str] = []
     width: int | None = None
-    if await provider.confirm_image_embeddings():
-        width = provider.get_image_dimension()
-        if not width:
-            # Confirmed but no width: there is nothing to size the vector with,
-            # so it must not read as ready over a vector that doesn't exist.
+    try:
+        confirmed = await provider.confirm_image_embeddings()
+        width = provider.get_image_dimension() if confirmed else None
+    # A provider bug or network error must not stop text search from starting.
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("image model confirmation failed", exc_info=True)
+        reasons.append(f"confirming {model!r} failed: {exc}")
+        width = None
+    else:
+        if not confirmed:
+            reasons.append(
+                f"{type(provider).__name__} did not confirm {model!r} as an image model"
+            )
+        elif not width:
+            # Confirmed but no width: nothing to size the vector with, so it
+            # must not read as ready over a vector that doesn't exist.
             reasons.append(f"{type(provider).__name__} reported no width for {model!r}")
             width = None
-    else:
-        reasons.append(
-            f"{type(provider).__name__} did not confirm {model!r} as an image model"
-        )
     if settings.image_search_score_threshold is None:
         # Only reason that is a warning, not an error: nothing is broken, the
         # operator just hasn't chosen a floor yet (no validated defaults ship).

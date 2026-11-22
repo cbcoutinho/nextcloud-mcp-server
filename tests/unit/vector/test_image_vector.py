@@ -128,3 +128,18 @@ async def test_a_confirmed_model_with_no_width_stays_off(client, monkeypatch, ca
         assert await _ensure(client) is False
     assert "image" not in await _vectors(client)
     assert "reported no width" in caplog.text
+
+
+async def test_a_raising_provider_keeps_images_off_not_startup(
+    client, monkeypatch, caplog
+):
+    """Never raises: a confirmation error must not stop text search starting."""
+    _configure(monkeypatch, model=SIMPLE_IMAGE_MODEL)
+
+    async def boom(self):
+        raise RuntimeError("gateway down")
+
+    monkeypatch.setattr(SimpleProvider, "confirm_image_embeddings", boom)
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        assert await _ensure(client) is False
+    assert "confirming 'simple-image-hash' failed: gateway down" in caplog.text
