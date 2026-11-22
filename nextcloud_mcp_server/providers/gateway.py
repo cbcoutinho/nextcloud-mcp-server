@@ -27,14 +27,17 @@ is disabled (inherited ``NotImplementedError``).
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
+from typing import Any
 
 import anyio
 import httpx2
 
 from ..config import Settings
 from ..providers.openai import OpenAIProvider
+from .base import ImageInput, ImageInputLimits, ImageInputRejected
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,17 @@ _EARLY_REFRESH_SECONDS = 60
 # unauthenticated mode the gateway ignores the bearer; when a token provider is
 # configured, the real M2M token replaces this before each request.
 _UNAUTHENTICATED_PLACEHOLDER = "unauthenticated"
+
+# Gateway image caps (astrolabe-cloud-website#1247): 5 MiB decoded per image,
+# 16 images per request. Fixed by the gateway, not advertised per model.
+_GATEWAY_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+_GATEWAY_IMAGE_MAX_BATCH = 16
+
+# 422 ``detail.code`` values that name an image as unusable for this model:
+# retrying the same bytes cannot succeed (ADR-042 §5). ``image_too_large`` and
+# ``too_many_images`` are deliberately absent — they mean the caller skipped
+# downscaling or chunking, a bug to fix, not an image to skip.
+_PERMANENT_IMAGE_CODES = frozenset({"invalid_image", "unsupported_mime_type"})
 
 
 class GatewayTokenProvider:
@@ -174,6 +188,8 @@ class GatewayProvider(OpenAIProvider):
         token_provider: TokenProvider | None = None,
         timeout: float = 120.0,
         embedding_dimensions: int | None = None,
+        image_embedding_model: str | None = None,
+        image_embedding_dimensions: int | None = None,
     ):
         # The gateway exposes its OpenAI-compatible API under the /v1 base path
         # (/v1/embeddings, /v1/models). Callers configure EMBEDDING_GATEWAY_URL
@@ -198,6 +214,11 @@ class GatewayProvider(OpenAIProvider):
             embedding_dimensions=embedding_dimensions,
         )
         self._token_provider = token_provider
+        self._timeout = timeout
+        self.image_embedding_model = image_embedding_model
+        self._requested_image_dimensions = image_embedding_dimensions
+        self._image_limits: ImageInputLimits | None = None
+        self._image_width: int | None = None
         logger.info(
             "Initialized gateway embedding provider: base_url=%s, model=%s, "
             "auth=%s, requested_dimensions=%s",
@@ -243,23 +264,8 @@ class GatewayProvider(OpenAIProvider):
             await super()._detect_dimension()
             return
 
-        # ``models`` is a sibling of ``embeddings`` under the gateway's base —
-        # derive it from the same base_url the OpenAI client uses for embeds so
-        # the two stay consistent (str(base_url) has a trailing slash).
-        models_url = str(self.client.base_url).rstrip("/") + "/models"
-        headers: dict[str, str] = {}
-        if self._token_provider is not None:
-            headers["Authorization"] = (
-                f"Bearer {await self._token_provider.get_token()}"
-            )
         try:
-            async with httpx2.AsyncClient(
-                timeout=httpx2.Timeout(10.0, connect=5.0)
-            ) as client:
-                resp = await client.get(models_url, headers=headers)
-                resp.raise_for_status()
-                catalog = resp.json().get("data", [])
-            for entry in catalog:
+            for entry in await self._fetch_models():
                 if entry.get("id") == self.embedding_model:
                     dim = entry.get("dimension")
                     if isinstance(dim, int):
@@ -281,9 +287,147 @@ class GatewayProvider(OpenAIProvider):
             logger.warning(
                 "Could not fetch model dimensions from gateway %s: %s; "
                 "falling back to lazy detection on first embed",
-                models_url,
+                self._url("models"),
                 exc,
             )
+
+    def _url(self, path: str) -> str:
+        # Siblings of ``embeddings`` under the base the OpenAI client uses, so
+        # the two stay consistent (str(base_url) has a trailing slash).
+        return str(self.client.base_url).rstrip("/") + "/" + path
+
+    async def _auth_headers(self) -> dict[str, str]:
+        if self._token_provider is None:
+            return {}
+        return {"Authorization": f"Bearer {await self._token_provider.get_token()}"}
+
+    async def _fetch_models(self) -> list[dict[str, Any]]:
+        """``GET /v1/models`` → its ``data`` list. Raises on any failure."""
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(10.0, connect=5.0)
+        ) as client:
+            resp = await client.get(
+                self._url("models"), headers=await self._auth_headers()
+            )
+            resp.raise_for_status()
+            return resp.json().get("data", [])
+
+    # ------------------------------------------------------------------
+    # Image embeddings (ADR-042 §8)
+    # ------------------------------------------------------------------
+
+    async def confirm_image_embeddings(self) -> bool:
+        """Confirm from the gateway's model advertisement.
+
+        Fails closed: an unreachable catalogue, a model without ``"image"`` in
+        ``input_modalities``, or an unsupported width leaves the feature off.
+        Enabling on configuration alone would write image points the gateway
+        then refuses to produce.
+        """
+        self._image_confirmed = False
+        model = self.image_embedding_model
+        if model is None:
+            return False
+        try:
+            catalog = await self._fetch_models()
+        except Exception:  # noqa: BLE001 — any failure means "not confirmed"
+            logger.error(
+                "Could not read gateway /v1/models to confirm image model %s; "
+                "image embeddings stay off",
+                model,
+                exc_info=True,
+            )
+            return False
+        entry = next((e for e in catalog if e.get("id") == model), None)
+        if entry is None or "image" not in (entry.get("input_modalities") or []):
+            logger.error(
+                "Gateway does not advertise %s as accepting images "
+                "(input_modalities); image embeddings stay off",
+                model,
+            )
+            return False
+        requested = self._requested_image_dimensions
+        if requested is not None and requested not in (entry.get("mrl_dims") or []):
+            logger.error(
+                "IMAGE_EMBEDDING_DIMENSIONS=%s is not among %s's mrl_dims %s; "
+                "image embeddings stay off",
+                requested,
+                model,
+                entry.get("mrl_dims"),
+            )
+            return False
+        width = requested or entry.get("dimension")
+        if not isinstance(width, int):
+            # ``dimension`` is absent when the gateway's live probe failed.
+            logger.error(
+                "Gateway reported no dimension for %s; set "
+                "IMAGE_EMBEDDING_DIMENSIONS or retry once the gateway is healthy",
+                model,
+            )
+            return False
+        self._image_width = width
+        self._image_limits = ImageInputLimits(
+            mime_types=frozenset(entry.get("image_mime_types") or ()),
+            max_bytes=_GATEWAY_IMAGE_MAX_BYTES,
+            max_batch=_GATEWAY_IMAGE_MAX_BATCH,
+        )
+        self._image_confirmed = True
+        return True
+
+    @property
+    def image_input_limits(self) -> ImageInputLimits | None:
+        return self._image_limits
+
+    def get_image_dimension(self) -> int:
+        self._require_image_support()
+        assert self._image_width is not None  # set on confirmation
+        return self._image_width
+
+    async def _embed_into_image_space(
+        self, items: list[str | dict[str, str]]
+    ) -> list[list[float]]:
+        """POST ``/v1/embeddings`` against the image model, floats on the wire.
+
+        Bypasses the OpenAI SDK: its ``input`` type has no image items, and the
+        422 ``detail.code`` the classification needs is easier to read raw.
+        """
+        body: dict[str, Any] = {
+            "model": self.image_embedding_model,
+            "input": items,
+            "encoding_format": "float",
+        }
+        if self._requested_image_dimensions is not None:
+            body["dimensions"] = self._requested_image_dimensions
+        # ponytail: one client per request; image ingest is one call per
+        # document, so pooling only matters if that rate grows.
+        async with httpx2.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                self._url("embeddings"), json=body, headers=await self._auth_headers()
+            )
+        if resp.status_code == 422:
+            _raise_for_image_rejection(resp)
+        resp.raise_for_status()
+        data = sorted(resp.json()["data"], key=lambda d: d["index"])
+        return [d["embedding"] for d in data]
+
+    async def _embed_image_chunk(self, images: list[ImageInput]) -> list[list[float]]:
+        return await self._embed_into_image_space(
+            [
+                {
+                    "type": "image",
+                    "data": base64.b64encode(img.data).decode(),
+                    "mime_type": img.mime_type,
+                }
+                for img in images
+            ]
+        )
+
+    async def embed_for_image_space(self, text: str) -> list[float]:
+        self._require_image_support()
+        # A plain string sent to the image model id is embedded into image space.
+        vector = (await self._embed_into_image_space([text]))[0]
+        self._record_image_dimension(len(vector))
+        return vector
 
     # Bearer-refresh override topology. OpenAIProvider routes embed_batch(),
     # embed_with_usage() and embed_batch_with_usage() all through
@@ -303,6 +447,33 @@ class GatewayProvider(OpenAIProvider):
     ) -> tuple[list[list[float]], int]:
         await self._ensure_bearer()
         return await super().embed_batch_with_usage(texts)
+
+
+def _raise_for_image_rejection(resp: httpx2.Response) -> None:
+    """Turn a dict-shaped image 422 into :class:`ImageInputRejected`.
+
+    Image 422s carry ``{"detail": {"code", "index", "message"}}``; every other
+    422 (pydantic validation) is list-shaped and falls through to
+    ``raise_for_status`` — retryable, because nothing names the input.
+    """
+    try:
+        detail = resp.json().get("detail")
+    except ValueError:
+        return  # not JSON: nothing names the input
+    if not (isinstance(detail, dict) and "code" in detail):
+        return
+    code = detail["code"]
+    message = detail.get("message") or code
+    if code in _PERMANENT_IMAGE_CODES:
+        index = detail.get("index")
+        raise ImageInputRejected(
+            message, index=index if isinstance(index, int) else None
+        )
+    # image_too_large / too_many_images: our own downscaling or chunking is
+    # broken. Loud, but retryable — a fix and redeploy recovers the backlog.
+    logger.error(
+        "Gateway rejected an image request as a client bug: %s (%s)", code, message
+    )
 
 
 def build_gateway_token_provider(settings: Settings) -> TokenProvider | None:

@@ -1310,7 +1310,7 @@ model that is set but not confirmed will log an error and stay off.
 | Provider | Image models |
 |---|---|
 | Amazon Bedrock | `amazon.titan-embed-image-v1` (PNG/JPEG; 256/384/1024) and `cohere.embed-v4:0` (PNG/JPEG/WebP/GIF; 256/512/1024/1536), optionally behind a cross-region inference profile such as `eu.cohere.embed-v4:0` |
-| Embedding gateway | Coming in the next release |
+| Embedding gateway (`EMBEDDING_PROVIDER=gateway`) | Any model the gateway advertises with `"image"` in `input_modalities` on `GET /v1/models` (e.g. `bedrock/amazon.titan-embed-image-v1`). Accepted MIME types, width and MRL widths come from that advertisement. If the catalogue is unreachable, the feature stays off. |
 | OpenAI-compatible, Mistral, Ollama | Not supported; a configured model logs a warning and stays off |
 
 **Data egress:** once indexing is wired, image bytes are sent to the

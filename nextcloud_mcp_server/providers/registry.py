@@ -62,6 +62,8 @@ def create_provider() -> Provider:
             embedding_model=settings.embedding_gateway_model,
             token_provider=token_provider,
             embedding_dimensions=settings.embedding_dimensions,
+            image_embedding_model=settings.image_embedding_model,
+            image_embedding_dimensions=settings.image_embedding_dimensions,
         )
 
     # 1. Bedrock
