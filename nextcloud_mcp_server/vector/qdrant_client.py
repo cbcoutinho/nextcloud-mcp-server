@@ -245,10 +245,10 @@ async def _ensure_image_vector(
     if model is None:
         return False  # Feature off: no vector, behaviour identical to before.
 
-    provider = get_provider()
     reasons: list[str] = []
     width: int | None = None
     try:
+        provider = get_provider()
         confirmed = await provider.confirm_image_embeddings()
         width = provider.get_image_dimension() if confirmed else None
     # A provider bug or network error must not stop text search from starting.
