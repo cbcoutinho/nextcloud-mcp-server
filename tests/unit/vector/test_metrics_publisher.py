@@ -53,7 +53,7 @@ class TestCountIndexed:
         docs_filter = qc.count.await_args_list[1].kwargs["count_filter"]
         # The trailing None is exclude_image_points (a nested Filter, ADR-042).
         assert _must_keys(chunks_filter) == ["is_placeholder", None]
-        assert _must_keys(docs_filter) == ["is_placeholder", "chunk_index"]
+        assert _must_keys(docs_filter) == ["is_placeholder", "chunk_index", None]
 
     async def test_placeholder_filter_excludes_placeholders(self) -> None:
         # is_placeholder must match False (exclude), not True (which would count

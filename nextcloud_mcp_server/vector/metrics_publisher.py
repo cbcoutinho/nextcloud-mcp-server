@@ -84,6 +84,9 @@ async def count_indexed(
             must=[
                 get_placeholder_filter(),
                 FieldCondition(key="chunk_index", match=MatchValue(value=0)),
+                # Image points carry no chunk_index today; excluded explicitly
+                # so the count doesn't depend on that staying true.
+                exclude_image_points(),
             ]
         ),
         exact=exact,
