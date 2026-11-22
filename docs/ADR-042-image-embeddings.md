@@ -138,7 +138,10 @@ different key set. A reserved chunk index was rejected for two reasons:
 A Qdrant range filter does not match a point that lacks the field, so prune
 leaves the image point alone. Whole-document deletion (eviction,
 `delete_document_points`) filters on `doc_id`/`doc_type`, so the image point
-shares the file's lifecycle. A unit test pins both behaviours.
+shares the file's lifecycle. A unit test pins both behaviours. Nothing counts
+the image point as a chunk: `total_chunks` is `len(chunks)` of the text
+split, and prune selects by `chunk_index` range. The audit below checks every
+other per-document point count for double counting.
 
 **The image point carries the full document payload.** That means `etag`,
 `index_mode`, `embedding_identity`, `acl_principals` and the per-user paths
@@ -221,10 +224,21 @@ new branch for what is, to Nextcloud, just a file.
   a corrupt file or an unsupported encoding) is not retried. The image point
   is recorded as skipped with the reason, and the document's text chunks are
   written. Retrying the same bytes cannot succeed, so dead-lettering them
-  would only add noise.
+  would only add noise. The skip is recorded so that the scanner honours it:
+  - **with text chunks**, the text points carry `image_skipped_reason`. The
+    document reads as indexed (it is, as text), so the scanner does not
+    re-queue it. Sync status counts it as skipped;
+  - **with no text chunks**, the document has no points. Without a record the
+    scanner would re-queue it every cycle, the loop §4 avoids. So the worker
+    writes the existing terminal dead-letter marker (`mark_dead_letter`,
+    `vector/dead_letter.py`). That marker is content-addressed on `etag` plus
+    `tiers_sig`, and the scanner honours it for every user. The image model id
+    is part of `tiers_sig`, so new content or a model change makes the
+    document retryable again.
 - **Formats.** `indexable_mime_types` gains the intersection of the
   provider's accepted types and what the worker can decode for downscaling.
-  HEIC/HEIF, which phones produce by default, is **out of scope** for now:
+  An animated GIF or WebP is embedded from its first frame. HEIC/HEIF, which
+  phones produce by default, is **out of scope** for now:
   neither Bedrock model nor the gateway accepts it, and converting it would
   need a new decoder dependency.
 - **Cost.** The first sync of a large tagged image tree issues one paid call
@@ -239,8 +253,11 @@ new branch for what is, to Nextcloud, just a file.
 
 `bm25_hybrid` already fuses a `dense` and a `sparse` prefetch. When the
 collection has an `image` vector **and** the provider supports image
-embeddings, `hybrid` and `semantic` searches add a third prefetch on `image`,
-using `embed_for_image_space(query)`. `bm25` and `exact` are unaffected.
+embeddings, `hybrid` searches add a third prefetch on `image`,
+using `embed_for_image_space(query)`. `semantic`, `bm25` and `exact` are
+unaffected. `semantic` is a single dense query with no fusion step today, and
+giving it one only for images is not worth a new fusion path in this
+iteration.
 Points lacking a vector simply don't appear in that prefetch's rank list, so
 RRF merges text-only and image-only points without reweighting.
 
@@ -296,9 +313,17 @@ for it.
   embeddings **and** the collection has an `image` vector of the right size.
   The query side adds the image prefetch only when that flag is true, so an
   older Qdrant (no `create_vector_name`) or a size mismatch never sends a
-  prefetch to a vector that doesn't exist.
+  prefetch to a vector that doesn't exist. **Ingest is gated on the same
+  flag**: while it is false, no image embedding is computed or paid for. The
+  flag is decided at startup only. A collection whose `create_vector_name`
+  failed stays text-only until the next restart retries it.
+- **A floor is required.** The per-model floors in §6 exist for the known
+  model ids. For any other image model, `image_vector_ready` stays false
+  unless the operator sets `IMAGE_SEARCH_SCORE_THRESHOLD` explicitly, and a
+  startup warning says so. Running without a floor would bring back the
+  RRF cannot-abstain problem, so it is never the silent default.
 - No new `supported_search_types` entry: image retrieval is a property of
-  `hybrid`/`semantic`, not a fifth algorithm. `/api/v1/status` gains
+  `hybrid`, not a fifth algorithm. `/api/v1/status` gains
   `image_search: bool`, which reports `image_vector_ready`, the effective
   capability, not the provider flag. Astrolabe renders image results
   (thumbnail via `/core/preview`, deep link via `nc_webdav_view_image`) only
@@ -335,7 +360,9 @@ for it.
   6 KiB at 1536-d), plus an HNSW graph for the `image` vector.
 - **Billing.** Image embedding calls are metered separately from
   `tokens_embedded` (images are priced per image, not per token).
-- **Docs.** `docs/configuration.md` (new env vars), the
+- **Docs.** `docs/configuration.md` (new env vars:
+  `BEDROCK_IMAGE_EMBEDDING_MODEL`, `BEDROCK_IMAGE_OUTPUT_DIM`,
+  `IMAGE_EMBED_MAX_SOURCE_BYTES`, `IMAGE_SEARCH_SCORE_THRESHOLD`), the
   `nc_semantic_search` docstring, and a correction to ADR-032's "PDF-only"
   sentence.
 
