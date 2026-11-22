@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed — 2026-11-22. Tracked on Deck board 12, card #103. Builds on the
+Proposed — 2026-11-22. Tracked on Deck board 12, card #103 (all card numbers
+in this ADR are Deck cards, not GitHub issues). Builds on the
 provider surface in PR #800 (GH #703). The embedding-gateway side is Deck
 board 10, card #1537.
 
@@ -101,11 +102,19 @@ could.)
 
 **Image-model swap** (Titan → Cohere, 1024 → 1536) no longer needs a
 `_v2` collection and alias flip: `delete_vector_name("image")`, then
-`create_vector_name` at the new size, then re-enqueue image files. Text and
+`create_vector_name` at the new size, then re-enqueue image files. Re-queueing
+is not manual. When image embeddings are enabled, the scanner's freshness
+check (`find_indexed_content`, which already compares `etag` and
+`embedding_identity`) also compares `image_embedding_identity` with the
+configured image model. An image whose `etag` is unchanged but whose identity
+differs therefore reads as stale and is re-queued. Dead-lettered documents
+retry because the model id is part of `tiers_sig`. Text and
 sparse vectors are never touched. The alias flip remains the tool for a
 *text*-model change, as before.
 
-Minimum versions: Qdrant server **1.18** for the in-place add (new collections
+Minimum versions: Qdrant server **1.18** for the in-place add (the dev and
+CI stack runs `qdrant/qdrant:v1.20.1` in `docker-compose.yml`, so the
+integration lanes exercise it) (new collections
 created with `image` work on any supported version), and `qdrant-client`
 raised from `>=1.17.0` to `>=1.18.0`, the first release that exposes
 `create_vector_name` and `models.DenseVectorNameConfig` (verified: 1.17.1 has
@@ -176,7 +185,9 @@ Consequences of keeping `doc_type="file"`:
   `vector/` and `search/`, which today includes chunk-context, the
   `total_chunks` and sync-status counts, and the `/api/v1/vector-sync/status`
   endpoint. A test then asserts that each call site's filter carries the
-  condition. Document-scoped operations (eviction, prune, ACL release) are
+  condition. It finds the call sites by walking the AST of `vector/` and
+  `search/` for Qdrant client calls, not from a hand-maintained list, so a
+  new call site that skips the helper fails the test. Document-scoped operations (eviction, prune, ACL release) are
   deliberately excluded, because they must reach the image point.
 
 Card #103 (board 12) proposed `doc_type="image"`. Rejected because every per-type code
@@ -224,7 +235,20 @@ new branch for what is, to Nextcloud, just a file.
   a corrupt file or an unsupported encoding) is not retried. The image point
   is recorded as skipped with the reason, and the document's text chunks are
   written. Retrying the same bytes cannot succeed, so dead-lettering them
-  would only add noise. The skip is recorded so that the scanner honours it:
+  would only add noise.
+
+  **Classification is by error type, not by status code alone.** Bedrock
+  answers some throttling and validation cases with 400, and a misclassified
+  transient error would be stuck until the content or the model changed. So
+  only two responses count as permanent: the gateway's 422 for an invalid
+  image item (bad base64, unsupported `mime_type`) and Bedrock's
+  `ValidationException` naming the input. Everything else retries, including
+  bare 400s, `ThrottlingException`, 429, 5xx and timeouts. The gateway's 400
+  for an image sent to a text-only model is a configuration error that would
+  hit every image. It fails loudly at startup through the advertisement
+  check, not per document.
+
+  The skip is recorded so that the scanner honours it:
   - **with text chunks**, the text points carry `image_skipped_reason`. The
     document reads as indexed (it is, as text), so the scanner does not
     re-queue it. Sync status counts it as skipped;
@@ -281,7 +305,9 @@ score low against every image. Here the floor is doing its job, but the
 effect looks the same. To keep a too-high floor from going unnoticed, the
 search path emits a metric with the number of image-prefetch hits above the
 floor per query. A floor that suppresses everything then shows up as a flat
-zero on a dashboard.
+zero on a dashboard. Sync status and a gauge report the number of indexed
+image points next to it. That separates "the floor is too high" (images
+indexed, zero hits) from "no images indexed" (both zero).
 
 **RRF only.** A prefetch `score_threshold` cuts the candidate list before
 fusion. That is harmless for RRF, which uses ranks. DBSF normalises each
@@ -316,7 +342,9 @@ for it.
   prefetch to a vector that doesn't exist. **Ingest is gated on the same
   flag**: while it is false, no image embedding is computed or paid for. The
   flag is decided at startup only. A collection whose `create_vector_name`
-  failed stays text-only until the next restart retries it.
+  failed stays text-only until the next restart retries it. This also means
+  `/api/v1/status.image_search` does not change between restarts, so
+  Astrolabe may cache it.
 - **A floor is required.** The per-model floors in §6 exist for the known
   model ids. For any other image model, `image_vector_ready` stays false
   unless the operator sets `IMAGE_SEARCH_SCORE_THRESHOLD` explicitly, and a
