@@ -645,7 +645,8 @@ Known gaps (tracked on board 11):
   and the 400 for an unsupported width are not pacted. (`/v1/models`, rerank and
   OCR have their own consumer pacts. Image embeddings are covered in
   `test_gateway_image_embeddings_consumer.py`: catalogue confirmation, image
-  items, text into image space, and the coded `unsupported_mime_type` 422.)
+  items, text into image space, and the coded `unsupported_mime_type` and
+  `invalid_image` 422s.)
 - There is **no dedicated `e2e` tier** (no `e2e` marker/dir); full-stack behavior
   is spread across `tests/integration/` + `tests/smoke/`.
 - `can-i-deploy` runs in non-blocking **shadow mode**.

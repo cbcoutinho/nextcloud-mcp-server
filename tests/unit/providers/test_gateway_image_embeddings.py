@@ -103,6 +103,18 @@ async def test_confirms_from_input_modalities(monkeypatch):
             {"data": [{"id": IMAGE_MODEL, "input_modalities": ["image"]}]},
             None,
         ),
+        (  # image-capable but no MIME types: every image would be rejected
+            {
+                "data": [
+                    {
+                        "id": IMAGE_MODEL,
+                        "dimension": 1024,
+                        "input_modalities": ["image"],
+                    }
+                ]
+            },
+            None,
+        ),
     ],
 )
 async def test_not_confirmed(monkeypatch, models, dims):
@@ -176,3 +188,23 @@ async def test_other_errors_stay_retryable(monkeypatch, response):
     await provider.confirm_image_embeddings()
     with pytest.raises(httpx2.HTTPStatusError):
         await provider.embed_image_batch([PNG])
+
+
+@pytest.mark.parametrize("path", ["image", "text"])
+async def test_width_differing_from_the_advertisement_is_fatal(monkeypatch, path):
+    """No width requested: the advertised width is expected, not learned.
+
+    A gateway whose default differs from its catalogue entry would otherwise
+    define the width on the first vector while the collection is sized from
+    get_image_dimension(), failing only at upsert.
+    """
+    provider, _ = _gateway(monkeypatch, lambda b: _vectors(b, 512))
+    await provider.confirm_image_embeddings()
+    assert provider.get_image_dimension() == 1024
+    call = (
+        provider.embed_image_batch([PNG])
+        if path == "image"
+        else provider.embed_for_image_space("a coastline")
+    )
+    with pytest.raises(RuntimeError, match="does not match"):
+        await call

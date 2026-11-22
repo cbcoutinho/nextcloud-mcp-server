@@ -229,3 +229,58 @@ async def test_unsupported_mime_type_is_a_coded_422(gateway_consumer_pact):
             await provider.close()
 
     assert excinfo.value.index == 1
+
+
+async def test_upstream_rejected_image_is_a_coded_422(gateway_consumer_pact):
+    """An image the upstream refuses comes back as invalid_image at its index.
+
+    Provider state: same catalogue, but the upstream refuses every image (the
+    gateway maps an upstream 400 on an image-bearing call to this code instead
+    of a 502). The image sits at index 1, after a text item, so the pact pins
+    that ``index`` is the request position, not a count of images. This is the
+    response the client turns into a permanent skip; a 502 here would loop the
+    image to dead-letter.
+
+    Sent through the request helper directly: the client never mixes text and
+    images itself, but the mixed input is what makes the index meaningful.
+    """
+    png_item = {
+        "type": "image",
+        "data": base64.b64encode(_PNG).decode(),
+        "mime_type": "image/png",
+    }
+    (
+        gateway_consumer_pact.upon_receiving("an image the upstream rejects")
+        .given("the upstream rejects the submitted image")
+        .with_request("POST", "/v1/embeddings")
+        .with_body(
+            {
+                "model": _IMAGE_MODEL,
+                "input": ["a coastline", png_item],
+                "encoding_format": "float",
+                "dimensions": _WIDTH,
+            },
+            content_type="application/json",
+        )
+        .will_respond_with(422)
+        .with_body(
+            {
+                "detail": {
+                    "code": "invalid_image",
+                    "index": 1,
+                    "message": match.string("the upstream rejected the image"),
+                }
+            },
+            content_type="application/json",
+        )
+    )
+
+    with gateway_consumer_pact.serve() as srv:
+        provider = _provider(srv)
+        try:
+            with pytest.raises(ImageInputRejected) as excinfo:
+                await provider._embed_into_image_space(["a coastline", png_item])
+        finally:
+            await provider.close()
+
+    assert excinfo.value.index == 1

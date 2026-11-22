@@ -365,9 +365,23 @@ class GatewayProvider(OpenAIProvider):
                 model,
             )
             return False
+        mime_types = frozenset(entry.get("image_mime_types") or ())
+        if not mime_types:
+            # An empty set would reject every image pre-flight: enabled in
+            # name, useless in fact.
+            logger.error(
+                "Gateway advertises %s as image-capable but lists no "
+                "image_mime_types; image embeddings stay off",
+                model,
+            )
+            return False
         self._image_width = width
+        # Expected, not learned: the first vector is checked against the width
+        # the collection will be sized from (get_image_dimension), so a gateway
+        # whose default width differs from its advertisement fails loudly.
+        self._image_dimension = width
         self._image_limits = ImageInputLimits(
-            mime_types=frozenset(entry.get("image_mime_types") or ()),
+            mime_types=mime_types,
             max_bytes=_GATEWAY_IMAGE_MAX_BYTES,
             max_batch=_GATEWAY_IMAGE_MAX_BATCH,
         )
@@ -380,7 +394,8 @@ class GatewayProvider(OpenAIProvider):
 
     def get_image_dimension(self) -> int:
         self._require_image_support()
-        assert self._image_width is not None  # set on confirmation
+        if self._image_width is None:
+            raise RuntimeError("Image width unknown although confirmation succeeded")
         return self._image_width
 
     async def _embed_into_image_space(
