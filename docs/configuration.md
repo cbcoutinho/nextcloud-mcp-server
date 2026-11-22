@@ -1353,8 +1353,9 @@ excerpt, so `rerank` leaves them in retrieval order after the scored rows.
 
 **Tuning the floor.** A floor set too high hides every image without an error.
 Compare `mcp_image_search_hits_total` (image results returned, by model) with
-`mcp_vector_sync_image_points` (images indexed): hits flat at zero while images
-are indexed means the floor is too high.
+`mcp_vector_sync_image_points` (images indexed): hits flat at zero across many
+queries while images are indexed means the floor is too high. A hit counts only
+when the image makes the returned page, so a low `limit` lowers it too.
 
 Existing collections gain the `image` vector in place; notes and files are not
 re-indexed. To switch to a model of a different width, delete the vector with

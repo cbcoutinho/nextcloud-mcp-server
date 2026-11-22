@@ -318,7 +318,7 @@ image_search_queries_total = Counter(
 )
 image_search_hits_total = Counter(
     "mcp_image_search_hits_total",
-    "Image results above the score floor, summed over those calls",
+    "Image results returned (cleared the floor and made the cut), summed",
     ["model"],
 )
 

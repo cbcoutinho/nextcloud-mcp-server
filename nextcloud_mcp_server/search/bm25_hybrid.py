@@ -221,9 +221,11 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         if self._image_query == query:
             return self._image_embedding  # None if it failed: don't retry it
         try:
-            with trace_operation("search.image_embedding"):
-                with query_embedding_budget(settings.search_embedding_timeout_seconds):
-                    vec = await get_provider().embed_for_image_space(query)
+            with (
+                trace_operation("search.image_embedding"),
+                query_embedding_budget(settings.search_embedding_timeout_seconds),
+            ):
+                vec = await get_provider().embed_for_image_space(query)
         except Exception:
             logger.warning(
                 "image query embedding failed; searching text only", exc_info=True
@@ -233,6 +235,38 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         # (possibly timing-out) call once per doc_type.
         self._image_query, self._image_embedding = query, vec
         return vec
+
+    async def _embed_queries(
+        self, query: str, settings: Any
+    ) -> tuple[list | None, list[float] | None]:
+        """``(dense, image)`` query embeddings; either may be None.
+
+        The image one runs alongside the dense one when the image prefetch is
+        on. A dense failure is re-raised outside the task group, so callers see
+        the dense error itself rather than an ExceptionGroup wrapping it.
+        """
+        if not self.dense:
+            return None, None
+        if not self._uses_image_prefetch():
+            return await self._embed_query_dense(query, settings), None
+        image: list[float] | None = None
+        dense: list | None = None
+        dense_error: Exception | None = None
+
+        async def _image() -> None:
+            nonlocal image
+            image = await self._embed_query_image(query, settings)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_image)
+            try:
+                dense = await self._embed_query_dense(query, settings)
+            except Exception as e:  # noqa: BLE001
+                dense_error = e
+                tg.cancel_scope.cancel()
+        if dense_error is not None:
+            raise dense_error
+        return dense, image
 
     def _build_fusion_query(self, settings: Any) -> Any:
         """Build the fusion stage that merges the dense and sparse prefetches.
@@ -482,28 +516,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
 
         # Dense query embedding (fused with the sparse prefetch below), and the
         # image-space one alongside it when the image prefetch runs.
-        dense_embedding = None
-        image_embedding = None
-        if self.dense and self._uses_image_prefetch():
-            dense_error: Exception | None = None
-
-            async def _image() -> None:
-                nonlocal image_embedding
-                image_embedding = await self._embed_query_image(query, settings)
-
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(_image)
-                try:
-                    dense_embedding = await self._embed_query_dense(query, settings)
-                except Exception as e:  # noqa: BLE001 - re-raised below
-                    # Raised outside the group, so callers see the dense error
-                    # itself rather than an ExceptionGroup wrapping it.
-                    dense_error = e
-                    tg.cancel_scope.cancel()
-            if dense_error is not None:
-                raise dense_error
-        elif self.dense:
-            dense_embedding = await self._embed_query_dense(query, settings)
+        dense_embedding, image_embedding = await self._embed_queries(query, settings)
 
         # Generate sparse embedding for BM25 keyword search
         with trace_operation("search.get_bm25_service"):

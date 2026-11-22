@@ -354,7 +354,9 @@ async def publish_vector_sync_metrics(
             )
             update_vector_sync_image_points(images.embedded)
         except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
-            logger.warning("Failed to publish image-points gauge: %s", exc)
+            logger.warning(
+                "Failed to publish image-points gauge: %s", exc, exc_info=True
+            )
 
 
 async def vector_sync_metrics_task(
