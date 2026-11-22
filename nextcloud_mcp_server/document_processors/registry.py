@@ -978,10 +978,10 @@ class ProcessorRegistry:
         oversize = self._oversize_result(content, filename, get_settings())
         if oversize is not None:
             return oversize
-        processor = self._processor_for_tier(tier)
+        processor = self._processor_for_tier(tier, content_type)
         if processor is None:
             raise ProcessorError(
-                f"No '{tier}'-tier PDF processor registered "
+                f"No '{tier}'-tier processor for {content_type} registered "
                 f"(available: {', '.join(self.list_processors())})"
             )
         return await self._run_processor(
