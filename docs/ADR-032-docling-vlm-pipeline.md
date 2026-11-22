@@ -93,8 +93,11 @@ enforce a much shorter per-tool timeout (~30–60s). The client will usually kil
 call before docling responds, so the user sees a client-side timeout rather than the
 tool's base64 fallback. Interactive VLM (multi-minute) and short MCP client timeouts
 are fundamentally incompatible; VLM is best paired with the async/ingest path, not
-interactive reads. **Images are interactive-only** — the ingest scanner is PDF-only,
-so images are never indexed; interactive VLM image reads inherently block.
+interactive reads. Interactive VLM image reads inherently block. (This ADR
+originally also said images are never indexed because the ingest scanner is
+PDF-only. That is no longer true: discovery indexes every MIME type a processor
+claims, so tagged images are indexed through `DoclingProcessor` on the async path.
+See ADR-042.)
 
 **Mitigation — `DOCUMENT_READ_TIMEOUT_SECONDS` (opt-in).** A new setting caps the
 synchronous parse *inside* `nc_webdav_read_file` (via `anyio.fail_after`), independent
