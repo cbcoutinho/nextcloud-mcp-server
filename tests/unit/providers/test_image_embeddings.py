@@ -96,6 +96,43 @@ async def test_simple_image_vectors_are_deterministic_unit_vectors(data):
     assert math.sqrt(sum(x * x for x in first)) == pytest.approx(1.0)
 
 
+class _ChunkedProvider(SimpleProvider):
+    """SimpleProvider at max_batch=2, scripted per chunk, recording calls."""
+
+    def __init__(self, reject_at: int | None = None, width: int = 16):
+        super().__init__(dimension=16, image_embedding_model=SIMPLE_IMAGE_MODEL)
+        self.reject_at, self.width, self.chunks = reject_at, width, []
+
+    @property
+    def image_input_limits(self) -> ImageInputLimits:
+        return ImageInputLimits(mime_types=frozenset({"image/png"}), max_batch=2)
+
+    async def _embed_image_chunk(self, images):
+        self.chunks.append(len(images))
+        if self.reject_at is not None and len(self.chunks) - 1 == self.reject_at:
+            raise ImageInputRejected("bad", index=1)
+        return [[0.0] * self.width for _ in images]
+
+
+async def test_rejected_index_is_rebased_onto_the_callers_batch():
+    """Chunk 2 rejects its 2nd image (chunk-relative 1) → caller's index 3."""
+    provider = _ChunkedProvider(reject_at=1)
+    await provider.confirm_image_embeddings()
+    with pytest.raises(ImageInputRejected) as excinfo:
+        await provider.embed_image_batch([PNG] * 5)
+    assert excinfo.value.index == 3
+
+
+async def test_wrong_width_fails_on_the_first_chunk():
+    """A wrong-width model stops before the remaining chunks are sent."""
+    provider = _ChunkedProvider(width=8)
+    await provider.confirm_image_embeddings()
+    provider._requested_image_dimensions = 16
+    with pytest.raises(RuntimeError, match="does not match"):
+        await provider.embed_image_batch([PNG] * 6)
+    assert provider.chunks == [2]
+
+
 async def test_unsupported_mime_type_is_rejected_before_any_request():
     """A type the model doesn't take is a permanent skip, with its batch index."""
     provider = SimpleProvider(image_embedding_model=SIMPLE_IMAGE_MODEL)

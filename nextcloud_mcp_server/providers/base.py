@@ -306,13 +306,16 @@ class Provider(ABC):
         vectors: list[list[float]] = []
         for start, chunk in _chunked(images, limits.max_batch):
             try:
-                vectors.extend(await self._embed_image_chunk(chunk))
+                chunk_vectors = await self._embed_image_chunk(chunk)
             except ImageInputRejected as exc:
                 if exc.index is not None:
                     exc.index += start
                 raise
-        for vector in vectors:
-            self._record_image_dimension(len(vector))
+            # Per chunk, so a wrong-width model fails before the remaining
+            # chunks are sent (and billed).
+            for vector in chunk_vectors:
+                self._record_image_dimension(len(vector))
+            vectors.extend(chunk_vectors)
         return vectors
 
     async def embed_image(self, image: ImageInput) -> list[float]:
