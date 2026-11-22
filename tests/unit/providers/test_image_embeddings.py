@@ -303,6 +303,48 @@ async def test_bedrock_error_classification(bedrock_client, model, code, permane
         assert excinfo.value.index == 1
 
 
+@pytest.mark.parametrize(
+    "message, permanent",
+    [
+        ("Unable to process the provided image", True),
+        ("The provided model identifier is invalid.", False),
+        (
+            "Invocation of model ID cohere.embed-v4:0 with on-demand throughput "
+            "isn't supported. Retry your request with the ID or ARN of an "
+            "inference profile that contains this model.",
+            False,
+        ),
+    ],
+)
+async def test_bedrock_model_level_validation_stays_retryable(
+    bedrock_client, message, permanent
+):
+    """A ValidationException about the model is config, not a bad image.
+
+    Skipping is permanent, so a wrong model id or a missing inference profile
+    must stay retryable, or every image would be marked skipped.
+    """
+    from botocore.exceptions import ClientError
+
+    provider = await _confirmed("cohere.embed-v4:0")
+    bedrock_client.invoke_model.side_effect = _client_error(
+        "ValidationException", message
+    )
+    expected = ImageInputRejected if permanent else ClientError
+    with pytest.raises(expected):
+        await provider.embed_image_batch([PNG])
+
+
+async def test_bedrock_invokes_with_the_inference_profile_id(bedrock_client):
+    """The table lookup strips the profile prefix; the call must not."""
+    provider = await _confirmed("eu.cohere.embed-v4:0")
+    _respond(bedrock_client, {"embeddings": {"float": [[0.0] * 1536]}})
+    await provider.embed_image_batch([PNG])
+    assert bedrock_client.invoke_model.call_args.kwargs["modelId"] == (
+        "eu.cohere.embed-v4:0"
+    )
+
+
 async def test_bedrock_width_mismatch_is_fatal(bedrock_client):
     """A width other than the requested one must never reach the collection."""
     provider = await _confirmed("amazon.titan-embed-image-v1", dims=384)

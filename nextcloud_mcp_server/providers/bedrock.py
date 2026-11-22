@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 _IMAGE_MAX_BYTES = 5 * 1024 * 1024
 _JSON = "application/json"
 
+# ValidationException messages that are about the model or its invocation, not
+# the input: they hold for every image, so they must stay retryable. Observed
+# Bedrock wording: "The provided model identifier is invalid", "Invocation of
+# model ID ... with on-demand throughput isn't supported. Retry your request
+# with the ID or ARN of an inference profile ...".
+_MODEL_LEVEL_VALIDATION = re.compile(
+    r"model identifier|model id|on-demand throughput|inference profile",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class _ImageModelSpec:
@@ -470,13 +480,21 @@ class BedrockProvider(Provider):
         except ClientError as exc:
             # ADR-042 §5: a ValidationException on a one-image request is that
             # image being refused. Throttling, access, 5xx and transport errors
-            # stay retryable and propagate unchanged. The request shape itself
-            # is pinned by unit tests, and confirmation has already validated
-            # the width, so a config bug can't masquerade as a bad image here.
+            # stay retryable and propagate unchanged. So do ValidationExceptions
+            # about the *model* (bad id, missing inference profile): a skip is
+            # permanent, and a config error must not mark every image skipped.
             error = exc.response.get("Error", {})
             if error.get("Code") != "ValidationException":
                 raise
             message = error.get("Message", str(exc))
+            if _MODEL_LEVEL_VALIDATION.search(message):
+                logger.error(
+                    "Bedrock refused the image model %s itself (a config error, "
+                    "not a bad image); retrying later: %s",
+                    self.image_embedding_model,
+                    message,
+                )
+                raise
             logger.warning(
                 "Bedrock %s rejected a %s image as invalid; skipping it: %s",
                 self.image_embedding_model,
