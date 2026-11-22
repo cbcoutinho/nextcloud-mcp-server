@@ -199,3 +199,37 @@ async def test_an_image_hit_converts_to_the_public_model(env):
         0,
         1,
     )
+
+
+async def test_a_file_with_text_and_image_returns_both_hits(env):
+    """Dedup keys on chunk offsets; the image point has none, so it can't
+    collapse into the same file's chunk-0 text hit."""
+    client = await bm25_hybrid.get_qdrant_client()
+    await client.upsert(
+        "c",
+        [
+            m.PointStruct(
+                id=4,
+                vector={
+                    "dense": TEXT,
+                    "sparse": m.SparseVector(indices=[1], values=[1.0]),
+                },
+                payload={
+                    **BASE,
+                    "doc_id": "2",
+                    "title": "photo.png",
+                    "chunk_index": 0,
+                    "chunk_start_offset": 0,
+                    "chunk_end_offset": 4,
+                    "excerpt": "text",
+                },
+            )
+        ],
+    )
+    results = await BM25HybridSearchAlgorithm().search("q", "alice")
+    assert sorted(
+        r.metadata.get("match") or "text" for r in results if r.id == "2"
+    ) == [
+        "image",
+        "text",
+    ]
