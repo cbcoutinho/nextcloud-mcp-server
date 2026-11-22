@@ -1257,6 +1257,7 @@ async def scan_user_documents(
                         modified_at=modified_at,
                         etag=etag,
                         file_path=file_path,
+                        image_pending=image_identity is not None,
                     )
                     await send_stream.send(
                         DocumentTask(
@@ -1374,6 +1375,7 @@ async def scan_user_documents(
                             modified_at=modified_at,
                             etag=etag,
                             file_path=file_path,
+                            image_pending=image_identity is not None,
                         )
                         await send_stream.send(
                             DocumentTask(

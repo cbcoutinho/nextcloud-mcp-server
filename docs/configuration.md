@@ -1337,7 +1337,10 @@ image are written together or not at all.
 
 **Cost.** Turning the feature on, or switching the image model, re-queues every
 tagged hybrid image once, one paid embedding call per image. Tag a small folder
-first to see the volume.
+first to see the volume: `nc_get_vector_sync_status` and
+`GET /api/v1/vector-sync/status` report `image_pending` (queued, not yet
+paid for), `image_embedded` and `image_skipped`. A file whose only point is its
+image counts in `indexed_documents`.
 
 Existing collections gain the `image` vector in place; notes and files are not
 re-indexed. To switch to a model of a different width, delete the vector with

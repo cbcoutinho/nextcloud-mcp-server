@@ -441,6 +441,8 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             get_ingest_pending,
         )
         from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+            ImageCounts,
+            count_images,
             count_indexed,
             estimate_hybrid_vector_bytes,
         )
@@ -463,11 +465,16 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
         indexed_chunks = 0
         hybrid_chunks = 0
         estimated_vector_bytes = 0
+        images = ImageCounts()
         try:
             qdrant_client = await get_qdrant_client()
             indexed_documents, indexed_chunks = await count_indexed(
                 qdrant_client, settings.get_collection_name()
             )
+            # Image-only files have no chunk_index == 0 point to be counted by.
+            # Shared helper so this and the MCP tool can't drift.
+            images = await count_images(qdrant_client, settings.get_collection_name())
+            indexed_documents += images.image_only
             # Hybrid (dense-bearing) chunks drive the vector-RAM footprint; keyword
             # chunks are sparse-only and cost no dense RAM (card #624). Shared helper
             # so this and the MCP tool surface can't drift.
@@ -498,6 +505,11 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             "estimated_vector_bytes": estimated_vector_bytes,
             "pending_documents": pending.pending,
             "ingest_queue": settings.ingest_queue,
+            # ADR-042: image files queued for, holding, or skipped from an image
+            # embedding.
+            "image_pending": images.pending,
+            "image_embedded": images.embedded,
+            "image_skipped": images.skipped,
         }
         if pending.job_counts is not None:
             # Per-status breakdown (todo/doing/failed/…) on the postgres backend.

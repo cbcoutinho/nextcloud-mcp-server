@@ -291,6 +291,23 @@ class VectorSyncStatusResponse(BaseResponse):
             "(indexed_chunks - hybrid_chunks) are sparse-only and cost no dense RAM."
         ),
     )
+    image_pending: int = Field(
+        default=0,
+        description=(
+            "Queued image files that will get an image embedding (ADR-042). Tag a "
+            "folder and read this to see the paid-call volume before it is spent."
+        ),
+    )
+    image_embedded: int = Field(
+        default=0, description="Files with an image embedding (ADR-042)"
+    )
+    image_skipped: int = Field(
+        default=0,
+        description=(
+            "Image files permanently skipped: over IMAGE_EMBEDDING_MAX_SOURCE_BYTES, "
+            "undecodable, or rejected by the image model (ADR-042)"
+        ),
+    )
     estimated_vector_bytes: int = Field(
         default=0,
         description=(

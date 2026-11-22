@@ -86,3 +86,36 @@ async def test_prune_spares_the_image_point_on_a_server():
     finally:
         await client.delete_collection(name)
         await client.close()
+
+
+async def test_count_images_on_a_server():
+    """Step 4c's counts, incl. ``must_not is_empty`` + ``should``, on a server."""
+    from nextcloud_mcp_server.vector.metrics_publisher import count_images
+    from nextcloud_mcp_server.vector.qdrant_client import _PAYLOAD_INDEX_FIELDS
+    from tests.unit.vector.test_image_counts import image_count_points
+
+    client = AsyncQdrantClient(url=_URL, api_key=_API_KEY, https=False)
+    try:
+        await client.get_collections()
+    except Exception as e:  # noqa: BLE001 - no server: skip, not fail
+        await client.close()
+        pytest.skip(f"no Qdrant server at {_URL}: {e}")
+    name = f"imgcount_{uuid.uuid4().hex[:8]}"
+    vec = m.VectorParams(size=2, distance=m.Distance.COSINE)
+    await client.create_collection(name, vectors_config={"dense": vec, "image": vec})
+    try:
+        for key, schema in _PAYLOAD_INDEX_FIELDS.items():
+            await client.create_payload_index(name, key, schema)
+        payloads, expected = image_count_points()
+        await client.upsert(
+            name,
+            points=[
+                m.PointStruct(id=i, vector={"dense": [1, 0]}, payload=p)
+                for i, p in enumerate(payloads, start=1)
+            ],
+            wait=True,
+        )
+        assert await count_images(client, name) == expected
+    finally:
+        await client.delete_collection(name)
+        await client.close()

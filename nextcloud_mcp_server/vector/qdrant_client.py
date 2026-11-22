@@ -60,6 +60,10 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     # Every text read excludes image points with must_not vector_kind == image
     # (ADR-042 §4), so the field needs an index for strict mode.
     payload_keys.VECTOR_KIND: PayloadSchemaType.KEYWORD,
+    # The image counts in sync status (ADR-042 §5) filter on these.
+    payload_keys.IMAGE_SKIPPED_REASON: PayloadSchemaType.KEYWORD,
+    payload_keys.IMAGE_ONLY: PayloadSchemaType.BOOL,
+    payload_keys.IMAGE_PENDING: PayloadSchemaType.BOOL,
     "is_placeholder": PayloadSchemaType.BOOL,
     # dead_letter is the bool used by the durable terminal-failure marker lookup
     # (see vector/dead_letter.py: ``_dead_letter_filter`` ANDs

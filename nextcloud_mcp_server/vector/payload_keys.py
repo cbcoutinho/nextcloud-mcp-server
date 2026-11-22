@@ -86,7 +86,13 @@ VECTOR_KIND_IMAGE = "image"
 # point. Compared by the scanner, like EMBEDDING_IDENTITY for text.
 IMAGE_EMBEDDING_IDENTITY = "image_embedding_identity"
 # Why a document's image was not embedded (permanent rejection, size cap).
+# On the text points, or on the dead-letter marker of a textless image.
 IMAGE_SKIPPED_REASON = "image_skipped_reason"
+# On the image point of a file with no text points, so the distinct-document
+# count can include it (it has no chunk_index == 0 point).
+IMAGE_ONLY = "image_only"
+# On the placeholder of a queued in-scope image file: the pending image count.
+IMAGE_PENDING = "image_pending"
 
 
 def image_point_id(doc_id: str) -> str:

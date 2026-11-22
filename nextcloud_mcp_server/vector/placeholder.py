@@ -61,6 +61,7 @@ async def write_placeholder_point(
     modified_at: int,
     etag: str = "",
     file_path: str | None = None,
+    image_pending: bool = False,
 ) -> None:
     """Write a placeholder point to Qdrant to mark document as queued.
 
@@ -117,6 +118,9 @@ async def write_placeholder_point(
         # Add file_path for files
         if doc_type == "file" and file_path:
             payload["file_path"] = file_path
+        if image_pending:
+            # A queued image that will get an image point (sync-status count).
+            payload[payload_keys.IMAGE_PENDING] = True
 
         # Create placeholder point
         point = PointStruct(

@@ -1831,6 +1831,7 @@ async def _index_document_inner(
                             ),
                             reason,
                             file_path=file_path,
+                            image_skipped_reason=image_skip,
                         )
                         record_document_dead_lettered(reason)
                         logger.warning(
@@ -2632,6 +2633,7 @@ async def _index_document_inner(
                 payload={
                     **doc_payload,
                     payload_keys.VECTOR_KIND: payload_keys.VECTOR_KIND_IMAGE,
+                    payload_keys.IMAGE_ONLY: text_point_count == 0,
                 },
             )
         )

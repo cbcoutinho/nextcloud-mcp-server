@@ -48,6 +48,9 @@ ALLOWED = {
     ),
     "vector/dead_letter.py::is_dead_lettered": "document-scoped marker lookup",
     "vector/metrics_publisher.py::count_dead_lettered": "dead-letter tombstones",
+    "vector/metrics_publisher.py::count_images._count": (
+        "counts image points on purpose"
+    ),
     "vector/metrics_publisher.py::compute_chunk_density_snapshot": (
         "matches chunk_index == 0, which an image point never carries"
     ),

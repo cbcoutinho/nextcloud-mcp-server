@@ -21,13 +21,20 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 import anyio
 from anyio.abc import TaskStatus
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import (
+    FieldCondition,
+    Filter,
+    IsEmptyCondition,
+    MatchValue,
+    PayloadField,
+)
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import (
@@ -92,6 +99,62 @@ async def count_indexed(
         exact=exact,
     )
     return docs_result.count, chunks_result.count
+
+
+@dataclass(frozen=True)
+class ImageCounts:
+    """Image documents by state, for sync status (ADR-042 §5)."""
+
+    pending: int = 0  # queued in-scope image files (placeholders)
+    embedded: int = 0  # image points
+    image_only: int = 0  # image points of files with no text points
+    skipped: int = 0  # permanent skips, with or without text
+
+
+async def count_images(
+    qdrant_client: AsyncQdrantClient, collection: str, *, exact: bool = True
+) -> ImageCounts:
+    """Count image documents. Every figure is one point per document.
+
+    A skipped file with text records the skip on its text points (counted by
+    their ``chunk_index == 0`` point); a textless one on its dead-letter marker.
+    """
+
+    async def _count(flt: Filter) -> int:
+        return (
+            await qdrant_client.count(
+                collection_name=collection, count_filter=flt, exact=exact
+            )
+        ).count
+
+    def _match(key: str, value: Any) -> FieldCondition:
+        return FieldCondition(key=key, match=MatchValue(value=value))
+
+    image = _match(payload_keys.VECTOR_KIND, payload_keys.VECTOR_KIND_IMAGE)
+    return ImageCounts(
+        pending=await _count(
+            Filter(
+                must=[
+                    _match("is_placeholder", True),
+                    _match(payload_keys.IMAGE_PENDING, True),
+                ]
+            )
+        ),
+        embedded=await _count(Filter(must=[image])),
+        image_only=await _count(
+            Filter(must=[image, _match(payload_keys.IMAGE_ONLY, True)])
+        ),
+        skipped=await _count(
+            Filter(
+                must_not=[
+                    IsEmptyCondition(
+                        is_empty=PayloadField(key=payload_keys.IMAGE_SKIPPED_REASON)
+                    )
+                ],
+                should=[_match("chunk_index", 0), _match(DEAD_LETTER_KEY, True)],
+            )
+        ),
+    )
 
 
 async def count_hybrid_chunks(

@@ -59,6 +59,8 @@ from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.metrics_publisher import (
+    ImageCounts,
+    count_images,
     count_indexed,
     estimate_hybrid_vector_bytes,
 )
@@ -1187,11 +1189,15 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
         indexed_chunks = 0
         hybrid_chunks = 0
         estimated_vector_bytes = 0
+        images = ImageCounts()
         try:
             qdrant_client = await get_qdrant_client()
             indexed_documents, indexed_chunks = await count_indexed(
                 qdrant_client, settings.get_collection_name()
             )
+            # Image-only files have no chunk_index == 0 point to be counted by.
+            images = await count_images(qdrant_client, settings.get_collection_name())
+            indexed_documents += images.image_only
             # Hybrid chunks (dense-bearing) drive the vector-RAM footprint;
             # keyword-index chunks are sparse-only and cost no dense RAM (#624).
             # Shared helper so this and the HTTP status route can't drift.
@@ -1222,6 +1228,9 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
             job_counts_by_queue=pending.job_counts_by_queue,
             hybrid_chunks=hybrid_chunks,
             estimated_vector_bytes=estimated_vector_bytes,
+            image_pending=images.pending,
+            image_embedded=images.embedded,
+            image_skipped=images.skipped,
         )
 
     except Exception as e:
