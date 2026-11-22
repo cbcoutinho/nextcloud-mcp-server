@@ -43,6 +43,19 @@ tier reports an **ordinal** in [0, 1] that orders results honestly and is not a
 probability. Both are [0, 1] and filterable; only one may be rendered as a
 percentage.
 
+## Why a weak cross-encoder curve still counts as calibrated
+
+"Calibrated" here means the number means what it says, measured by ECE, not
+that it discriminates well. The fusion curve was demoted because its meaning
+broke under transfer: ECE quadrupled to 0.1142, and its "0-10%" bucket held
+19.3% relevant documents. amazon.rerank-v1's curve keeps an out-of-fold ECE of
+0.039. It is close to the base rate in Brier terms (transfer 0.1920 vs 0.1990)
+because it says "~16%" for almost everything, which is an honest statement
+that this reranker cannot separate the rows. A client may render that, and
+it reads as unremarkable, which is accurate. A cross-encoder score is also
+computed from the query and document themselves, while an RRF score is a
+rank artifact, which is why the fusion tier's meaning is population-bound.
+
 ## What this does not do
 
 * **It is not corpus-independent.** Every curve was fitted at prevalence 0.178
@@ -104,6 +117,7 @@ class _Curve:
         return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, self.a * z + self.b))))
 
 
+# Shared by the Bedrock and OpenRouter routes of Cohere rerank v3.5 (below).
 _COHERE_V35 = _Curve(
     a=0.945386,
     b=-1.769075,

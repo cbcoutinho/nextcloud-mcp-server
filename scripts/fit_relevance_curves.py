@@ -8,6 +8,9 @@ Usage: fit_relevance_curves.py PLAN DOC_RESULTS [CHUNK_RESULTS] [LABEL]
 LABEL names the cross-encoder curve (default: the bge one). To fit another
 reranker on the SAME labelled pairs -- so fit_base_rate matches by
 construction -- rescore the bge artifacts' excerpts with it and pass those.
+The 2026-11-22 rescored artifacts (amazon, cohere, voyage) and the probe that
+produced them are recorded on Deck card #1536; the bge inputs are in
+note 464925 (shipped_rerank_{document,chunk}.jsonl).
 
 Validation design is deliberately harder than cross-validation. Fitting on the
 DOCUMENT-granularity pool and testing on the CHUNK pool is a genuine transfer
@@ -237,7 +240,8 @@ def main():
             "fit_n": len(fit_pool),
         }
 
-    dest = os.path.join(BASE, f"curves_{label}.json")
+    # Fixed name: the label is a key inside the file, never part of a path.
+    dest = os.path.join(BASE, "curves.json")
     with open(dest, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
     print(f"\n\nwrote {dest}")

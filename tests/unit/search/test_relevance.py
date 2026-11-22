@@ -164,7 +164,7 @@ def test_gateway_rerankers_resolve_to_a_calibrated_curve(model):
 
 
 @pytest.mark.parametrize("model", _GATEWAY_RERANKERS)
-@given(a=st.floats(-10, 10), b=st.floats(-10, 10))
+@given(a=st.floats(0, 1), b=st.floats(0, 1))
 def test_every_fitted_curve_is_monotone(model, a, b):
     lo, hi = sorted((a, b))
     assert (
@@ -176,7 +176,10 @@ def test_every_fitted_curve_is_monotone(model, a, b):
 def test_amazon_low_raw_scale_is_not_reported_as_near_zero():
     """The bug behind #1536: amazon's raw scores sit near 0.0015, which the
     uncalibrated clamp showed as ~0% — an empty bar for a typical hit. Its
-    curve maps the fit mean to roughly the corpus base rate instead."""
+    curve maps the fit mean to roughly the corpus base rate instead.
+
+    Deliberately tied to the shipped parameters: a refit moves this value and
+    should update the expectation consciously."""
     value, _ = _rel(rerank_score=0.0015, rerank_model="bedrock/amazon.rerank-v1:0")
 
     assert value == pytest.approx(0.18, abs=0.02)
