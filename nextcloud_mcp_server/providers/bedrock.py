@@ -32,7 +32,9 @@ _JSON = "application/json"
 # the input: they hold for every image, so they must stay retryable. Observed
 # Bedrock wording: "The provided model identifier is invalid", "Invocation of
 # model ID ... with on-demand throughput isn't supported. Retry your request
-# with the ID or ARN of an inference profile ...".
+# with the ID or ARN of an inference profile ...". A substring heuristic,
+# biased on purpose: a false match keeps an image retryable (it dead-letters,
+# visibly, at ERROR), whereas a miss would skip every image permanently.
 _MODEL_LEVEL_VALIDATION = re.compile(
     r"model identifier|model id|on-demand throughput|inference profile",
     re.IGNORECASE,

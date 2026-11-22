@@ -123,6 +123,19 @@ async def test_rejected_index_is_rebased_onto_the_callers_batch():
     assert excinfo.value.index == 3
 
 
+async def test_a_short_chunk_fails_instead_of_misaligning():
+    """One vector for two images must fail, not shorten the result."""
+    provider = _ChunkedProvider()
+    await provider.confirm_image_embeddings()
+    provider._embed_image_chunk = lambda images: _one_vector()  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="returned 1 vectors for 2 images"):
+        await provider.embed_image_batch([PNG, PNG])
+
+
+async def _one_vector() -> list[list[float]]:
+    return [[0.0] * 16]
+
+
 async def test_wrong_width_fails_on_the_first_chunk():
     """A wrong-width model stops before the remaining chunks are sent."""
     provider = _ChunkedProvider(width=8)

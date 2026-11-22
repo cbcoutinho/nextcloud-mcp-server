@@ -313,8 +313,14 @@ class Provider(ABC):
                 if exc.index is not None:
                     exc.index += start
                 raise
-            # Per chunk, so a wrong-width model fails before the remaining
-            # chunks are sent (and billed).
+            # Per chunk, so a wrong-count or wrong-width response fails before
+            # the remaining chunks are sent (and billed). A short response
+            # would otherwise pair vectors with the wrong images.
+            if len(chunk_vectors) != len(chunk):
+                raise RuntimeError(
+                    f"{self.image_embedding_model} returned {len(chunk_vectors)} "
+                    f"vectors for {len(chunk)} images"
+                )
             for vector in chunk_vectors:
                 self._record_image_dimension(len(vector))
             vectors.extend(chunk_vectors)
