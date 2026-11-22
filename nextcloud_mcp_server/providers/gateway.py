@@ -423,6 +423,13 @@ class GatewayProvider(OpenAIProvider):
             _raise_for_image_rejection(resp)
         resp.raise_for_status()
         data = sorted(resp.json()["data"], key=lambda d: d["index"])
+        if [d["index"] for d in data] != list(range(len(items))):
+            # A dropped or duplicated item would pair vectors with the wrong
+            # images. Fail retryably rather than write misattributed points.
+            raise RuntimeError(
+                f"Gateway returned indices {[d['index'] for d in data]} "
+                f"for {len(items)} inputs"
+            )
         return [d["embedding"] for d in data]
 
     async def _embed_image_chunk(self, images: list[ImageInput]) -> list[list[float]]:

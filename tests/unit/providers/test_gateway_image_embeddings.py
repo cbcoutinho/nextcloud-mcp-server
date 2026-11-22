@@ -208,3 +208,14 @@ async def test_width_differing_from_the_advertisement_is_fatal(monkeypatch, path
     )
     with pytest.raises(RuntimeError, match="does not match"):
         await call
+
+
+async def test_a_dropped_item_fails_instead_of_misaligning(monkeypatch):
+    """Two images in, one vector back: never pair vectors with the wrong image."""
+    one_vector = {
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.0] * 1024}]
+    }
+    provider, _ = _gateway(monkeypatch, lambda _: httpx2.Response(200, json=one_vector))
+    await provider.confirm_image_embeddings()
+    with pytest.raises(RuntimeError, match="indices"):
+        await provider.embed_image_batch([PNG, JPEG])
