@@ -394,8 +394,10 @@ async def get_server_status(request: Request) -> JSONResponse:
         "rerank_available": rerank_available(settings),
         # ADR-042 §7: hybrid search also matches images. The effective
         # capability (image_vector_ready), not the configured model, so a client
-        # renders image results only when the server can produce them. Decided
-        # once per process, so a client may cache it until the version changes.
+        # renders image results only when the server can produce them. Settled
+        # before the first request (starlette_lifespan initialises Qdrant before
+        # it yields, and aborts startup if that fails), so a client may cache it
+        # until the server restarts.
         "image_search": _image_search_ready(settings),
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",

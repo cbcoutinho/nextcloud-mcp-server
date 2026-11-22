@@ -7,6 +7,7 @@ an image-side failure fall back to text only.
 
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 from qdrant_client import AsyncQdrantClient
 from qdrant_client import models as m
@@ -138,6 +139,24 @@ async def test_dense_failure_is_not_wrapped_in_an_exception_group(env):
     provider.embed_with_usage.side_effect = TimeoutError()
     with pytest.raises(QueryEmbeddingUnavailable):
         await BM25HybridSearchAlgorithm().search("q", "alice")
+
+
+async def test_dense_failure_cancels_the_image_embedding(env):
+    """A dense failure doesn't wait out (and pay for) the image call."""
+    provider, _ = env
+    cancelled = anyio.Event()
+
+    async def hang(_query):
+        try:
+            await anyio.sleep_forever()
+        finally:
+            cancelled.set()
+
+    provider.embed_for_image_space.side_effect = hang
+    provider.embed_with_usage.side_effect = TimeoutError()
+    with anyio.fail_after(5), pytest.raises(QueryEmbeddingUnavailable):
+        await BM25HybridSearchAlgorithm().search("q", "alice")
+    assert cancelled.is_set()
 
 
 async def test_off_when_the_collection_has_no_image_vector(env, monkeypatch):

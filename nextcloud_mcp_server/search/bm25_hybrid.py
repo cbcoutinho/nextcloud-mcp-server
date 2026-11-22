@@ -261,6 +261,7 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             tg.start_soon(_image)
             try:
                 dense = await self._embed_query_dense(query, settings)
+            # Not swallowed: held so it is re-raised after the group exits.
             except Exception as e:  # noqa: BLE001
                 dense_error = e
                 tg.cancel_scope.cancel()
