@@ -212,6 +212,21 @@ new branch for what is, to Nextcloud, just a file.
   processor whose image embedding fails dead-letters like any other failed
   document. It is never recorded as "indexed with nothing", which would look
   indexed while being unfindable.
+
+  The trade-off is accepted on purpose: while the image provider is down,
+  tagged images are not text-indexed either, because the text and image
+  points of one document succeed or fail together. A transient failure
+  (timeout, 5xx, 429) retries as usual. A **permanent** rejection of the
+  input (the provider or gateway answers 400/422 for that image, for example
+  a corrupt file or an unsupported encoding) is not retried. The image point
+  is recorded as skipped with the reason, and the document's text chunks are
+  written. Retrying the same bytes cannot succeed, so dead-lettering them
+  would only add noise.
+- **Formats.** `indexable_mime_types` gains the intersection of the
+  provider's accepted types and what the worker can decode for downscaling.
+  HEIC/HEIF, which phones produce by default, is **out of scope** for now:
+  neither Bedrock model nor the gateway accepts it, and converting it would
+  need a new decoder dependency.
 - **Cost.** The first sync of a large tagged image tree issues one paid call
   per image. Spend is bounded by the existing ingest queue concurrency and the
   source-size cap above. `nc_get_vector_sync_status` reports pending,
@@ -310,7 +325,12 @@ for it.
   consumer pact and this repo's provider verification must cover them, and an
   integration test must index and retrieve an image end-to-end. CI has no
   Bedrock credentials, so `SimpleProvider` gains a deterministic
-  `embed_image` (hash-seeded vector) to make that test hermetic.
+  `embed_image` (hash-seeded vector) to make that test hermetic. Remaining
+  gap: provider verification covers only the public endpoints, so
+  `image_search` on `/api/v1/status` is verified but image results on the
+  authenticated `/api/v1/search` are not. That is the existing ADR-029
+  phase-4 gap, tracked on board 11. The implementation PR adds image
+  results to that card instead of leaving them silently uncovered.
 - **Storage.** One extra vector per indexed image (4 KiB at 1024-d float32,
   6 KiB at 1536-d), plus an HNSW graph for the `image` vector.
 - **Billing.** Image embedding calls are metered separately from
