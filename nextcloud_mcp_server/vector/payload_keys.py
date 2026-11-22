@@ -79,7 +79,7 @@ def point_id(tenant_id: str, doc_id: str, chunk_index: int) -> str:
 # ADR-042 §4: an image embedding is a point of the same file document, marked
 # ``vector_kind="image"``. Text points carry no ``vector_kind`` at all, so a
 # ``must_not vector_kind == image`` filter keeps them (see
-# ``search.access_filter.exclude_image_points``).
+# ``vector.placeholder.exclude_image_points``).
 VECTOR_KIND = "vector_kind"
 VECTOR_KIND_IMAGE = "image"
 # The image model that produced (or permanently skipped) a document's image
