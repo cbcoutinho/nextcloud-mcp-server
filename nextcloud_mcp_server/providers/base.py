@@ -32,6 +32,10 @@ class ImageInputLimits:
     max_pixels: int | None = None
     max_batch: int = 1
 
+    def __post_init__(self) -> None:
+        if self.max_batch < 1:
+            raise ValueError(f"max_batch must be >= 1, got {self.max_batch}")
+
 
 class ImageInputRejected(Exception):
     """The provider named an image input as unusable (ADR-042 §5).
@@ -282,7 +286,11 @@ class Provider(ABC):
         """
         self._require_image_support()
         limits = self.image_input_limits
-        assert limits is not None  # confirmed providers always report limits
+        if limits is None:
+            raise RuntimeError(
+                f"{type(self).__name__} confirmed image embeddings but reports "
+                "no image_input_limits"
+            )
         for i, image in enumerate(images):
             if image.mime_type not in limits.mime_types:
                 raise ImageInputRejected(

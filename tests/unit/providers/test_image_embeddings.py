@@ -11,6 +11,7 @@ from hypothesis import strategies as st
 
 from nextcloud_mcp_server.providers.base import (
     ImageInput,
+    ImageInputLimits,
     ImageInputRejected,
     Provider,
 )
@@ -191,33 +192,31 @@ async def test_bedrock_titan_rejects_webp_without_a_request(bedrock_client):
     bedrock_client.invoke_model.assert_not_called()
 
 
-async def test_bedrock_cohere_batches_images_as_documents(bedrock_client):
-    """Cohere v4 takes many images per call, as data URIs, typed search_document."""
+async def test_bedrock_cohere_sends_one_image_per_call(bedrock_client):
+    """Cohere images go as data URIs typed search_document, one per call.
+
+    One per call keeps a ValidationException attributable to a single image
+    and the body far below Bedrock's request cap (ADR-042 §5).
+    """
     provider = await _confirmed("cohere.embed-v4:0", dims=256)
-    _respond(bedrock_client, {"embeddings": {"float": [[0.1] * 256, [0.2] * 256]}})
+    _respond(
+        bedrock_client,
+        {"embeddings": {"float": [[0.1] * 256]}},
+        {"embeddings": {"float": [[0.2] * 256]}},
+    )
 
     vectors = await provider.embed_image_batch([PNG, WEBP])
 
-    assert len(vectors) == 2
-    (body,) = _sent_bodies(bedrock_client)
-    assert body["input_type"] == "search_document"
-    assert body["output_dimension"] == 256
-    assert body["images"] == [
-        f"data:image/png;base64,{base64.b64encode(PNG.data).decode()}",
-        f"data:image/webp;base64,{base64.b64encode(WEBP.data).decode()}",
+    assert [v[0] for v in vectors] == [0.1, 0.2]
+    first, second = _sent_bodies(bedrock_client)
+    assert first["input_type"] == "search_document"
+    assert first["output_dimension"] == 256
+    assert first["images"] == [
+        f"data:image/png;base64,{base64.b64encode(PNG.data).decode()}"
     ]
-
-
-async def test_bedrock_cohere_chunks_at_96(bedrock_client):
-    provider = await _confirmed("cohere.embed-v4:0")
-    _respond(
-        bedrock_client,
-        {"embeddings": {"float": [[0.0] * 1536] * 96}},
-        {"embeddings": {"float": [[0.0] * 1536] * 4}},
-    )
-    vectors = await provider.embed_image_batch([PNG] * 100)
-    assert len(vectors) == 100
-    assert [len(b["images"]) for b in _sent_bodies(bedrock_client)] == [96, 4]
+    assert second["images"] == [
+        f"data:image/webp;base64,{base64.b64encode(WEBP.data).decode()}"
+    ]
 
 
 async def test_bedrock_cohere_text_query_is_search_query(bedrock_client):
@@ -235,6 +234,7 @@ async def test_bedrock_cohere_text_query_is_search_query(bedrock_client):
 
 
 # Classification table (ADR-042 §5): only ValidationException is permanent.
+@pytest.mark.parametrize("model", ["amazon.titan-embed-image-v1", "cohere.embed-v4:0"])
 @pytest.mark.parametrize(
     "code, permanent",
     [
@@ -246,25 +246,24 @@ async def test_bedrock_cohere_text_query_is_search_query(bedrock_client):
         ("AccessDeniedException", False),
     ],
 )
-async def test_bedrock_error_classification(bedrock_client, code, permanent):
-    provider = await _confirmed("amazon.titan-embed-image-v1")
-    bedrock_client.invoke_model.side_effect = _client_error(code)
+async def test_bedrock_error_classification(bedrock_client, model, code, permanent):
+    """The second image fails; a rejection names it, anything else propagates."""
+    provider = await _confirmed(model)
+    ok = (
+        {"embedding": [0.0] * 1024}
+        if model.startswith("amazon")
+        else {"embeddings": {"float": [[0.0] * 1536]}}
+    )
+    _respond(bedrock_client, ok)
+    success = next(bedrock_client.invoke_model.side_effect)
+    bedrock_client.invoke_model.side_effect = [success, _client_error(code)]
 
     expected = ImageInputRejected if permanent else type(_client_error(code))
     with pytest.raises(expected) as excinfo:
         await provider.embed_image_batch([JPEG, PNG])
     if permanent:
-        # Titan runs one image per call, so the rejected image is identified.
-        assert excinfo.value.index == 0
-
-
-async def test_bedrock_rejection_in_a_multi_image_call_has_no_index(bedrock_client):
-    """Cohere rejects the whole request; the culprit can't be named."""
-    provider = await _confirmed("cohere.embed-v4:0")
-    bedrock_client.invoke_model.side_effect = _client_error("ValidationException")
-    with pytest.raises(ImageInputRejected) as excinfo:
-        await provider.embed_image_batch([PNG, JPEG])
-    assert excinfo.value.index is None
+        # One image per call, so the rejected image is always identified.
+        assert excinfo.value.index == 1
 
 
 async def test_bedrock_width_mismatch_is_fatal(bedrock_client):
@@ -273,6 +272,25 @@ async def test_bedrock_width_mismatch_is_fatal(bedrock_client):
     _respond(bedrock_client, {"embedding": [0.0] * 1024})
     with pytest.raises(RuntimeError, match="does not match"):
         await provider.embed_image_batch([PNG])
+
+
+async def test_bedrock_unrequested_width_is_checked_against_the_table(bedrock_client):
+    """With no width requested, the table's width is expected, not learned.
+
+    Otherwise the first vector would define the width while the collection is
+    sized from get_image_dimension(), and the mismatch would only surface at
+    upsert.
+    """
+    provider = await _confirmed("amazon.titan-embed-image-v1")
+    assert provider.get_image_dimension() == 1024
+    _respond(bedrock_client, {"embedding": [0.0] * 384})
+    with pytest.raises(RuntimeError, match="does not match"):
+        await provider.embed_image_batch([PNG])
+
+
+def test_image_input_limits_rejects_a_zero_batch():
+    with pytest.raises(ValueError, match="max_batch"):
+        ImageInputLimits(mime_types=frozenset({"image/png"}), max_batch=0)
 
 
 async def test_oversized_image_is_a_caller_bug_not_a_rejection(bedrock_client):

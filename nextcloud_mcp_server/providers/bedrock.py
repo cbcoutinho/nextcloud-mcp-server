@@ -53,7 +53,12 @@ _IMAGE_MODELS: dict[str, _ImageModelSpec] = {
         dimension=1536,
         mrl_dims=(256, 512, 1024, 1536),
         mime_types=frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"}),
-        max_batch=96,
+        # Cohere takes up to 96 images per call, but one per call keeps a
+        # ValidationException attributable to exactly one image (ADR-042 §5)
+        # and a body far below Bedrock's request cap. Ingest embeds one image
+        # per document anyway, so batching only ever helped backfills.
+        # ponytail: raise with a byte budget in _chunked if backfills need it.
+        max_batch=1,
     ),
 }
 
@@ -379,6 +384,7 @@ class BedrockProvider(Provider):
             )
             self._image_confirmed = False
         else:
+            self._image_dimension = self._requested_image_dimensions or spec.dimension
             self._image_confirmed = True
         return self._image_confirmed
 
@@ -392,10 +398,17 @@ class BedrockProvider(Provider):
             max_batch=self._image_spec.max_batch,
         )
 
+    @property
+    def _spec(self) -> _ImageModelSpec:
+        if self._image_spec is None:
+            raise RuntimeError(
+                f"{self.image_embedding_model!r} is not a known Bedrock image model"
+            )
+        return self._image_spec
+
     def get_image_dimension(self) -> int:
         self._require_image_support()
-        assert self._image_spec is not None
-        return self._requested_image_dimensions or self._image_spec.dimension
+        return self._requested_image_dimensions or self._spec.dimension
 
     def _image_request(
         self, *, images: list[ImageInput] | None = None, text: str | None = None
@@ -404,13 +417,11 @@ class BedrockProvider(Provider):
 
         Cohere v4 is asymmetric: images are documents, text is a query.
         """
-        assert self._image_spec is not None
+        spec = self._spec
         width = self._requested_image_dimensions
-        if self._image_spec.family == "titan":
+        if spec.family == "titan":
             body: dict[str, Any] = {
-                "embeddingConfig": {
-                    "outputEmbeddingLength": width or self._image_spec.dimension
-                }
+                "embeddingConfig": {"outputEmbeddingLength": width or spec.dimension}
             }
             if images:
                 body["inputImage"] = base64.b64encode(images[0].data).decode()
@@ -432,8 +443,7 @@ class BedrockProvider(Provider):
         return body
 
     def _parse_image_response(self, response: dict[str, Any]) -> list[list[float]]:
-        assert self._image_spec is not None
-        if self._image_spec.family == "titan":
+        if self._spec.family == "titan":
             return [response["embedding"]]
         return response["embeddings"]["float"]
 
@@ -452,28 +462,27 @@ class BedrockProvider(Provider):
         return self._parse_image_response(json.loads(response["body"].read()))
 
     async def _embed_image_chunk(self, images: list[ImageInput]) -> list[list[float]]:
+        # Every known model has max_batch=1, so a chunk is exactly one image
+        # and a rejection always names it.
         try:
-            if self._image_spec is not None and self._image_spec.family == "titan":
-                # One image per call; the chunk size is 1, but stay explicit.
-                vectors: list[list[float]] = []
-                for image in images:
-                    vectors.extend(
-                        await self._invoke_image_model(
-                            self._image_request(images=[image])
-                        )
-                    )
-                return vectors
             return await self._invoke_image_model(self._image_request(images=images))
         except ClientError as exc:
-            # ADR-042 §5: only a ValidationException is the input being named
-            # as unusable. Throttling, access, 5xx and transport errors stay
-            # retryable and propagate unchanged.
-            if exc.response.get("Error", {}).get("Code") == "ValidationException":
-                raise ImageInputRejected(
-                    exc.response.get("Error", {}).get("Message", str(exc)),
-                    index=0 if len(images) == 1 else None,
-                ) from exc
-            raise
+            # ADR-042 §5: a ValidationException on a one-image request is that
+            # image being refused. Throttling, access, 5xx and transport errors
+            # stay retryable and propagate unchanged. The request shape itself
+            # is pinned by unit tests, and confirmation has already validated
+            # the width, so a config bug can't masquerade as a bad image here.
+            error = exc.response.get("Error", {})
+            if error.get("Code") != "ValidationException":
+                raise
+            message = error.get("Message", str(exc))
+            logger.warning(
+                "Bedrock %s rejected a %s image as invalid; skipping it: %s",
+                self.image_embedding_model,
+                images[0].mime_type,
+                message,
+            )
+            raise ImageInputRejected(message, index=0) from exc
 
     async def embed_for_image_space(self, text: str) -> list[float]:
         self._require_image_support()
