@@ -139,6 +139,22 @@ The volume shows in sync status as pending images before it is spent, and it
 is bounded by queue concurrency. The alias flip remains the tool for a
 *text*-model change, as before.
 
+**Leaving the feature's scope removes or ignores the image point**, so no
+orphan stays searchable:
+
+- **Mode change to `keyword-index`.** The re-index of a document that is now
+  `keyword-index` deletes its image point (`image_point_id` is deterministic,
+  so this is one targeted delete). `prune_stale_chunks` cannot do it, because
+  the image point has no `chunk_index`. Keyword documents opt out of paid
+  embeddings and of dense search (ADR-031), so they must not keep an image
+  vector either.
+- **Feature turned off** (`IMAGE_EMBEDDING_MODEL` unset). This is a no-op for
+  the data: `image_vector_ready` is false, so no image prefetch is issued and
+  the points are inert. Turning the feature back on with the same model
+  reuses them, and the identity rule re-queues them if the model changed.
+  Purging is an explicit operator action (`delete_vector_name("image")`),
+  never a side effect of configuration.
+
 Minimum versions: Qdrant server **1.18** for the in-place add. New
 collections created with `image` work on any supported version. The dev and
 CI stack runs `qdrant/qdrant:v1.20.1` (`docker-compose.yml`), so the
@@ -182,7 +198,11 @@ other per-document point count for double counting.
 
 **The image point carries the full document payload.** That means `etag`,
 `index_mode`, `embedding_identity`, `acl_principals` and the per-user paths
-(ADR-033), identical to the text points. The image model is recorded
+(ADR-033), identical to the text points. Concretely, it is built from the same
+document-level payload builder as the text points, so any document-level
+field a reader consumes now or later (timestamps, content hash, and so on) is
+present. Only the chunk-specific fields (`chunk_index`, chunk text and
+offsets, `total_chunks`) are absent. The image model is recorded
 separately as `image_embedding_identity`. This is required, not cosmetic:
 `find_indexed_content` and `query_document_metadata` answer "is this document
 already indexed?" from an **unordered** `scroll(limit=1)` over the document's
@@ -411,7 +431,7 @@ for it.
   | `IMAGE_EMBEDDING_MODEL` | Image model id on the active provider. Unset (default) means image embeddings are off. |
   | `IMAGE_EMBEDDING_DIMENSIONS` | Optional output width for models that support truncation. Mirrors `EMBEDDING_DIMENSIONS`. |
   | `IMAGE_EMBEDDING_MAX_SOURCE_BYTES` | Files above this are skipped, not embedded (default 50 MB). |
-  | `IMAGE_SEARCH_SCORE_THRESHOLD` | Floor for the image prefetch (§6). |
+  | `IMAGE_SEARCH_SCORE_THRESHOLD` | Floor for the image prefetch (§6). **Required** until the Status acceptance criterion is met: without it the feature stays off, with a startup warning. `docs/configuration.md` states this at the top of the image section, so an unset threshold doesn't read as a broken feature. |
 
   An operator who wants text and images from different upstreams (say,
   Mistral text and a Bedrock image model) points both at the gateway, which
@@ -472,10 +492,10 @@ How each provider confirms the capability and learns its limits:
 | Provider | Confirmation and limits | Status |
 |---|---|---|
 | Embedding gateway | `/v1/models`: `"image"` in `input_modalities`, plus `dimension` and `image_mime_types` on the model entry. Caps of 5 MiB and 16 images per request. Wire format: image items in `/v1/embeddings` `input`, `{"type": "image", "data": <base64>, "mime_type": ...}`. A plain string sent to the image model id is embedded into the image space. Consumer pact against provider state `"the gateway serves an image embedding model"`. | First implementation. Gateway side in astrolabe-cloud-website#1247. |
-| Bedrock | Static per-model table for known image models (Titan Multimodal, Cohere v4): dimension, MIME types, limits. An unknown id is not confirmed. | From the PR #800 prototype. |
+| Bedrock | Static per-model table for known image models (Titan Multimodal, Cohere v4): dimension, MIME types, limits. An unknown id is not confirmed. Cohere v4 is asymmetric: images are sent as `input_type=search_document` and `embed_for_image_space` queries as `search_query`. Titan has no input type. | From the PR #800 prototype. |
 | OpenAI-compatible (`OpenAIProvider` with `OPENAI_BASE_URL`: OpenRouter, self-hosted servers) | No standard wire format or advertisement for image embeddings exists across these endpoints. Support is added per target once its format is pinned by an integration test, with confirmation by a one-image probe at startup. Until then the capability stays off. Through the gateway these models are already reachable, with one wire format. | Follow-up. |
 | Ollama, Mistral | No image embedding support today; capability off. | — |
-| `SimpleProvider` | Deterministic hash-seeded image vectors, always confirmed. Makes CI's e2e test hermetic without credentials. | With the base class. |
+| `SimpleProvider` | Deterministic hash-seeded image vectors. Confirmed **only** for the explicit test sentinel `IMAGE_EMBEDDING_MODEL=simple-image-hash`, because `SimpleProvider` is also the autodetect fallback: a production deployment with a typo in its provider config must not index meaningless image vectors and look as if it works. Makes CI's e2e test hermetic without credentials. | With the base class. |
 
 The gateway row is the recommended route for anything beyond Bedrock. It
 gives one wire format, model advertisement and metering for every upstream
@@ -495,7 +515,14 @@ the gateway can reach.
   consumer pact and this repo's provider verification must cover them, and an
   integration test must index and retrieve an image end-to-end. CI has no
   provider credentials, so `SimpleProvider` gains a deterministic
-  `embed_image` (hash-seeded vector) to make that test hermetic. Remaining
+  `embed_image` (hash-seeded vector) to make that test hermetic. It runs with
+  `IMAGE_EMBEDDING_MODEL=simple-image-hash` and
+  `IMAGE_SEARCH_SCORE_THRESHOLD=0`: hash vectors carry no meaning, so the e2e
+  test asserts the plumbing (the image point is written, and returned through
+  the prefetch with ACLs applied), not relevance. Relevance and the floors
+  belong to the eval-tier probe set (§6). A list-shaped gateway 422 on an
+  image request is pinned as *retried* by a unit test of the classifier. The
+  pact covers the dict-shaped codes the gateway produces for image items. Remaining
   gap: provider verification covers only the public endpoints, so
   `image_search` on `/api/v1/status` is verified but image results on the
   authenticated `/api/v1/search` are not. That is the existing ADR-029
