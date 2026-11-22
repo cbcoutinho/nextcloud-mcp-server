@@ -570,13 +570,24 @@ async def _drop_stale_image_point(
         and base_mime(content_type or "").startswith("image/")
     ):
         return
-    await qdrant_client.delete(
-        collection_name=get_settings().get_collection_name(),
-        points_selector=PointIdsList(
-            points=[payload_keys.image_point_id(doc_task.doc_id)]
-        ),
-        wait=True,
-    )
+    try:
+        await qdrant_client.delete(
+            collection_name=get_settings().get_collection_name(),
+            points_selector=PointIdsList(
+                points=[payload_keys.image_point_id(doc_task.doc_id)]
+            ),
+            wait=True,
+        )
+    except Exception:  # noqa: BLE001
+        # Best-effort: raising would retry the whole document and pay for its
+        # embeddings again, or be suppressed by a dead-letter marker already
+        # written. A stale image point is dropped by the next re-index.
+        logger.warning(
+            "Could not drop the stale image point of %s:%s",
+            doc_task.doc_type,
+            doc_task.doc_id,
+            exc_info=True,
+        )
 
 
 def build_point_vector(

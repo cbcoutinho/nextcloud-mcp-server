@@ -3,8 +3,7 @@
 Uses procrastinate's in-memory connector so no live Postgres is required.
 """
 
-import inspect
-from dataclasses import fields
+from dataclasses import asdict
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, patch
@@ -17,21 +16,6 @@ from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.scanner import DocumentTask
 
 pytestmark = pytest.mark.unit
-
-
-def test_document_task_fields_are_all_accepted_by_worker_task():
-    """Every ``DocumentTask`` field must be an accepted kwarg of the worker task.
-
-    Regression for the ``index_mode`` TypeError: the producer defers via
-    ``defer_async(**asdict(task))``, so any ``DocumentTask`` field the worker
-    entrypoint does not declare raises ``TypeError: process_document_task() got an
-    unexpected keyword argument`` on 100% of deferred jobs. This locks the
-    producer→worker kwarg contract so a new field can't silently break every job.
-    """
-    task_params = set(inspect.signature(pq.process_document_task).parameters)
-    task_params.discard("context")  # supplied by procrastinate, not from asdict()
-    missing = {f.name for f in fields(DocumentTask)} - task_params
-    assert not missing, f"process_document_task() is missing kwargs: {missing}"
 
 
 def _ctx(queue: str = pq.INGEST_QUEUE_FAST) -> JobContext:
@@ -182,6 +166,37 @@ class TestProcessDocumentTask:
             index_mode=payload_keys.INDEX_MODE_KEYWORD,
         )
         assert captured["task"].index_mode == payload_keys.INDEX_MODE_KEYWORD
+
+    async def test_every_field_round_trips_and_unknown_fields_are_ignored(
+        self, monkeypatch
+    ):
+        """The producer defers ``**asdict(task)``: the worker must rebuild an
+        equal DocumentTask from it (a dropped field once failed 100% of jobs),
+        and ignore a field a newer producer adds rather than fail the job."""
+        captured = {}
+
+        async def fake_process(task, nc_client, *, max_retries, tier):
+            captured["task"] = task
+
+        monkeypatch.setattr(pq, "_resolve_client", AsyncMock(return_value=AsyncMock()))
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.vector.processor.process_document", fake_process
+        )
+        sent = DocumentTask(
+            user_id="alice",
+            doc_id="42",
+            doc_type="file",
+            operation="index",
+            modified_at=100,
+            file_path="/a.png",
+            etag="e",
+            owner_id="bob",
+            index_mode=payload_keys.INDEX_MODE_KEYWORD,
+            size_bytes=7,
+            content_type="image/png",
+        )
+        await pq.process_document_task(_ctx(), **asdict(sent), added_later="x")
+        assert captured["task"] == sent
 
     async def test_pipeline_error_propagates_and_closes_client(self, monkeypatch):
         # A non-credential failure must propagate (so procrastinate's

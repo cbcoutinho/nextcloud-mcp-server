@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
@@ -55,7 +55,6 @@ from procrastinate.jobs import Job, Status
 from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
 
 from ...config import get_procrastinate_conninfo, get_settings
-from .. import payload_keys
 from ..scanner import DocumentTask
 
 if TYPE_CHECKING:
@@ -156,30 +155,15 @@ def tier_for_queue(queue: str | None) -> str:
 # the blueprint's task names in place (namespace prefixing), so a single shared
 # Blueprint cannot be added to more than one App — which the tests (in-memory +
 # real Postgres) and any re-init path require.
-async def process_document_task(
-    context: JobContext,
-    *,
-    user_id: str,
-    doc_id: str,
-    doc_type: str,
-    operation: str,
-    modified_at: int,
-    file_path: str | None = None,
-    metadata: dict[str, int | str] | None = None,
-    etag: str | None = None,
-    owner_id: str | None = None,
-    index_mode: str = payload_keys.INDEX_MODE_HYBRID,
-    size_bytes: int | None = None,
-    content_type: str | None = None,
-    **_forward_compat: Any,
-) -> None:
+async def process_document_task(context: JobContext, **task_kwargs: Any) -> None:
     """Worker entry: rebuild the DocumentTask, resolve creds, run the pipeline.
 
     Payload contract: procrastinate invokes this as
-    ``await_func(**job.task_kwargs)``, so every :class:`DocumentTask` field must
-    be accepted here with a default (an older producer's payload omits new
-    fields) and ``**_forward_compat`` absorbs fields a newer producer adds, so a
-    version skew degrades to ignoring them rather than failing the job.
+    ``await_func(**job.task_kwargs)``. The task is rebuilt from the
+    :class:`DocumentTask` fields present in the payload, so a field an older
+    producer omits takes its dataclass default, and one a newer producer adds
+    is ignored: a version skew degrades instead of failing the job. A new
+    DocumentTask field therefore needs a default, and nothing here.
 
     Queue-aware (Deck #323): the tier this worker runs is the tier of the job's
     current queue. A low-quality parse raises ``EscalateError``, which the
@@ -199,20 +183,9 @@ async def process_document_task(
         else None
     )
 
-    task = DocumentTask(
-        user_id=user_id,
-        doc_id=doc_id,
-        doc_type=doc_type,
-        operation=operation,
-        modified_at=modified_at,
-        file_path=file_path,
-        metadata=metadata,
-        etag=etag,
-        owner_id=owner_id,
-        index_mode=index_mode,
-        size_bytes=size_bytes,
-        content_type=content_type,
-    )
+    known = {f.name for f in fields(DocumentTask)}
+    task = DocumentTask(**{k: v for k, v in task_kwargs.items() if k in known})
+    user_id, doc_type, doc_id = task.user_id, task.doc_type, task.doc_id
     try:
         nc_client = await _resolve_client(user_id)
     except NotProvisionedError:
