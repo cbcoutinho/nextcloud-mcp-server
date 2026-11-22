@@ -104,6 +104,16 @@ class _Curve:
         return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, self.a * z + self.b))))
 
 
+_COHERE_V35 = _Curve(
+    a=0.945386,
+    b=-1.769075,
+    mu=0.14305847,
+    sd=0.14270940,
+    source=RELEVANCE_CALIBRATED,
+    fit_base_rate=0.178,
+    fit_n=1200,
+)
+
 # Fitted 2026-08-03 on the 60-query enumeration set through the shipped search
 # path (note 464925). Regenerate with scripts/fit_relevance_curves.py if the reranker
 # or the fusion constant changes — a curve is only valid for the signal it was
@@ -118,6 +128,55 @@ _CROSS_ENCODER_CURVES: dict[str, _Curve] = {
         b=-1.688786,
         mu=0.05437712,
         sd=0.11669424,
+        source=RELEVANCE_CALIBRATED,
+        fit_base_rate=0.178,
+        fit_n=1200,
+    ),
+    # Fitted 2026-11-22 on the SAME 1200 (query, document) pairs and labels as
+    # bge above: the bge artifact's excerpts rescored through the dev gateway
+    # (Deck #1536). Rescoring them with bge reproduced every stored score
+    # exactly, so these see bge's inputs and fit_base_rate matches by
+    # construction. Out-of-fold quality (document pool, 5-fold by query) and
+    # transfer Brier vs always-base-rate (chunk pool, 0.1990):
+    #
+    #   reranker              OOF ECE  OOF Brier  transfer Brier
+    #   bge-reranker-v2-m3    0.0484   0.1191     0.1662
+    #   amazon.rerank-v1:0    0.0390   0.1372     0.1920  (barely beats base)
+    #   cohere.rerank-v3-5:0  0.0915   0.1260     0.1761  (top bins non-monotone)
+    #   cohere/rerank-4-pro   0.0475   0.1183     0.1640  (never exceeds ~0.62)
+    #   voyageai/rerank-2.5   0.0328   0.1050     0.1572
+    #
+    # amazon's curve is honest about its scale but carries little information:
+    # it maps almost every row into 10-30%. Calibration fixes the number, not
+    # the reranker.
+    "amazon.rerank-v1:0": _Curve(
+        a=0.848981,
+        b=-1.533190,
+        mu=0.00150785,
+        sd=0.00950686,
+        source=RELEVANCE_CALIBRATED,
+        fit_base_rate=0.178,
+        fit_n=1200,
+    ),
+    "cohere.rerank-v3-5:0": _COHERE_V35,
+    # OpenRouter's copy of the same model: on all 2400 rescored pairs its score
+    # is within 0.0009 of Bedrock's, and its own fit agrees to 4 decimals, so
+    # it shares the curve rather than carrying a duplicate.
+    "cohere/rerank-v3.5": _COHERE_V35,
+    "cohere/rerank-4-pro": _Curve(
+        a=2.116790,
+        b=-2.624976,
+        mu=0.64967010,
+        sd=0.20275081,
+        source=RELEVANCE_CALIBRATED,
+        fit_base_rate=0.178,
+        fit_n=1200,
+    ),
+    "voyageai/rerank-2.5": _Curve(
+        a=1.736935,
+        b=-2.355870,
+        mu=0.43643059,
+        sd=0.14348982,
         source=RELEVANCE_CALIBRATED,
         fit_base_rate=0.178,
         fit_n=1200,

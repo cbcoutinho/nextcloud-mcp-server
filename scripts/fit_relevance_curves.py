@@ -1,8 +1,13 @@
 """Fit the calibration curves that ship as constants, and validate them honestly.
 
-Two signals get a curve:
-  cross-encoder  BAAI/bge-reranker-v2-m3  (the gateway model)
+Two kinds of signal get a curve:
+  cross-encoder  one per reranker (bge-reranker-v2-m3, amazon.rerank-v1, ...)
   fusion         Qdrant RRF fused score   (k=60, the default)
+
+Usage: fit_relevance_curves.py PLAN DOC_RESULTS [CHUNK_RESULTS] [LABEL]
+LABEL names the cross-encoder curve (default: the bge one). To fit another
+reranker on the SAME labelled pairs -- so fit_base_rate matches by
+construction -- rescore the bge artifacts' excerpts with it and pass those.
 
 Validation design is deliberately harder than cross-validation. Fitting on the
 DOCUMENT-granularity pool and testing on the CHUNK pool is a genuine transfer
@@ -149,6 +154,30 @@ def top1_spread(params, triples):
     return statistics.pstdev(top1), min(top1), max(top1)
 
 
+def out_of_fold(pool_, k=5):
+    """Grouped k-fold by query: (predictions, labels) for every row, each
+    predicted by a curve that never saw its query. Grouping matters -- rows of
+    one query share a retrieval context and a gold set, so a row-level split
+    leaks."""
+    qids = sorted({q for _, _, q in pool_})
+    fold = {q: i % k for i, q in enumerate(qids)}
+    p, y = [], []
+    for f in range(k):
+        train = [t for t in pool_ if fold[t[2]] != f]
+        params = fit_platt(train)
+        for s, lab, q in pool_:
+            if fold[q] == f:
+                p.append(predict(params, s))
+                y.append(lab)
+    return p, y
+
+
+def print_bins(p, y):
+    print(f"    {'shown':>10} {'n':>5} {'actual':>8}")
+    for band, n, actual in reliability(p, y):
+        print(f"    {band:>10} {n:>5} {actual:>8.3f}")
+
+
 def evaluate(name, params, fit_pool, test_pool, fit_base):
     print(f"\n{'=' * 78}\n{name}\n{'=' * 78}")
     a, b, mu, sd = params
@@ -169,9 +198,11 @@ def evaluate(name, params, fit_pool, test_pool, fit_base):
             f"(always-base-rate Brier {brier([base] * len(y), y):.4f})"
         )
         print(f"    top-1 spread sd={sd_t:.3f}  range {lo:.2f}-{hi:.2f}")
-        print(f"    {'shown':>10} {'n':>5} {'actual':>8}")
-        for band, n, actual in reliability(p, y):
-            print(f"    {band:>10} {n:>5} {actual:>8.3f}")
+        print_bins(p, y)
+    p, y = out_of_fold(fit_pool)
+    print(f"\n  OUT-OF-FOLD (document, 5-fold grouped by query)   n={len(y)}")
+    print(f"    Brier {brier(p, y):.4f}   ECE {ece(p, y):.4f}")
+    print_bins(p, y)
     print(
         f"\n  NOTE: fitted at base rate {fit_base:.3f}. A deployment corpus with a "
         f"different\n  prevalence shifts the number (ordering is unaffected — the map is monotone)."
@@ -182,10 +213,11 @@ def main():
     plan = load(sys.argv[1])
     doc = load(sys.argv[2])
     chunk = load(sys.argv[3]) if len(sys.argv) > 3 else []
+    label = sys.argv[4] if len(sys.argv) > 4 else "bge_reranker_v2_m3"
 
     out = {}
     for name, field in (
-        ("cross_encoder_bge_reranker_v2_m3", "rerank_score"),
+        (f"cross_encoder_{label}", "rerank_score"),
         ("fusion_rrf", "score"),
     ):
         fit_pool = pool(plan, doc, field)
@@ -205,7 +237,7 @@ def main():
             "fit_n": len(fit_pool),
         }
 
-    dest = os.path.join(BASE, "curves.json")
+    dest = os.path.join(BASE, f"curves_{label}.json")
     with open(dest, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
     print(f"\n\nwrote {dest}")
