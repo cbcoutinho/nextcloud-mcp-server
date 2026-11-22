@@ -31,14 +31,17 @@ async def reset_singleton():
 
     # Store original
     original = qdrant_module._qdrant_client
+    original_ready = qdrant_module._image_vector_ready
 
-    # Reset for test
+    # Reset for test (the image flag is decided with the client)
     qdrant_module._qdrant_client = None
+    qdrant_module._image_vector_ready = False
 
     yield
 
     # Restore original
     qdrant_module._qdrant_client = original
+    qdrant_module._image_vector_ready = original_ready
 
 
 @pytest.mark.integration

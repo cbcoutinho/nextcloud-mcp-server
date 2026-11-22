@@ -187,6 +187,47 @@ def image_vector_ready() -> bool:
     return _image_vector_ready
 
 
+async def _provision_image_vector(
+    client: AsyncQdrantClient,
+    collection_name: str,
+    existing: VectorParams | None,
+    width: int,
+) -> str | None:
+    """Create the ``image`` vector, or check its size. Returns why it's unusable."""
+    if existing is not None:
+        if existing.size == width:
+            return None
+        return (
+            f"the {IMAGE_VECTOR_NAME!r} vector has size {existing.size} but the "
+            f"image model produces {width}; to switch models, delete it with "
+            f"delete_vector_name({collection_name!r}, {IMAGE_VECTOR_NAME!r}) "
+            "and restart (image files are re-queued automatically)"
+        )
+    try:
+        await client.create_vector_name(
+            collection_name,
+            IMAGE_VECTOR_NAME,
+            models.DenseVectorNameConfig(
+                dense=models.DenseVectorConfig(size=width, distance=Distance.COSINE)
+            ),
+        )
+    # Old server, auth or network: never fatal, text search must still start.
+    except Exception as exc:  # noqa: BLE001
+        # The traceback is what tells an old-server 404 from an auth failure.
+        logger.warning("create_vector_name failed", exc_info=True)
+        return (
+            f"could not add the {IMAGE_VECTOR_NAME!r} vector (needs Qdrant "
+            f">= 1.18; restart to retry): {exc}"
+        )
+    logger.info(
+        "Added the %r vector (size=%s) to collection %s",
+        IMAGE_VECTOR_NAME,
+        width,
+        collection_name,
+    )
+    return None
+
+
 async def _ensure_image_vector(
     client: AsyncQdrantClient,
     collection_name: str,
@@ -223,40 +264,12 @@ async def _ensure_image_vector(
         # operator just hasn't chosen a floor yet (no validated defaults ship).
         reasons.append(_NO_FLOOR)
 
-    if width is not None:
-        existing = existing_vectors.get(IMAGE_VECTOR_NAME)
-        if existing is None:
-            try:
-                await client.create_vector_name(
-                    collection_name,
-                    IMAGE_VECTOR_NAME,
-                    models.DenseVectorNameConfig(
-                        dense=models.DenseVectorConfig(
-                            size=width, distance=Distance.COSINE
-                        )
-                    ),
-                )
-                logger.info(
-                    "Added the %r vector (size=%s) to collection %s",
-                    IMAGE_VECTOR_NAME,
-                    width,
-                    collection_name,
-                )
-            except Exception as exc:  # noqa: BLE001 — old server, auth, network
-                # The reason line below carries the message; the traceback is
-                # what tells an old-server 404 from an auth failure.
-                logger.debug("create_vector_name failed", exc_info=True)
-                reasons.append(
-                    f"could not add the {IMAGE_VECTOR_NAME!r} vector (needs Qdrant "
-                    f">= 1.18; restart to retry): {exc}"
-                )
-        elif existing.size != width:
-            reasons.append(
-                f"the {IMAGE_VECTOR_NAME!r} vector has size {existing.size} but "
-                f"{model!r} produces {width}; to switch models, delete it with "
-                f"delete_vector_name({collection_name!r}, {IMAGE_VECTOR_NAME!r}) "
-                "and restart (image files are re-queued automatically)"
-            )
+    if width is not None and (
+        reason := await _provision_image_vector(
+            client, collection_name, existing_vectors.get(IMAGE_VECTOR_NAME), width
+        )
+    ):
+        reasons.append(reason)
 
     if reasons:
         only_floor = reasons == [_NO_FLOOR]
