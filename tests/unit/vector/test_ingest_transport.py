@@ -56,6 +56,11 @@ class TestBuildTransport:
             return producer
 
         monkeypatch.setattr(transport_mod, "build_producer", fake_build_producer)
+        apply_schema = AsyncMock()
+        monkeypatch.setattr(
+            "nextcloud_mcp_server.vector.queue.procrastinate.apply_ingest_queue_schema",
+            apply_schema,
+        )
 
         settings = _settings(ingest_queue="postgres")
         transport = await build_transport(settings)
@@ -63,8 +68,8 @@ class TestBuildTransport:
         assert isinstance(transport, DistributedTransport)
         assert transport.producer is producer
         assert transport.backend_name == "postgres"
-        # Schema applied once on the open pool before any defer.
-        producer.ensure_schema.assert_awaited_once()
+        # Schema migrated once before any defer.
+        apply_schema.assert_awaited_once()
         # No in-process stream for the distributed backend.
         assert transport.send_stream is None
         assert transport.receive_stream is None
