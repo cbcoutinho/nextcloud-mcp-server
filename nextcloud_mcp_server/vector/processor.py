@@ -166,6 +166,21 @@ def _is_pdf(content_type: str) -> bool:
     return content_type.split(";")[0].strip().lower() == PDF_MIME_TYPE
 
 
+def _uses_tier_ladder(registry: "ProcessorRegistry", content_type: str) -> bool:
+    """Whether the per-tier path parses this type tier by tier.
+
+    PDFs always do. So does a standalone image the OCR tier is the reader for
+    (``DOCUMENT_OCR_IMAGES``, #1882): it must run on the ``ingest-ocr`` worker,
+    whose queue depth scales the GPU and where batch OCR's pending result becomes
+    ``BatchPending``. An image a dedicated processor (Docling, Tesseract) wins by
+    priority stays inline.
+    """
+    if _is_pdf(content_type):
+        return True
+    processor = registry.find_processor(content_type)
+    return processor is not None and processor.tier == "ocr"
+
+
 async def _parse_pdf_tier(
     registry: "ProcessorRegistry",
     source: DocumentSource,
@@ -192,6 +207,10 @@ async def _parse_pdf_tier(
     processor returns a *pending sentinel* result; we translate it here into a
     ``BatchPending`` raise (same decision point as ``EscalateError``) so the
     retry strategy re-runs this tier after a delay instead of indexing empty text.
+
+    Standalone images the OCR tier claims (#1882) take the same path: below the
+    ``ocr`` tier they hop to it unparsed (reason ``image``), and on it they run
+    the OCR processor without the PDF quality gate.
     """
     # Lazy import: keep the document stack (pymupdf/_isolation) off the module
     # load path; this runs only on the per-tier worker, which needs it anyway.
@@ -208,10 +227,19 @@ async def _parse_pdf_tier(
     # the OCR tier so batch mode can key its job-tracking table (Deck #332). Other
     # tiers ignore it. The inline path (registry.process) passes None.
     filename = source.filename
+    is_pdf = _is_pdf(source.content_type)
+    if not is_pdf and tier != "ocr":
+        # A standalone image only the OCR tier reads (#1882): the text tiers have
+        # nothing to extract, so hop straight to the OCR queue without parsing.
+        record_document_escalation(tier, "ocr", "image")
+        logger.info("Escalating %s %s->ocr (reason=image)", filename, tier)
+        raise EscalateError(from_tier=tier, to_tier="ocr", reason="image")
     result = await registry.process_tier_source(source, tier, options=options)
     if result.metadata.get(OCR_BATCH_PENDING_KEY):
         raise BatchPending(retry_in=int(result.metadata[OCR_BATCH_RETRY_IN_KEY]))
-    if result.success:
+    # The post-parse quality gate classifies PDF text layers; an image's OCR
+    # output is already the top rung, so there is nothing to escalate to.
+    if result.success and is_pdf:
         decision = registry.evaluate_escalation_source(result, source, tier, settings)
         if decision is not None:
             if decision.kind == "suppressed":
@@ -1681,7 +1709,7 @@ async def _index_document_inner(
                     # No text processor reads this image. "Unsupported type" is
                     # not a failure when the image vector is what gets indexed.
                     result = ProcessingResult(text="", metadata={}, processor="image")
-                elif tier is not None and _is_pdf(content_type):
+                elif tier is not None and _uses_tier_ladder(registry, content_type):
                     # Narrowing: the download branch above always sets ``source``
                     # when it did not short-circuit on the pre-flight gate.
                     assert source is not None

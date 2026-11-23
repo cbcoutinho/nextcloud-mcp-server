@@ -178,7 +178,9 @@ class EscalateError(Exception):
     (scanned / no text layer), ``low_confidence`` (junk text layer), and
     ``corrupt_glyphs`` (a usable-looking layer whose extractor leaked raw glyph
     codes -- the broken-/ToUnicode case -- recovered by a different in-cluster
-    extractor); ``unsupported`` and ``forced`` are reserved for future callers.
+    extractor); ``image`` (a standalone image the OCR tier reads, hopped there
+    unparsed, #1882); ``unsupported`` and ``forced`` are reserved for future
+    callers.
 
     A second caller (``vector/processor._index_document``, #399) reuses this
     signal to escalate a *hard parse failure* -- an isolated-worker timeout/OOM

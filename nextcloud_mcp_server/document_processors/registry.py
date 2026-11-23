@@ -276,11 +276,14 @@ class ProcessorRegistry:
             processor, content, content_type, filename, options, progress_callback
         )
 
-    def _pdf_processor_for_tier(self, tier: str) -> DocumentProcessor | None:
-        """First registered processor of ``tier`` that handles PDFs."""
+    def _processor_for_tier(
+        self, tier: str, content_type: str = PDF_MIME_TYPE
+    ) -> DocumentProcessor | None:
+        """First registered processor of ``tier`` that handles ``content_type``
+        (PDFs by default; the OCR tier also takes standalone images, #1882)."""
         for name in self._priority_order:
             processor = self._processors[name][0]
-            if processor.tier == tier and processor.supports(PDF_MIME_TYPE):
+            if processor.tier == tier and processor.supports(content_type):
                 return processor
         return None
 
@@ -415,7 +418,7 @@ class ProcessorRegistry:
         if settings.document_tier1_engine == "pymupdf":
             return await self._run_rollback_engine(content_type, run)
 
-        fast = self._pdf_processor_for_tier("fast")
+        fast = self._processor_for_tier("fast")
         if fast is None:
             processor = self.find_processor(content_type)
             if processor is None:
@@ -441,7 +444,7 @@ class ProcessorRegistry:
         run: Callable[[DocumentProcessor, bool], Awaitable[ProcessingResult]],
     ) -> ProcessingResult:
         """``document_tier1_engine=pymupdf``: pin the structured engine, no ladder."""
-        processor = self._pdf_processor_for_tier("structured")
+        processor = self._processor_for_tier("structured")
         if processor is None:
             # The rollback was set to opt OUT of pypdfium2, so falling back
             # to it (the highest-priority PDF processor) silently would
@@ -488,7 +491,7 @@ class ProcessorRegistry:
         ):
             return
 
-        structured = self._pdf_processor_for_tier("structured")
+        structured = self._processor_for_tier("structured")
         if structured is None:
             # Structured isn't registered: mirror the external
             # next_available_tier, which skips the missing rung and lands on
@@ -556,7 +559,7 @@ class ProcessorRegistry:
         if classification is not None and classification.total_chars == 0:
             return
 
-        structured = self._pdf_processor_for_tier("structured")
+        structured = self._processor_for_tier("structured")
         max_pages = settings.document_markdown_max_pages
         page_count = int(state.result.metadata.get("page_count", 0) or 0)
         if structured is None:
@@ -658,7 +661,7 @@ class ProcessorRegistry:
         # Inline (memory pool) path: no queues to hop, so resolve the OCR tier
         # via the same availability walk the queue path uses.
         ocr_tier = self.next_available_tier(state.from_tier, settings, minimum="ocr")
-        ocr = self._pdf_processor_for_tier(ocr_tier) if ocr_tier else None
+        ocr = self._processor_for_tier(ocr_tier) if ocr_tier else None
         # `ocr is not None` already implies `ocr_tier is not None` at runtime,
         # but the type checker can't infer that across the conditional above,
         # so the explicit guard narrows `ocr_tier` to `str` for the
@@ -843,7 +846,7 @@ class ProcessorRegistry:
         suppressed-escalation signal. (The ``ocr`` tier has the
         ``document_ocr_enabled`` gate; non-OCR tiers have none.)
         """
-        if self._pdf_processor_for_tier(tier) is None:
+        if self._processor_for_tier(tier) is None:
             return False
         # The OCR tier is opt-in via ``document_ocr_enabled`` (unless we're computing
         # the what-if ideal target). Non-OCR tiers have no enabled gate.
@@ -939,10 +942,10 @@ class ProcessorRegistry:
         )
         if oversize is not None:
             return oversize
-        processor = self._pdf_processor_for_tier(tier)
+        processor = self._processor_for_tier(tier, source.content_type)
         if processor is None:
             raise ProcessorError(
-                f"No '{tier}'-tier PDF processor registered "
+                f"No '{tier}'-tier processor for {source.content_type} registered "
                 f"(available: {', '.join(self.list_processors())})"
             )
         return await self._run_processor_source(
@@ -975,10 +978,10 @@ class ProcessorRegistry:
         oversize = self._oversize_result(content, filename, get_settings())
         if oversize is not None:
             return oversize
-        processor = self._pdf_processor_for_tier(tier)
+        processor = self._processor_for_tier(tier, content_type)
         if processor is None:
             raise ProcessorError(
-                f"No '{tier}'-tier PDF processor registered "
+                f"No '{tier}'-tier processor for {content_type} registered "
                 f"(available: {', '.join(self.list_processors())})"
             )
         return await self._run_processor(

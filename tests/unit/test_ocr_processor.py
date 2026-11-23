@@ -591,6 +591,65 @@ async def test_mistral_backend_applies_timeout(mocker, monkeypatch):
         await backend.ocr(b"%PDF-1.7", "application/pdf")
 
 
+@pytest.mark.parametrize(
+    ("mime", "kind"),
+    [
+        ("application/pdf", "document_url"),
+        ("image/png", "image_url"),
+        ("image/jpeg", "image_url"),
+        ("image/webp", "image_url"),
+    ],
+)
+async def test_mistral_backend_sends_images_as_image_url(
+    mocker, monkeypatch, mime, kind
+):
+    """Mistral OCR takes images as ``image_url`` chunks, PDFs as ``document_url``
+    (#1882); the data URL carries the real MIME type either way."""
+    monkeypatch.setattr(ocr, "get_settings", lambda: _settings())
+    backend = ocr._MistralOcrBackend.__new__(ocr._MistralOcrBackend)
+    backend._model = "mistral-ocr-latest"
+    backend._client = mocker.MagicMock()
+    backend._client.ocr.process_async = mocker.AsyncMock(
+        return_value=SimpleNamespace(pages=[SimpleNamespace(index=0, markdown="hi")])
+    )
+
+    text, _, _ = await backend.ocr(b"bytes", mime)
+
+    assert text == "hi"
+    document = backend._client.ocr.process_async.call_args.kwargs["document"]
+    assert document == {"type": kind, kind: f"data:{mime};base64,Ynl0ZXM="}
+
+
+@pytest.mark.parametrize(
+    ("ocr_enabled", "ocr_images", "images_claimed"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (True, True, True),
+    ],
+)
+def test_supported_mime_types_claims_images_only_when_opted_in(
+    monkeypatch, ocr_enabled, ocr_images, images_claimed
+):
+    """Images are claimed only with both DOCUMENT_OCR_ENABLED and
+    DOCUMENT_OCR_IMAGES, read per call; PDFs always."""
+    monkeypatch.setattr(
+        ocr,
+        "get_settings",
+        lambda: _settings(
+            document_ocr_enabled=ocr_enabled, document_ocr_images=ocr_images
+        ),
+    )
+    processor = ocr.OcrProcessor()
+    expected = {"application/pdf"}
+    if images_claimed:
+        expected |= {"image/png", "image/jpeg", "image/webp"}
+    assert processor.supported_mime_types == expected
+    assert processor.supports("image/png; charset=binary") is images_claimed
+    assert processor.supports("image/gif") is False
+
+
 # --- batch mode (Deck #332) --------------------------------------------------
 
 

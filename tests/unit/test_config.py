@@ -100,6 +100,14 @@ class TestQdrantConfigValidation:
         )
         assert "DOCUMENT_CHUNK_PAGE_PACK is enabled" not in caplog.text
 
+    @pytest.mark.parametrize(("ocr_enabled", "warns"), [(False, True), (True, False)])
+    def test_ocr_images_without_ocr_warns(self, caplog, ocr_enabled, warns):
+        """DOCUMENT_OCR_IMAGES does nothing while OCR is off; warn at startup."""
+
+        caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.config")
+        Settings(document_ocr_images=True, document_ocr_enabled=ocr_enabled)
+        assert ("DOCUMENT_OCR_IMAGES is enabled" in caplog.text) is warns
+
 
 class TestGetSettings:
     """Test get_settings() function with environment variables."""
@@ -170,6 +178,23 @@ class TestGetSettings:
         settings = get_settings()
         assert settings.document_ocr_mode == "batch"
         assert settings.document_ocr_batch_poll_seconds == 45
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_get_settings_ocr_images_defaults_off(self):
+        """Standalone-image OCR is opt-in (#1882)."""
+        _reload_config()
+        assert get_settings().document_ocr_images is False
+
+    @patch.dict(
+        os.environ,
+        {"DOCUMENT_OCR_ENABLED": "true", "DOCUMENT_OCR_IMAGES": "true"},
+        clear=True,
+    )
+    def test_get_settings_ocr_images_from_env(self):
+        _reload_config()
+        settings = get_settings()
+        assert settings.document_ocr_enabled is True
+        assert settings.document_ocr_images is True
 
     @patch.dict(
         os.environ,
