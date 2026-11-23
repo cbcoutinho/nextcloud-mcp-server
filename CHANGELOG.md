@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.218.0 (2026-11-23)
+
+### Feat
+
+- **ocr**: OCR standalone PNG/JPEG/WebP images behind DOCUMENT_OCR_IMAGES
+
+### Fix
+
+- **ocr**: pick the bytes-path tier processor by content type
+
 ## v0.217.0 (2026-11-23)
 
 ### Feat
