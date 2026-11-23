@@ -20,6 +20,7 @@ Placeholders contain:
 import logging
 import time
 import uuid
+from typing import Any
 
 import anyio
 from qdrant_client import AsyncQdrantClient, models
@@ -27,6 +28,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.providers import get_provider
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,7 @@ async def write_placeholder_point(
     modified_at: int,
     etag: str = "",
     file_path: str | None = None,
+    image_pending: bool = False,
 ) -> None:
     """Write a placeholder point to Qdrant to mark document as queued.
 
@@ -116,6 +119,9 @@ async def write_placeholder_point(
         # Add file_path for files
         if doc_type == "file" and file_path:
             payload["file_path"] = file_path
+        if image_pending:
+            # A queued image that will get an image point (sync-status count).
+            payload[payload_keys.IMAGE_PENDING] = True
 
         # Create placeholder point
         point = PointStruct(
@@ -336,10 +342,14 @@ async def update_placeholder_status(
         qdrant_client = await get_qdrant_client()
         settings = get_settings()
 
-        # Update payload using set_payload
+        payload: dict[str, Any] = {"status": status}
+        if status in ("failed", "completed"):
+            # No longer queued: out of image_pending, which counts image work
+            # still to be paid for. A re-queue's placeholder write re-stamps it.
+            payload[payload_keys.IMAGE_PENDING] = False
         await qdrant_client.set_payload(
             collection_name=settings.get_collection_name(),
-            payload={"status": status},
+            payload=payload,
             points=Filter(
                 must=[
                     FieldCondition(key="user_id", match=MatchValue(value=user_id)),
@@ -363,6 +373,25 @@ async def update_placeholder_status(
             "Failed to update placeholder status for %s_%s: %s", doc_type, doc_id, e
         )
         # Don't raise - status updates are non-critical
+
+
+def exclude_image_points() -> Filter:
+    """``must`` condition that drops image points and keeps text points.
+
+    Text points carry no ``vector_kind``, and a ``must_not`` on a ``match``
+    keeps points that lack the field. Every text read (search, chunk-context,
+    chunk counts) adds this, through :func:`build_base_filter_conditions` or
+    directly; ``tests/unit/vector/test_image_point_exclusion.py`` checks each
+    Qdrant call site does.
+    """
+    return Filter(
+        must_not=[
+            FieldCondition(
+                key=payload_keys.VECTOR_KIND,
+                match=MatchValue(value=payload_keys.VECTOR_KIND_IMAGE),
+            )
+        ]
+    )
 
 
 def get_placeholder_filter() -> FieldCondition:

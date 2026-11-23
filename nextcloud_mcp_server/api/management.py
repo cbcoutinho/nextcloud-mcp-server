@@ -59,6 +59,17 @@ _server_start_time = time.time()
 SUPPORTED_SEARCH_ALGORITHMS: tuple[str, ...] = ("semantic", "bm25", "hybrid", "exact")
 
 
+def _image_search_ready(settings: Settings) -> bool:
+    if not settings.vector_sync_enabled:
+        return False
+    # Deferred: the vector stack is only importable when vector sync is on.
+    from nextcloud_mcp_server.vector.qdrant_client import (  # noqa: PLC0415
+        image_vector_ready,
+    )
+
+    return image_vector_ready()
+
+
 def supported_search_types(settings: Settings) -> list[str]:
     """Search algorithms this server can actually serve, given its config.
 
@@ -381,6 +392,13 @@ async def get_server_status(request: Request) -> JSONResponse:
         # when unconfigured, so a client can distinguish "server says no" from
         # "server too old to know about reranking".
         "rerank_available": rerank_available(settings),
+        # ADR-042 §7: hybrid search also matches images. The effective
+        # capability (image_vector_ready), not the configured model, so a client
+        # renders image results only when the server can produce them. Settled
+        # before the first request (starlette_lifespan initialises Qdrant before
+        # it yields, and aborts startup if that fails), so a client may cache it
+        # until the server restarts.
+        "image_search": _image_search_ready(settings),
         "uptime_seconds": uptime_seconds,
         "management_api_version": "1.0",
     }
@@ -441,6 +459,8 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             get_ingest_pending,
         )
         from nextcloud_mcp_server.vector.metrics_publisher import (  # noqa: PLC0415
+            ImageCounts,
+            count_images_or_zero,
             count_indexed,
             estimate_hybrid_vector_bytes,
         )
@@ -463,6 +483,7 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
         indexed_chunks = 0
         hybrid_chunks = 0
         estimated_vector_bytes = 0
+        images = ImageCounts()
         try:
             qdrant_client = await get_qdrant_client()
             indexed_documents, indexed_chunks = await count_indexed(
@@ -476,8 +497,17 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
                 settings.get_collection_name(),
                 settings.vector_ram_hnsw_overhead_factor,
             )
+            # Last, and zeros on its own failure: the image figures can't take
+            # the text ones down with them. Image-only files have no
+            # chunk_index == 0 point to be counted by. Shared with the MCP tool.
+            images = await count_images_or_zero(
+                qdrant_client, settings.get_collection_name()
+            )
+            indexed_documents += images.image_only
         except Exception as e:
-            logger.warning("Failed to query Qdrant for indexed counts: %s", e)
+            logger.warning(
+                "Failed to query Qdrant for indexed counts: %s", e, exc_info=True
+            )
             # Continue with zeroed counts
 
         # Determine status
@@ -498,6 +528,11 @@ async def get_vector_sync_status(request: Request) -> JSONResponse:
             "estimated_vector_bytes": estimated_vector_bytes,
             "pending_documents": pending.pending,
             "ingest_queue": settings.ingest_queue,
+            # ADR-042: image files queued for, holding, or skipped from an image
+            # embedding.
+            "image_pending": images.pending,
+            "image_embedded": images.embedded,
+            "image_skipped": images.skipped,
         }
         if pending.job_counts is not None:
             # Per-status breakdown (todo/doing/failed/…) on the postgres backend.

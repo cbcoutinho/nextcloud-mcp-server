@@ -4,12 +4,14 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
+import anyio
 from qdrant_client import models
 from qdrant_client.models import Filter
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import (
     record_embedding_tokens,
+    record_image_search,
     record_qdrant_operation,
 )
 from nextcloud_mcp_server.observability.tracing import trace_operation
@@ -21,7 +23,11 @@ from nextcloud_mcp_server.search.algorithms import (
     build_search_result_from_point,
     query_embedding_budget,
 )
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.vector.qdrant_client import (
+    IMAGE_VECTOR_NAME,
+    get_qdrant_client,
+    image_vector_ready,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +157,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         # in ``query_embedding`` — repeated search() calls on this per-request
         # instance (the doc_types loop) reuse it instead of re-embedding.
         self._embedded_query: str | None = None
+        # Same reuse for the query's image-space embedding (ADR-042 §6).
+        self._image_query: str | None = None
+        self._image_embedding: list[float] | None = None
 
     @property
     def name(self) -> str:
@@ -190,6 +199,76 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         logger.debug("Generated dense embedding (dimension=%s)", len(dense_embedding))
         return dense_embedding
 
+    def _uses_image_prefetch(self) -> bool:
+        """Whether this search adds the image prefetch (ADR-042 §6).
+
+        Hybrid only, and RRF only: the prefetch's score floor truncates its
+        list before fusion, which skews DBSF's per-prefetch normalisation.
+        """
+        if not (self.dense and image_vector_ready()):
+            return False
+        if self.fusion is not models.Fusion.RRF:
+            logger.debug("image prefetch skipped: fusion=%s", self.fusion_name)
+            return False
+        return True
+
+    async def _embed_query_image(self, query: str, settings: Any) -> list[float] | None:
+        """The query embedded into the image model's space, or None.
+
+        Never fails the search: an image-side error leaves it text-only, with a
+        warning, because text results don't depend on it.
+        """
+        if self._image_query == query:
+            return self._image_embedding  # None if it failed: don't retry it
+        try:
+            with (
+                trace_operation("search.image_embedding"),
+                query_embedding_budget(settings.search_embedding_timeout_seconds),
+            ):
+                vec = await get_provider().embed_for_image_space(query)
+        except Exception:
+            logger.warning(
+                "image query embedding failed; searching text only", exc_info=True
+            )
+            vec = None
+        # Cached either way, so the per-doc_type loop doesn't pay a failing
+        # (possibly timing-out) call once per doc_type.
+        self._image_query, self._image_embedding = query, vec
+        return vec
+
+    async def _embed_queries(
+        self, query: str, settings: Any
+    ) -> tuple[list | None, list[float] | None]:
+        """``(dense, image)`` query embeddings; either may be None.
+
+        The image one runs alongside the dense one when the image prefetch is
+        on. A dense failure is re-raised outside the task group, so callers see
+        the dense error itself rather than an ExceptionGroup wrapping it.
+        """
+        if not self.dense:
+            return None, None
+        if not self._uses_image_prefetch():
+            return await self._embed_query_dense(query, settings), None
+        image: list[float] | None = None
+        dense: list | None = None
+        dense_error: Exception | None = None
+
+        async def _image() -> None:
+            nonlocal image
+            image = await self._embed_query_image(query, settings)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_image)
+            try:
+                dense = await self._embed_query_dense(query, settings)
+            # Not swallowed: held so it is re-raised after the group exits.
+            except Exception as e:  # noqa: BLE001
+                dense_error = e
+                tg.cancel_scope.cancel()
+        if dense_error is not None:
+            raise dense_error
+        return dense, image
+
     def _build_fusion_query(self, settings: Any) -> Any:
         """Build the fusion stage that merges the dense and sparse prefetches.
 
@@ -225,6 +304,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         limit: int,
         score_threshold: float,
         granularity: str = GRANULARITY_CHUNK,
+        image_embedding: list | None = None,
+        image_filter: Filter | None = None,
     ) -> Any:
         """Execute the Qdrant query: dense + sparse prefetches merged by native
         fusion (RRF or DBSF).
@@ -272,6 +353,19 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                     limit=prefetch_limit,
                     filter=query_filter,
                 ),
+            )
+        # ADR-042 §6: images, behind a cosine floor so a query no image matches
+        # contributes nothing (RRF itself cannot abstain). Only points with an
+        # image vector can appear, so RRF merges them without reweighting.
+        if image_embedding is not None:
+            prefetches.append(
+                models.Prefetch(
+                    query=image_embedding,
+                    using=IMAGE_VECTOR_NAME,
+                    limit=prefetch_limit,
+                    filter=image_filter,
+                    score_threshold=settings.image_search_score_threshold,
+                )
             )
         with trace_operation(
             "search.qdrant_query",
@@ -421,10 +515,9 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
             doc_type,
         )
 
-        # Dense query embedding (fused with the sparse prefetch below).
-        dense_embedding = (
-            await self._embed_query_dense(query, settings) if self.dense else None
-        )
+        # Dense query embedding (fused with the sparse prefetch below), and the
+        # image-space one alongside it when the image prefetch runs.
+        dense_embedding, image_embedding = await self._embed_queries(query, settings)
 
         # Generate sparse embedding for BM25 keyword search
         with trace_operation("search.get_bm25_service"):
@@ -439,19 +532,28 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         # Build Qdrant filter (placeholder + ACL + doc_type + modified_at range).
         # Shared with the dense-only SemanticSearchAlgorithm via the common
         # ADR-027 helper so every search surface applies one filter contract.
-        filter_conditions = build_base_filter_conditions(
-            user_id=user_id,
-            accessible_owners=accessible_owners,
-            doc_type=doc_type,
-            modified_after=modified_after,
-            modified_before=modified_before,
-            path_prefix=path_prefix,
-            path_prefixes=path_prefixes,
-            path_prefix_folder_ids=path_prefix_folder_ids,
-            shared_root_ids=shared_root_ids,
+        filter_args: dict[str, Any] = {
+            "user_id": user_id,
+            "accessible_owners": accessible_owners,
+            "doc_type": doc_type,
+            "modified_after": modified_after,
+            "modified_before": modified_before,
+            "path_prefix": path_prefix,
+            "path_prefixes": path_prefixes,
+            "path_prefix_folder_ids": path_prefix_folder_ids,
+            "shared_root_ids": shared_root_ids,
+        }
+        query_filter = Filter(must=build_base_filter_conditions(**filter_args))
+        # The image prefetch keeps every other condition (ACL included).
+        image_filter = (
+            Filter(
+                must=build_base_filter_conditions(
+                    **filter_args, include_image_points=True
+                )
+            )
+            if image_embedding is not None
+            else None
         )
-
-        query_filter = Filter(must=filter_conditions)
 
         # Execute hybrid search with Qdrant native RRF fusion
         with trace_operation("search.get_qdrant_client"):
@@ -471,6 +573,8 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
                 limit=limit,
                 score_threshold=score_threshold,
                 granularity=granularity,
+                image_embedding=image_embedding,
+                image_filter=image_filter,
             )
             record_qdrant_operation("search", "success")
         except Exception:
@@ -528,5 +632,11 @@ class BM25HybridSearchAlgorithm(SearchAlgorithm):
         # documents that verify-on-read will drop, so titles must not be logged
         # until after verification (the verifying callers log verified titles).
         logger.info("Returning %s unverified results after deduplication", len(results))
+        if image_embedding is not None:
+            # A floor that is too high shows up as hits flat at zero (§6).
+            record_image_search(
+                settings.image_embedding_model or "unknown",
+                sum((r.metadata or {}).get("match") == "image" for r in results),
+            )
 
         return results

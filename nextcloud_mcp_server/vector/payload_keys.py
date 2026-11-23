@@ -74,3 +74,32 @@ def point_id(tenant_id: str, doc_id: str, chunk_index: int) -> str:
         {"tenant_id": tenant_id, "doc_id": doc_id, "chunk_index": chunk_index}
     ).decode("utf-8")
     return str(uuid.uuid5(NAMESPACE, name))
+
+
+# ADR-042 §4: an image embedding is a point of the same file document, marked
+# ``vector_kind="image"``. Text points carry no ``vector_kind`` at all, so a
+# ``must_not vector_kind == image`` filter keeps them (see
+# ``vector.placeholder.exclude_image_points``).
+VECTOR_KIND = "vector_kind"
+VECTOR_KIND_IMAGE = "image"
+# The image model that produced (or permanently skipped) a document's image
+# point. Compared by the scanner, like EMBEDDING_IDENTITY for text.
+IMAGE_EMBEDDING_IDENTITY = "image_embedding_identity"
+# Why a document's image was not embedded (permanent rejection, size cap).
+# On the text points, or on the dead-letter marker of a textless image.
+IMAGE_SKIPPED_REASON = "image_skipped_reason"
+# On the image point of a file with no text points, so the distinct-document
+# count can include it (it has no chunk_index == 0 point).
+IMAGE_ONLY = "image_only"
+# On the placeholder of a queued in-scope image file: the pending image count.
+IMAGE_PENDING = "image_pending"
+
+
+def image_point_id(doc_id: str) -> str:
+    """Deterministic id of a file's single image point (ADR-042 §4).
+
+    Same scheme as the chunk ids the ingest worker writes
+    (``uuid5(NAMESPACE_DNS, "file:<doc_id>:chunk:<i>")``), with an ``image``
+    suffix no chunk id can take, so a re-index overwrites the point in place.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"file:{doc_id}:image"))

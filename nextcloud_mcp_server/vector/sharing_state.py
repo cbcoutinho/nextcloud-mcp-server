@@ -78,6 +78,7 @@ async def find_indexed_content(
     etag: str,
     embedding_identity: str,
     index_mode: str = payload_keys.INDEX_MODE_HYBRID,
+    image_identity: str | None = None,
 ) -> dict | None:
     """Return a real point's payload if this exact content is already indexed.
 
@@ -95,6 +96,11 @@ async def find_indexed_content(
     a dense vector (upgrade); a **keyword** claim against an existing **hybrid**
     point is a hit (hybrid ⊇ keyword — never downgrade/strip the dense vector
     while any user holds the hybrid tag). Same-mode is a hit as before.
+
+    ``image_identity`` (ADR-042 §3) is the image model the document's points
+    must carry, or None when the document takes no part in that rule. Every
+    point of an in-scope document carries it, written or skipped, so the
+    unordered ``limit=1`` scroll below can compare any of them.
 
     Returns the payload dict (including ``acl_principals``) on a hit, else None.
     """
@@ -122,6 +128,13 @@ async def find_indexed_content(
     if payload.get(payload_keys.EMBEDDING_IDENTITY) != embedding_identity:
         # Existing vectors were produced by a different embedding model — a
         # re-embed is required, so this content is not reusable as-is.
+        return None
+    if (
+        image_identity is not None
+        and payload.get(payload_keys.IMAGE_EMBEDDING_IDENTITY) != image_identity
+    ):
+        # No image point yet (feature just enabled) or one from another image
+        # model: re-embed once.
         return None
     # Monotonic keyword→hybrid upgrade: a hybrid claim cannot reuse sparse-only
     # keyword points (they lack the dense vector), so force a reprocess. Every
@@ -311,6 +324,7 @@ async def claim_existing_index(
     current_path: str | None = None,
     webdav: FileIdResolver | None = None,
     folder_ancestor_cache: dict[str, str | None] | None = None,
+    image_identity: str | None = None,
 ) -> bool:
     """Tenant-wide dedup claim: skip reprocessing if content is already indexed.
 
@@ -339,7 +353,7 @@ async def claim_existing_index(
     embedding_identity = build_embedding_identity(get_settings())
     try:
         existing = await find_indexed_content(
-            doc_id, doc_type, etag, embedding_identity, index_mode
+            doc_id, doc_type, etag, embedding_identity, index_mode, image_identity
         )
     except Exception as exc:  # noqa: BLE001 — degrade to "process normally"
         logger.warning(

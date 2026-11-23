@@ -59,6 +59,8 @@ from nextcloud_mcp_server.search.verification import verify_search_results
 from nextcloud_mcp_server.usage.search import record_search_usage
 from nextcloud_mcp_server.utils.validation import parse_modified_timestamp
 from nextcloud_mcp_server.vector.metrics_publisher import (
+    ImageCounts,
+    count_images_or_zero,
     count_indexed,
     estimate_hybrid_vector_bytes,
 )
@@ -290,9 +292,12 @@ def _to_semantic_results(
                 relevance_source=relevance_source,
                 category=metadata.get("category", ""),
                 excerpt=r.excerpt,
+                match=metadata.get("match", "text"),
                 score=r.score,
-                chunk_index=metadata.get("chunk_index", 0),
-                total_chunks=metadata.get("total_chunks", 1),
+                # From the result, not metadata: metadata carries None for a
+                # point without chunks (an ADR-042 image point).
+                chunk_index=r.chunk_index,
+                total_chunks=r.total_chunks,
                 chunk_start_offset=r.chunk_start_offset,
                 chunk_end_offset=r.chunk_end_offset,
                 page_number=r.page_number,
@@ -407,6 +412,7 @@ async def _expand_results_with_context(
                         title=result.title,
                         category=result.category,
                         excerpt=result.excerpt,
+                        match=result.match,
                         score=result.score,
                         # This site REBUILDS the row rather than
                         # copying it, so any field omitted here
@@ -716,6 +722,10 @@ async def nc_semantic_search(  # NOSONAR(S107)
     Documents indexed keyword-only (``keyword-index`` tag) carry no dense
     vector and so contribute via the BM25 sparse side only. They appear in the
     same unified result set.
+
+    When image embeddings are on (ADR-042), hybrid search with fusion="rrf"
+    also matches images by what they show. Such results have `match: "image"`
+    and no excerpt. fusion="dbsf" searches text only.
 
     Requires VECTOR_SYNC_ENABLED=true. Supports indexing of notes, files,
     news items, deck cards, and mail messages.
@@ -1187,6 +1197,7 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
         indexed_chunks = 0
         hybrid_chunks = 0
         estimated_vector_bytes = 0
+        images = ImageCounts()
         try:
             qdrant_client = await get_qdrant_client()
             indexed_documents, indexed_chunks = await count_indexed(
@@ -1203,8 +1214,17 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
                 settings.get_collection_name(),
                 settings.vector_ram_hnsw_overhead_factor,
             )
+            # Last, and zeros on its own failure: the image figures can't take
+            # the text ones down with them. Image-only files have no
+            # chunk_index == 0 point to be counted by.
+            images = await count_images_or_zero(
+                qdrant_client, settings.get_collection_name()
+            )
+            indexed_documents += images.image_only
         except Exception as e:
-            logger.warning("Failed to query Qdrant for indexed counts: %s", e)
+            logger.warning(
+                "Failed to query Qdrant for indexed counts: %s", e, exc_info=True
+            )
             # Continue with zeroed counts
 
         # Determine status
@@ -1222,6 +1242,9 @@ async def nc_get_vector_sync_status(ctx: Context) -> VectorSyncStatusResponse:
             job_counts_by_queue=pending.job_counts_by_queue,
             hybrid_chunks=hybrid_chunks,
             estimated_vector_bytes=estimated_vector_bytes,
+            image_pending=images.pending,
+            image_embedded=images.embedded,
+            image_skipped=images.skipped,
         )
 
     except Exception as e:

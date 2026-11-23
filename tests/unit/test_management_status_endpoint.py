@@ -654,3 +654,31 @@ def test_status_survives_a_plugin_whose_available_raises():
 
     assert response.status_code == 200
     assert response.json()["faulty_available"] is False
+
+
+@pytest.mark.parametrize(
+    ("vector_sync", "ready", "expected"),
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_status_reports_the_effective_image_search_capability(
+    vector_sync, ready, expected
+):
+    """ADR-042 §7: image_vector_ready, not the configured model, and always
+    present so a client can tell "no" from "too old to know"."""
+    settings = create_mock_settings(vector_sync_enabled=vector_sync)
+    with (
+        patch(
+            "nextcloud_mcp_server.api.management.get_settings", return_value=settings
+        ),
+        patch(
+            "nextcloud_mcp_server.api.management.detect_auth_mode",
+            return_value=AuthMode.SINGLE_USER_BASIC,
+        ),
+        patch(
+            "nextcloud_mcp_server.vector.qdrant_client.image_vector_ready",
+            return_value=ready,
+        ),
+    ):
+        response = TestClient(create_test_app()).get("/api/v1/status")
+
+    assert response.json()["image_search"] is expected

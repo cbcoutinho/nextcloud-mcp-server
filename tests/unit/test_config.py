@@ -239,6 +239,32 @@ class TestGetSettings:
         ):
             _reload_config()
 
+    @patch.dict(os.environ, {"IMAGE_SEARCH_SCORE_THRESHOLD": "0.35"}, clear=True)
+    def test_image_search_score_threshold_from_env(self):
+        """The image floor (ADR-042 §6) arrives as a float."""
+        _reload_config()
+        assert get_settings().image_search_score_threshold == pytest.approx(0.35)
+
+    @pytest.mark.parametrize("value", ["-1", "1"])
+    def test_image_search_score_threshold_bounds_are_inclusive(self, value):
+        with patch.dict(
+            os.environ, {"IMAGE_SEARCH_SCORE_THRESHOLD": value}, clear=True
+        ):
+            _reload_config()
+            assert get_settings().image_search_score_threshold == pytest.approx(
+                float(value)
+            )
+
+    @pytest.mark.parametrize("value", ["-1.5", "1.01"])
+    def test_image_search_score_threshold_must_be_a_cosine(self, value):
+        with patch.dict(
+            os.environ, {"IMAGE_SEARCH_SCORE_THRESHOLD": value}, clear=True
+        ):
+            with pytest.raises(
+                ValidationError, match="IMAGE_SEARCH_SCORE_THRESHOLD must be within"
+            ):
+                _reload_config()
+
     @patch.dict(os.environ, {}, clear=True)
     def test_empty_discovery_threshold_default(self):
         """Default is 3 consecutive empty cycles before deletions are believed."""

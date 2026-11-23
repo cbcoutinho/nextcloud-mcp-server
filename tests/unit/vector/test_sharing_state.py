@@ -648,3 +648,47 @@ class TestBackfillCacheThreading:
         # /A resolved once across the two files, not twice.
         assert webdav.calls == ["/A"]
         assert cache == {"/A": "100"}
+
+
+class TestImageIdentity:
+    """ADR-042 §3: an in-scope image re-embeds when its image model changed."""
+
+    async def test_hit_when_image_identity_matches(self, client) -> None:
+        payload = {
+            payload_keys.EMBEDDING_IDENTITY: _MODEL,
+            payload_keys.IMAGE_EMBEDDING_IDENTITY: "img-a",
+        }
+        client.scroll.return_value = ([_point(payload)], None)
+        found = await ss.find_indexed_content(
+            "42", "file", "abc", _MODEL, image_identity="img-a"
+        )
+        assert found == payload
+
+    @pytest.mark.parametrize("stored", [None, "img-old"])
+    async def test_miss_when_image_identity_absent_or_other(
+        self, client, stored
+    ) -> None:
+        # Absent = feature just enabled (backfill once); other = model swap.
+        payload = {payload_keys.EMBEDDING_IDENTITY: _MODEL}
+        if stored:
+            payload[payload_keys.IMAGE_EMBEDDING_IDENTITY] = stored
+        client.scroll.return_value = ([_point(payload)], None)
+        found = await ss.find_indexed_content(
+            "42", "file", "abc", _MODEL, image_identity="img-a"
+        )
+        assert found is None
+        # The claim the scanner and the worker's race-guard make agrees.
+        assert (
+            await ss.claim_existing_index(
+                "42", "file", "abc", "bob", image_identity="img-a"
+            )
+            is False
+        )
+
+    async def test_out_of_scope_ignores_image_identity(self, client) -> None:
+        payload = {
+            payload_keys.EMBEDDING_IDENTITY: _MODEL,
+            payload_keys.IMAGE_EMBEDDING_IDENTITY: "img-old",
+        }
+        client.scroll.return_value = ([_point(payload)], None)
+        assert await ss.find_indexed_content("42", "file", "abc", _MODEL) == payload

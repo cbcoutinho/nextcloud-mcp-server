@@ -23,6 +23,7 @@ from qdrant_client.models import (
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.providers import get_provider
+from nextcloud_mcp_server.vector import payload_keys
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,13 @@ _PAYLOAD_INDEX_FIELDS: dict[str, PayloadSchemaType] = {
     # at startup without operator intervention.
     "owner_id": PayloadSchemaType.KEYWORD,
     "doc_type": PayloadSchemaType.KEYWORD,
+    # Every text read excludes image points with must_not vector_kind == image
+    # (ADR-042 §4), so the field needs an index for strict mode.
+    payload_keys.VECTOR_KIND: PayloadSchemaType.KEYWORD,
+    # The image counts in sync status (ADR-042 §5) filter on these.
+    payload_keys.IMAGE_SKIPPED_REASON: PayloadSchemaType.KEYWORD,
+    payload_keys.IMAGE_ONLY: PayloadSchemaType.BOOL,
+    payload_keys.IMAGE_PENDING: PayloadSchemaType.BOOL,
     "is_placeholder": PayloadSchemaType.BOOL,
     # dead_letter is the bool used by the durable terminal-failure marker lookup
     # (see vector/dead_letter.py: ``_dead_letter_filter`` ANDs
@@ -165,6 +173,135 @@ _DOC_ID_BACKFILL_SENTINEL_PAYLOAD: dict[str, str] = {"_migration_marker": "doc_i
 # coroutines cannot both create a lock.
 _qdrant_client: AsyncQdrantClient | None = None
 _qdrant_init_lock: anyio.Lock | None = None
+
+# ADR-042: the named vector that holds image embeddings, next to "dense" and
+# "sparse" in the same collection.
+IMAGE_VECTOR_NAME = "image"
+
+# ADR-042 §7: decided once per process, when the collection is first ensured
+# (one process serves one collection). Ingest and query both gate on it, so it
+# never changes between restarts and /api/v1/status may report it as stable.
+_image_vector_ready = False
+_NO_FLOOR = "IMAGE_SEARCH_SCORE_THRESHOLD is not set"
+
+
+def image_vector_ready() -> bool:
+    """True when this collection can store and search image embeddings.
+
+    Requires a confirmed image model, a configured score floor and an ``image``
+    vector of the model's width. Always False before :func:`get_qdrant_client`
+    has run.
+    """
+    return _image_vector_ready
+
+
+async def _provision_image_vector(
+    client: AsyncQdrantClient,
+    collection_name: str,
+    existing: VectorParams | None,
+    width: int,
+) -> str | None:
+    """Create the ``image`` vector, or check its size. Returns why it's unusable."""
+    if existing is not None:
+        if existing.size == width:
+            return None
+        return (
+            f"the {IMAGE_VECTOR_NAME!r} vector has size {existing.size} but the "
+            f"image model produces {width}; to switch models, delete it with "
+            f"delete_vector_name({collection_name!r}, {IMAGE_VECTOR_NAME!r}) "
+            "and restart (image files are re-queued automatically)"
+        )
+    try:
+        await client.create_vector_name(
+            collection_name,
+            IMAGE_VECTOR_NAME,
+            models.DenseVectorNameConfig(
+                dense=models.DenseVectorConfig(size=width, distance=Distance.COSINE)
+            ),
+        )
+    # Old server, auth or network: never fatal, text search must still start.
+    except Exception as exc:  # noqa: BLE001
+        # The traceback is what tells an old-server 404 from an auth failure.
+        logger.warning("create_vector_name failed", exc_info=True)
+        return (
+            f"could not add the {IMAGE_VECTOR_NAME!r} vector (needs Qdrant "
+            f">= 1.18; restart to retry): {exc}"
+        )
+    logger.info(
+        "Added the %r vector (size=%s) to collection %s",
+        IMAGE_VECTOR_NAME,
+        width,
+        collection_name,
+    )
+    return None
+
+
+async def _ensure_image_vector(
+    client: AsyncQdrantClient,
+    collection_name: str,
+    existing_vectors: dict[str, VectorParams],
+) -> bool:
+    """Confirm the image model and give the collection an ``image`` vector.
+
+    Returns the collection's ``image_vector_ready``. Every reason it is False
+    is logged in one line, so an operator sees the whole picture at once
+    (ADR-042 step 3). Never raises: an optional feature that can't be
+    provisioned must not stop text search from starting.
+    """
+    settings = get_settings()
+    model = settings.image_embedding_model
+    if model is None:
+        return False  # Feature off: no vector, behaviour identical to before.
+
+    reasons: list[str] = []
+    width: int | None = None
+    try:
+        provider = get_provider()
+        confirmed = await provider.confirm_image_embeddings()
+        width = provider.get_image_dimension() if confirmed else None
+    # A provider bug or network error must not stop text search from starting.
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("image model confirmation failed", exc_info=True)
+        reasons.append(f"confirming {model!r} failed: {exc}")
+        width = None
+    else:
+        if not confirmed:
+            reasons.append(
+                f"{type(provider).__name__} did not confirm {model!r} as an image model"
+            )
+        elif not width:
+            # Confirmed but no width: nothing to size the vector with, so it
+            # must not read as ready over a vector that doesn't exist.
+            reasons.append(f"{type(provider).__name__} reported no width for {model!r}")
+            width = None
+    if settings.image_search_score_threshold is None:
+        # Only reason that is a warning, not an error: nothing is broken, the
+        # operator just hasn't chosen a floor yet (no validated defaults ship).
+        reasons.append(_NO_FLOOR)
+
+    if width is not None and (
+        reason := await _provision_image_vector(
+            client, collection_name, existing_vectors.get(IMAGE_VECTOR_NAME), width
+        )
+    ):
+        reasons.append(reason)
+
+    if reasons:
+        only_floor = reasons == [_NO_FLOOR]
+        logger.log(
+            logging.WARNING if only_floor else logging.ERROR,
+            "Image embeddings are off for collection %s: %s",
+            collection_name,
+            "; ".join(reasons),
+        )
+        return False
+    logger.info(
+        "Image embeddings are on for collection %s (model=%s, size=%s)",
+        collection_name,
+        model,
+        width,
+    )
+    return True
 
 
 def _drive_local_coroutine(coro: Coroutine[Any, Any, Any]) -> Any:
@@ -714,7 +851,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
     Raises:
         Exception: If Qdrant connection fails or collection creation fails
     """
-    global _qdrant_client, _qdrant_init_lock
+    global _qdrant_client, _qdrant_init_lock, _image_vector_ready
 
     # Fast path: already initialized — skip lock acquisition for the
     # steady-state hot path (every MCP tool call after first start).
@@ -945,6 +1082,22 @@ async def get_qdrant_client() -> AsyncQdrantClient:
                 await _ensure_payload_indexes(
                     provisional, collection_name, existing_schema={}
                 )
+
+            # ADR-042 step 3: decided before publishing, so no caller can see
+            # the client with the flag still unset. A new collection takes the
+            # same in-place add as an existing one (one code path).
+            # ponytail: on a Qdrant < 1.18 server a NEW collection therefore
+            # gets no image vector either; create it in create_collection if
+            # old servers matter.
+            existing_vectors = (
+                collection_info.config.params.vectors
+                if collection_info is not None
+                and isinstance(collection_info.config.params.vectors, dict)
+                else {}
+            )
+            _image_vector_ready = await _ensure_image_vector(
+                provisional, collection_name, existing_vectors
+            )
 
             # Publish only after the migration awaits completed. From this
             # point on, fast-path callers may short-circuit the lock and

@@ -21,13 +21,20 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 import anyio
 from anyio.abc import TaskStatus
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import (
+    FieldCondition,
+    Filter,
+    IsEmptyCondition,
+    MatchValue,
+    PayloadField,
+)
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.observability.metrics import (
@@ -38,6 +45,7 @@ from nextcloud_mcp_server.observability.metrics import (
     update_qdrant_chunk_density_snapshot,
     update_vector_sync_dead_lettered_documents,
     update_vector_sync_estimated_vector_bytes,
+    update_vector_sync_image_points,
     update_vector_sync_indexed_chunks,
     update_vector_sync_indexed_documents,
     update_vector_sync_pending_documents,
@@ -50,8 +58,14 @@ from nextcloud_mcp_server.usage import UsageEvent, UsageEventStore
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.dead_letter import DEAD_LETTER_KEY
 from nextcloud_mcp_server.vector.ingest_status import get_ingest_pending
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.vector.placeholder import (
+    exclude_image_points,
+    get_placeholder_filter,
+)
+from nextcloud_mcp_server.vector.qdrant_client import (
+    get_qdrant_client,
+    image_vector_ready,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +86,7 @@ async def count_indexed(
     """
     chunks_result = await qdrant_client.count(
         collection_name=collection,
-        count_filter=Filter(must=[get_placeholder_filter()]),
+        count_filter=Filter(must=[get_placeholder_filter(), exclude_image_points()]),
         exact=exact,
     )
     docs_result = await qdrant_client.count(
@@ -81,11 +95,92 @@ async def count_indexed(
             must=[
                 get_placeholder_filter(),
                 FieldCondition(key="chunk_index", match=MatchValue(value=0)),
+                # Image points carry no chunk_index today; excluded explicitly
+                # so the count doesn't depend on that staying true.
+                exclude_image_points(),
             ]
         ),
         exact=exact,
     )
     return docs_result.count, chunks_result.count
+
+
+@dataclass(frozen=True)
+class ImageCounts:
+    """Image documents by state, for sync status (ADR-042 §5)."""
+
+    pending: int = 0  # queued in-scope image files (placeholders)
+    embedded: int = 0  # image points
+    image_only: int = 0  # image points of files with no text points
+    skipped: int = 0  # permanent skips, with or without text
+
+
+async def count_images(
+    qdrant_client: AsyncQdrantClient, collection: str, *, exact: bool = True
+) -> ImageCounts:
+    """Count image documents. Every figure is one point per document.
+
+    A skipped file with text records the skip on its text points (counted by
+    their ``chunk_index == 0`` point); a textless one on its dead-letter marker.
+    """
+
+    async def _count(flt: Filter) -> int:
+        return (
+            await qdrant_client.count(
+                collection_name=collection, count_filter=flt, exact=exact
+            )
+        ).count
+
+    def _match(key: str, value: Any) -> FieldCondition:
+        return FieldCondition(key=key, match=MatchValue(value=value))
+
+    image = _match(payload_keys.VECTOR_KIND, payload_keys.VECTOR_KIND_IMAGE)
+    filters = {
+        "pending": Filter(
+            must=[
+                _match("is_placeholder", True),
+                _match(payload_keys.IMAGE_PENDING, True),
+            ]
+        ),
+        "embedded": Filter(must=[image]),
+        "image_only": Filter(must=[image, _match(payload_keys.IMAGE_ONLY, True)]),
+        # With no ``must``, Qdrant requires at least one ``should`` to match: a
+        # skip recorded on chunk 0 or on a dead-letter marker, one per document.
+        # Pinned on a real server by test_count_images_on_a_server.
+        "skipped": Filter(
+            must_not=[
+                IsEmptyCondition(
+                    is_empty=PayloadField(key=payload_keys.IMAGE_SKIPPED_REASON)
+                )
+            ],
+            should=[_match("chunk_index", 0), _match(DEAD_LETTER_KEY, True)],
+        ),
+    }
+    counts: dict[str, int] = {}
+
+    async def _run(name: str, flt: Filter) -> None:
+        counts[name] = await _count(flt)  # distinct keys per task
+
+    # Concurrent: this runs on every status poll.
+    async with anyio.create_task_group() as tg:
+        for name, flt in filters.items():
+            tg.start_soon(_run, name, flt)
+    return ImageCounts(**counts)
+
+
+async def count_images_or_zero(
+    qdrant_client: AsyncQdrantClient, collection: str
+) -> ImageCounts:
+    """:func:`count_images` for the status surfaces, zeros on failure.
+
+    Its own failure domain: an image-count error (e.g. an index the startup
+    migration hasn't created yet) must not also zero the text figures.
+    """
+    try:
+        return await count_images(qdrant_client, collection)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to count image points: %s", e, exc_info=True)
+        return ImageCounts()
 
 
 async def count_hybrid_chunks(
@@ -102,6 +197,7 @@ async def count_hybrid_chunks(
         count_filter=Filter(
             must=[
                 get_placeholder_filter(),
+                exclude_image_points(),
                 FieldCondition(
                     key=payload_keys.INDEX_MODE,
                     match=MatchValue(value=payload_keys.INDEX_MODE_HYBRID),
@@ -248,6 +344,19 @@ async def publish_vector_sync_metrics(
         )
     except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
         logger.warning("Failed to publish dead-lettered-documents gauge: %s", exc)
+
+    # Indexed image points, next to the image-search hit counter (ADR-042 §6).
+    if image_vector_ready():
+        try:
+            qdrant_client = await get_qdrant_client()
+            images = await count_images(
+                qdrant_client, settings.get_collection_name(), exact=False
+            )
+            update_vector_sync_image_points(images.embedded)
+        except Exception as exc:  # noqa: BLE001 — metrics must not break ingest
+            logger.warning(
+                "Failed to publish image-points gauge: %s", exc, exc_info=True
+            )
 
 
 async def vector_sync_metrics_task(

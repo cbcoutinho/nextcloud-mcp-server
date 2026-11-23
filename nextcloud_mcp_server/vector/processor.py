@@ -16,6 +16,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    PointIdsList,
     PointStruct,
     Range,
 )
@@ -76,6 +77,11 @@ from nextcloud_mcp_server.vector.document_chunker import (
     PageAwareChunker,
 )
 from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.vector.image_ingest import (
+    base_mime,
+    embed_document_image,
+    in_image_scope,
+)
 from nextcloud_mcp_server.vector.mail_content import (
     build_mail_content,
     format_mail_addresses,
@@ -84,7 +90,11 @@ from nextcloud_mcp_server.vector.placeholder import (
     delete_placeholder_point,
     update_placeholder_status,
 )
-from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+from nextcloud_mcp_server.vector.qdrant_client import (
+    IMAGE_VECTOR_NAME,
+    get_qdrant_client,
+    image_vector_ready,
+)
 from nextcloud_mcp_server.vector.scanner import DocumentTask, _discover_tagged_files
 from nextcloud_mcp_server.vector.sharing_state import (
     claim_existing_index,
@@ -542,6 +552,42 @@ def ingested_byte_size(source_size: int | None, content: str) -> int:
     if source_size is not None:
         return source_size
     return len(content.encode("utf-8"))
+
+
+async def _drop_stale_image_point(
+    qdrant_client: Any, doc_task: Any, content_type: str | None
+) -> None:
+    """Delete an image file's old image point when this run wrote none.
+
+    Covers a retag to ``keyword-index`` and changed content the image model
+    skipped (ADR-042 §3), whether or not text was indexed. ``prune_stale_chunks``
+    can't reach the point: it has no ``chunk_index``. Skipped while the feature
+    is off, when the points are inert and are reused if it comes back.
+    """
+    if not (
+        doc_task.doc_type == "file"
+        and image_vector_ready()
+        and base_mime(content_type or "").startswith("image/")
+    ):
+        return
+    try:
+        await qdrant_client.delete(
+            collection_name=get_settings().get_collection_name(),
+            points_selector=PointIdsList(
+                points=[payload_keys.image_point_id(doc_task.doc_id)]
+            ),
+            wait=True,
+        )
+    except Exception:  # noqa: BLE001
+        # Best-effort: raising would retry the whole document and pay for its
+        # embeddings again, or be suppressed by a dead-letter marker already
+        # written. A stale image point is dropped by the next re-index.
+        logger.warning(
+            "Could not drop the stale image point of %s:%s",
+            doc_task.doc_type,
+            doc_task.doc_id,
+            exc_info=True,
+        )
 
 
 def build_point_vector(
@@ -1158,7 +1204,11 @@ async def process_document(
                                 doc_task.doc_id,
                                 doc_task.doc_type,
                                 doc_task.etag,
-                                escalation_tiers_signature(get_settings()),
+                                escalation_tiers_signature(
+                                    get_settings(),
+                                    file_path=doc_task.file_path,
+                                    index_mode=doc_task.index_mode,
+                                ),
                                 reason,
                                 file_path=doc_task.file_path,
                             )
@@ -1241,6 +1291,11 @@ async def _index_document_inner(
     # The document handle for files; None for text doc types (note, deck card,
     # news item, mail message), which carry no binary.
     source: DocumentSource | None = None
+    # ADR-042 §5: whether this file gets an image point, and the outcome: the
+    # image vector, or why it was skipped. Decided once the type is known.
+    image_scope = False
+    image_vector: list[float] | None = None
+    image_skip: str | None = None
 
     # Fetch document content
     with trace_operation(
@@ -1457,6 +1512,14 @@ async def _index_document_inner(
                 doc_task.user_id,
                 index_mode=doc_task.index_mode,
                 current_path=doc_task.file_path,
+                # Same rule as the scanner's claim, or a stale image would be
+                # claimed here and re-queued by the scanner forever.
+                image_identity=(
+                    settings.get_image_embedding_identity()
+                    if doc_task.content_type
+                    and in_image_scope(doc_task.content_type, doc_task.index_mode)
+                    else None
+                ),
             ):
                 await delete_placeholder_point(
                     doc_id=doc_task.doc_id,
@@ -1581,6 +1644,7 @@ async def _index_document_inner(
             )
             from nextcloud_mcp_server.document_processors.base import (  # noqa: PLC0415
                 EMPTY_DOCUMENT_REASON,
+                ProcessingResult,
             )
             from nextcloud_mcp_server.document_processors.escalation import (  # noqa: PLC0415
                 TIER_LADDER,
@@ -1593,6 +1657,9 @@ async def _index_document_inner(
             )
 
             registry = get_registry()
+            image_scope = pre_parse_failure is None and in_image_scope(
+                content_type, doc_task.index_mode
+            )
 
             try:
                 # External per-tier path (Deck #323): run only this worker's tier
@@ -1607,6 +1674,13 @@ async def _index_document_inner(
                     # on the single terminal/dead-letter path below, however the
                     # size became known.
                     result = pre_parse_failure
+                elif (
+                    image_scope
+                    and registry.find_processor(base_mime(content_type)) is None
+                ):
+                    # No text processor reads this image. "Unsupported type" is
+                    # not a failure when the image vector is what gets indexed.
+                    result = ProcessingResult(text="", metadata={}, processor="image")
                 elif tier is not None and _is_pdf(content_type):
                     # Narrowing: the download branch above always sets ``source``
                     # when it did not short-circuit on the pre-flight gate.
@@ -1632,6 +1706,38 @@ async def _index_document_inner(
                     assert source is not None
                     result = await registry.process_source(source)
 
+                # Embedded before anything is written: a transient failure raises
+                # and retries the whole job, so text and image points land
+                # together or not at all (ADR-042 §5).
+                if image_scope:
+                    assert source is not None
+                    image_vector, image_skip = await embed_document_image(
+                        source, content_type, settings
+                    )
+                    if not result.success:
+                        # The text side failed (e.g. OCR on a picture with no
+                        # words). The image is still indexable on its own; with
+                        # no vector either, the text failure stands.
+                        if image_vector is not None:
+                            logger.info(
+                                "Text extraction failed for %s (%s); indexing "
+                                "its image only",
+                                file_path,
+                                result.metadata.get("parse_failed_reason", "error"),
+                            )
+                            result = ProcessingResult(
+                                text="", metadata={}, processor=result.processor
+                            )
+                    elif image_vector is None and not result.text.strip():
+                        # Nothing to write. Dead-letter the skip on the terminal
+                        # path below, or the scanner re-queues it every cycle.
+                        result = ProcessingResult(
+                            text="",
+                            metadata={"parse_failed_reason": f"image_{image_skip}"},
+                            processor=result.processor,
+                            success=False,
+                        )
+
                 # A permanent parse failure (e.g. an isolated-worker OOM/timeout
                 # on a pathological PDF) returns success=False rather than
                 # raising -- there is nothing to index and retrying would just
@@ -1654,11 +1760,13 @@ async def _index_document_inner(
                     # either -- escalating it would just walk the queues to burn
                     # the same dispatch failure three times (Deck #1016). And for
                     # ``empty_document``: zero bytes yield no text at any tier
-                    # (card #1230).
+                    # (card #1230). And for an ``image_*`` skip of an image with no
+                    # text: no tier changes the bytes the image model rejected.
                     next_avail = (
                         None
                         if reason
                         in ("oversize", UNSUPPORTED_TYPE_REASON, EMPTY_DOCUMENT_REASON)
+                        or reason.startswith("image_")
                         else registry.next_available_tier(failing_tier, settings)
                     )
                     # #399: a hard parse failure (an isolated-worker timeout/OOM on
@@ -1716,9 +1824,14 @@ async def _index_document_inner(
                             doc_task.doc_id,
                             doc_task.doc_type,
                             doc_task.etag,
-                            escalation_tiers_signature(settings),
+                            escalation_tiers_signature(
+                                settings,
+                                file_path=file_path,
+                                index_mode=doc_task.index_mode,
+                            ),
                             reason,
                             file_path=file_path,
+                            image_skipped_reason=image_skip,
                         )
                         record_document_dead_lettered(reason)
                         logger.warning(
@@ -1772,6 +1885,7 @@ async def _index_document_inner(
                                 "Could not mark placeholder failed for %s",
                                 doc_task.doc_id,
                             )
+                    await _drop_stale_image_point(qdrant_client, doc_task, content_type)
                     return False
 
                 content = result.text
@@ -1835,7 +1949,12 @@ async def _index_document_inner(
             "vector_sync.page_aware": use_page_aware,
         },
     ) as chunk_span:
-        if use_page_aware:
+        if image_vector is not None and not content.strip():
+            # Image-only file: the image point is its whole index. Elsewhere an
+            # empty chunk keeps a textless document reading as indexed; here it
+            # would only be a blank text hit.
+            chunks = []
+        elif use_page_aware:
             page_boundaries_list = cast(list[dict[str, Any]], page_boundaries)
             chunks = await PageAwareChunker(
                 chunk_size=settings.document_chunk_size,
@@ -2160,10 +2279,12 @@ async def _index_document_inner(
             # failed/unavailable embedding endpoint raises out of
             # generate_dense_embeddings into process_document's retry/dead-letter
             # path rather than silently degrading to sparse-only.
-            if dense_for_doc:
-                tg.start_soon(generate_dense_embeddings)
-            tg.start_soon(generate_sparse_embeddings)
-            tg.start_soon(generate_highlights)
+            # An image-only file has no text chunks, so nothing to embed here.
+            if chunk_texts:
+                if dense_for_doc:
+                    tg.start_soon(generate_dense_embeddings)
+                tg.start_soon(generate_sparse_embeddings)
+                tg.start_soon(generate_highlights)
 
     # Usage metering (Deck #67), recorded once per document AFTER the embedding/
     # sparse task group so it covers BOTH modes (byte + page dimensions for
@@ -2326,6 +2447,131 @@ async def _index_document_inner(
                 missing_deck_fields,
             )
 
+    # Document-level payload: identical on every point of the document, the image
+    # point included (ADR-042 §4). The "is it already indexed?" reads take
+    # whichever point an unordered scroll returns first, so a point missing one
+    # of these would read as unindexed and re-queue the document every cycle.
+    doc_payload: dict[str, Any] = {
+        "user_id": doc_task.user_id,
+        # owner_id is the UID of the file's owner — what
+        # search-time ACL expansion filters on. Today the scanner
+        # always runs as the file's owner (per-user crawl, only
+        # surfaces files the user owns or that fall under their
+        # WebDAV root), so owner_id == user_id is correct for
+        # every doc type indexed here. The fields are kept
+        # separate so a future indexer change that lets a user
+        # crawl shared-with-them content can set owner_id to the
+        # true owner without losing the "who indexed this" trail.
+        "owner_id": doc_task.owner_id or doc_task.user_id,
+        # Observed-access ACL set: every user whose scanner has seen
+        # (hence can read) this document. Seeded with the indexer (and
+        # owner, if distinct); grown lazily as other readers' scanners
+        # hit the tenant-wide dedup path. Search ORs a
+        # MatchAny(acl_principals, ["user:<me>"]) branch so a
+        # deduplicated shared file stays findable by every reader.
+        "acl_principals": _acl_principals,
+        "doc_id": doc_task.doc_id,
+        "doc_type": doc_task.doc_type,
+        "is_placeholder": False,  # Real indexed document (not placeholder)
+        "title": title,
+        "indexed_at": indexed_at,
+        "modified_at": doc_task.modified_at,
+        "etag": etag,
+        "metadata_version": 2,  # v2 includes position metadata
+        # Raw source size (bytes) at ingestion — the denominator the
+        # current-corpus density snapshot needs, previously discarded
+        # after embedding. Same on every chunk of the document.
+        payload_keys.SOURCE_BYTES: source_bytes,
+        # Decomposition payload keys (design §10.2), additive.
+        payload_keys.PROCESSOR_VERSION: "monolith-v1",
+        payload_keys.PARSED_AT: indexed_at,
+        # Actual tier that produced this doc (registry stamps it on
+        # the result metadata); non-PDF doc types stay "fast".
+        payload_keys.PIPELINE_TIER: file_metadata.get("pipeline_tier", "fast"),
+        payload_keys.EMBEDDING_IDENTITY: _embedding_identity,
+        # Per-document index mode: "hybrid" (this point carries a
+        # dense vector) or "keyword" (sparse-only). Drives verify-on-
+        # read tag selection, the dedup monotonic rule, and billing.
+        payload_keys.INDEX_MODE: doc_task.index_mode,
+        payload_keys.ACL_HASH: _acl_hash,
+        # File-specific metadata (PDF, etc.)
+        **(
+            {
+                "file_path": file_path,  # Store file path for retrieval
+                # ADR-033 Phase 3: ancestor folder fileids for the
+                # folder-scope search filter (same value on every
+                # chunk). Omitted implicitly when resolution yielded
+                # nothing — search then uses the file_path fallback.
+                payload_keys.FOLDER_ANCESTORS: _folder_ancestors,
+                "mime_type": content_type,  # From WebDAV response
+                "file_size": file_metadata.get("file_size"),
+                "page_count": file_metadata.get("page_count"),
+                "author": file_metadata.get("author"),
+                "creation_date": file_metadata.get("creation_date"),
+                "has_images": file_metadata.get("has_images", False),
+                "image_count": file_metadata.get("image_count", 0),
+            }
+            if doc_task.doc_type == "file"
+            else {}
+        ),
+        # News item-specific metadata
+        **(
+            {
+                "feed_id": file_metadata.get("feed_id"),
+                "feed_title": file_metadata.get("feed_title"),
+                "author": file_metadata.get("author"),
+                "pub_date": file_metadata.get("pub_date"),
+                "starred": file_metadata.get("starred"),
+                "unread": file_metadata.get("unread"),
+                "url": file_metadata.get("url"),
+                "guid_hash": file_metadata.get("guid_hash"),
+                "enclosure_link": file_metadata.get("enclosure_link"),
+                "enclosure_mime": file_metadata.get("enclosure_mime"),
+            }
+            if doc_task.doc_type == "news_item"
+            else {}
+        ),
+        # Deck card-specific metadata
+        **(
+            {
+                "board_id": file_metadata.get("board_id"),
+                "board_title": file_metadata.get("board_title"),
+                "stack_id": file_metadata.get("stack_id"),
+                "stack_title": file_metadata.get("stack_title"),
+                "card_type": file_metadata.get("card_type"),
+                "duedate": file_metadata.get("duedate"),
+                "owner": file_metadata.get("owner"),
+            }
+            if doc_task.doc_type == "deck_card"
+            else {}
+        ),
+        # Mail message-specific metadata
+        **(
+            {
+                "subject": file_metadata.get("subject"),
+                "from": file_metadata.get("from"),
+                "to": file_metadata.get("to"),
+                "cc": file_metadata.get("cc"),
+                "bcc": file_metadata.get("bcc"),
+                "date_int": file_metadata.get("date_int"),
+                "has_attachments": file_metadata.get("has_attachments"),
+                "account_id": file_metadata.get("account_id"),
+                "mailbox_id": file_metadata.get("mailbox_id"),
+            }
+            if doc_task.doc_type == "mail_message"
+            else {}
+        ),
+    }
+    if image_scope:
+        # Stamped whether the image point was written or skipped, so the
+        # scanner's freshness check reads a skip as fresh until the content or
+        # the image model changes (ADR-042 §3).
+        doc_payload[payload_keys.IMAGE_EMBEDDING_IDENTITY] = (
+            settings.get_image_embedding_identity()
+        )
+        if image_skip is not None:
+            doc_payload[payload_keys.IMAGE_SKIPPED_REASON] = image_skip
+
     for i, (chunk, sparse_emb) in enumerate(zip(chunks, sparse_embeddings)):
         # Generate deterministic UUID for point ID
         # Using uuid5 with DNS namespace and combining doc info
@@ -2349,122 +2595,15 @@ async def _index_document_inner(
                 id=point_id,
                 vector=point_vector,
                 payload={
-                    "user_id": doc_task.user_id,
-                    # owner_id is the UID of the file's owner — what
-                    # search-time ACL expansion filters on. Today the scanner
-                    # always runs as the file's owner (per-user crawl, only
-                    # surfaces files the user owns or that fall under their
-                    # WebDAV root), so owner_id == user_id is correct for
-                    # every doc type indexed here. The fields are kept
-                    # separate so a future indexer change that lets a user
-                    # crawl shared-with-them content can set owner_id to the
-                    # true owner without losing the "who indexed this" trail.
-                    "owner_id": doc_task.owner_id or doc_task.user_id,
-                    # Observed-access ACL set: every user whose scanner has seen
-                    # (hence can read) this document. Seeded with the indexer (and
-                    # owner, if distinct); grown lazily as other readers' scanners
-                    # hit the tenant-wide dedup path. Search ORs a
-                    # MatchAny(acl_principals, ["user:<me>"]) branch so a
-                    # deduplicated shared file stays findable by every reader.
-                    "acl_principals": _acl_principals,
-                    "doc_id": doc_task.doc_id,
-                    "doc_type": doc_task.doc_type,
-                    "is_placeholder": False,  # Real indexed document (not placeholder)
-                    "title": title,
+                    **doc_payload,
                     "excerpt": chunk.text,  # Full chunk text (up to chunk_size, default 2048 chars)
-                    "indexed_at": indexed_at,
-                    "modified_at": doc_task.modified_at,
-                    "etag": etag,
                     "chunk_index": i,
                     "total_chunks": len(chunks),
                     "chunk_start_offset": chunk.start_offset,
                     "chunk_end_offset": chunk.end_offset,
-                    "metadata_version": 2,  # v2 includes position metadata
-                    # Raw source size (bytes) at ingestion — the denominator the
-                    # current-corpus density snapshot needs, previously discarded
-                    # after embedding. Same on every chunk of the document.
-                    payload_keys.SOURCE_BYTES: source_bytes,
-                    # Decomposition payload keys (design §10.2), additive.
-                    payload_keys.PROCESSOR_VERSION: "monolith-v1",
-                    payload_keys.PARSED_AT: indexed_at,
-                    # Actual tier that produced this doc (registry stamps it on
-                    # the result metadata); non-PDF doc types stay "fast".
-                    payload_keys.PIPELINE_TIER: file_metadata.get(
-                        "pipeline_tier", "fast"
-                    ),
-                    payload_keys.EMBEDDING_IDENTITY: _embedding_identity,
-                    # Per-document index mode: "hybrid" (this point carries a
-                    # dense vector) or "keyword" (sparse-only). Drives verify-on-
-                    # read tag selection, the dedup monotonic rule, and billing.
-                    payload_keys.INDEX_MODE: doc_task.index_mode,
-                    payload_keys.ACL_HASH: _acl_hash,
-                    # File-specific metadata (PDF, etc.)
                     **(
-                        {
-                            "file_path": file_path,  # Store file path for retrieval
-                            # ADR-033 Phase 3: ancestor folder fileids for the
-                            # folder-scope search filter (same value on every
-                            # chunk). Omitted implicitly when resolution yielded
-                            # nothing — search then uses the file_path fallback.
-                            payload_keys.FOLDER_ANCESTORS: _folder_ancestors,
-                            "mime_type": content_type,  # From WebDAV response
-                            "file_size": file_metadata.get("file_size"),
-                            "page_number": chunk.page_number,
-                            "page_end": page_end,
-                            "page_count": file_metadata.get("page_count"),
-                            "author": file_metadata.get("author"),
-                            "creation_date": file_metadata.get("creation_date"),
-                            "has_images": file_metadata.get("has_images", False),
-                            "image_count": file_metadata.get("image_count", 0),
-                        }
+                        {"page_number": chunk.page_number, "page_end": page_end}
                         if doc_task.doc_type == "file"
-                        else {}
-                    ),
-                    # News item-specific metadata
-                    **(
-                        {
-                            "feed_id": file_metadata.get("feed_id"),
-                            "feed_title": file_metadata.get("feed_title"),
-                            "author": file_metadata.get("author"),
-                            "pub_date": file_metadata.get("pub_date"),
-                            "starred": file_metadata.get("starred"),
-                            "unread": file_metadata.get("unread"),
-                            "url": file_metadata.get("url"),
-                            "guid_hash": file_metadata.get("guid_hash"),
-                            "enclosure_link": file_metadata.get("enclosure_link"),
-                            "enclosure_mime": file_metadata.get("enclosure_mime"),
-                        }
-                        if doc_task.doc_type == "news_item"
-                        else {}
-                    ),
-                    # Deck card-specific metadata
-                    **(
-                        {
-                            "board_id": file_metadata.get("board_id"),
-                            "board_title": file_metadata.get("board_title"),
-                            "stack_id": file_metadata.get("stack_id"),
-                            "stack_title": file_metadata.get("stack_title"),
-                            "card_type": file_metadata.get("card_type"),
-                            "duedate": file_metadata.get("duedate"),
-                            "owner": file_metadata.get("owner"),
-                        }
-                        if doc_task.doc_type == "deck_card"
-                        else {}
-                    ),
-                    # Mail message-specific metadata
-                    **(
-                        {
-                            "subject": file_metadata.get("subject"),
-                            "from": file_metadata.get("from"),
-                            "to": file_metadata.get("to"),
-                            "cc": file_metadata.get("cc"),
-                            "bcc": file_metadata.get("bcc"),
-                            "date_int": file_metadata.get("date_int"),
-                            "has_attachments": file_metadata.get("has_attachments"),
-                            "account_id": file_metadata.get("account_id"),
-                            "mailbox_id": file_metadata.get("mailbox_id"),
-                        }
-                        if doc_task.doc_type == "mail_message"
                         else {}
                     ),
                     # Chunk bbox (PDF only) — normalized rectangles in [0,1]
@@ -2478,6 +2617,23 @@ async def _index_document_inner(
                         if i in chunk_bboxes
                         else {}
                     ),
+                },
+            )
+        )
+
+    # Counted before the image point joins: prune and the log speak of chunks.
+    text_point_count = len(points)
+    if image_vector is not None:
+        # One point per file, no chunk_index: prune_stale_chunks' range filter
+        # never matches it, and whole-document deletes (by doc_id) still do.
+        points.append(
+            PointStruct(
+                id=payload_keys.image_point_id(doc_task.doc_id),
+                vector={IMAGE_VECTOR_NAME: image_vector},
+                payload={
+                    **doc_payload,
+                    payload_keys.VECTOR_KIND: payload_keys.VECTOR_KIND_IMAGE,
+                    payload_keys.IMAGE_ONLY: text_point_count == 0,
                 },
             )
         )
@@ -2527,12 +2683,15 @@ async def _index_document_inner(
                     (len(points) + BATCH_SIZE - 1) // BATCH_SIZE,
                 )
 
+    if image_vector is None:
+        await _drop_stale_image_point(qdrant_client, doc_task, content_type)
+
     await prune_stale_chunks(
         qdrant_client,
         collection_name=settings.get_collection_name(),
         doc_id=doc_task.doc_id,
         doc_type=doc_task.doc_type,
-        kept_chunks=len(points),
+        kept_chunks=text_point_count,
     )
 
     # A successful (re-)index supersedes any prior failure record: clear the
@@ -2567,11 +2726,12 @@ async def _index_document_inner(
         doc_task.doc_type,
         doc_task.doc_id,
         doc_task.user_id,
-        len(points),
+        text_point_count,
         extra={
             "doc_id": doc_task.doc_id,
             "doc_type": doc_task.doc_type,
-            "chunks": len(points),
+            "chunks": text_point_count,
+            "image_point": image_vector is not None,
             "status": "success",
         },
     )

@@ -62,6 +62,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.providers import get_provider
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ async def _upsert_marker(
     terminal: bool,
     attempts: int,
     file_path: str | None,
+    image_skipped_reason: str | None = None,
 ) -> None:
     """Write the (soft or terminal) marker point. Fail-safe: never raises."""
     try:
@@ -145,6 +147,8 @@ async def _upsert_marker(
         }
         if doc_type == "file" and file_path:
             payload["file_path"] = file_path
+        if image_skipped_reason is not None:
+            payload[payload_keys.IMAGE_SKIPPED_REASON] = image_skipped_reason
 
         point = PointStruct(
             id=_generate_dead_letter_id(doc_type, doc_id),
@@ -174,6 +178,7 @@ async def mark_dead_letter(
     reason: str,
     *,
     file_path: str | None = None,
+    image_skipped_reason: str | None = None,
 ) -> None:
     """Upsert a durable dead-letter marker for a terminally-failed document.
 
@@ -197,6 +202,7 @@ async def mark_dead_letter(
         terminal=True,
         attempts=1,
         file_path=file_path,
+        image_skipped_reason=image_skipped_reason,
     )
     logger.info(
         "Dead-lettered %s_%s (reason=%s, etag=%s)",

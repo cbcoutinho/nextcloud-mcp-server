@@ -214,7 +214,7 @@ nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 # tests/unit/test_core_import_boundary.py enforces that.
 semantic = [
     "nextcloud-mcp-server[documents]", # ingest parses every indexed document
-    "qdrant-client>=1.17.0",
+    "qdrant-client>=1.18.0",
     "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
     "numpy>=1.26", # vector/pca.py, vector/visualization.py
     "openai>=2.8.1",

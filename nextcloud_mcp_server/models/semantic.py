@@ -1,5 +1,7 @@
 """Pydantic models for semantic search responses."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from .base import BaseResponse
@@ -27,6 +29,14 @@ class SemanticSearchResult(BaseModel):
         default="", description="Document category (notes) or location (calendar)"
     )
     excerpt: str = Field(description="Excerpt from matching chunk")
+    match: Literal["text", "image"] = Field(
+        default="text",
+        description=(
+            "What matched: a text passage, or (`image`) the file's picture, "
+            "when image embeddings are on (ADR-042). An image match has no "
+            "excerpt; view it with nc_webdav_view_image."
+        ),
+    )
     score: float = Field(
         description=(
             "Ranking score (≥ 0.0, higher is better). Orders results within "
@@ -289,6 +299,23 @@ class VectorSyncStatusResponse(BaseResponse):
             "Chunks indexed in hybrid mode (dense + sparse). These carry a dense "
             "vector and so drive the vector-RAM footprint; keyword-index chunks "
             "(indexed_chunks - hybrid_chunks) are sparse-only and cost no dense RAM."
+        ),
+    )
+    image_pending: int = Field(
+        default=0,
+        description=(
+            "Queued image files that will get an image embedding (ADR-042). Tag a "
+            "folder and read this to see the paid-call volume before it is spent."
+        ),
+    )
+    image_embedded: int = Field(
+        default=0, description="Files with an image embedding (ADR-042)"
+    )
+    image_skipped: int = Field(
+        default=0,
+        description=(
+            "Image files permanently skipped: over IMAGE_EMBEDDING_MAX_SOURCE_BYTES, "
+            "undecodable, or rejected by the image model (ADR-042)"
         ),
     )
     estimated_vector_bytes: int = Field(

@@ -12,6 +12,7 @@ from qdrant_client.models import Filter, ScoredPoint
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.search.access_filter import build_ownership_filter
+from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
@@ -310,6 +311,10 @@ def build_search_result_from_point(
     metadata: dict[str, Any] = dict(metadata_extras) if metadata_extras else {}
     metadata["chunk_index"] = point.payload.get("chunk_index")
     metadata["total_chunks"] = point.payload.get("total_chunks")
+    # ADR-042: an image hit matched the file's picture, not a text passage, so
+    # it has no excerpt. Marked so a renderer can show a thumbnail instead.
+    if point.payload.get(payload_keys.VECTOR_KIND) == payload_keys.VECTOR_KIND_IMAGE:
+        metadata["match"] = "image"
 
     # File-specific metadata for PDF viewer
     if doc_type == "file" and (path := point.payload.get("file_path")):
