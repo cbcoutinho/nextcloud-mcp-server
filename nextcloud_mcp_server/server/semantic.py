@@ -724,7 +724,7 @@ async def nc_semantic_search(  # NOSONAR(S107)
     same unified result set.
 
     When image embeddings are on (ADR-042), hybrid search with fusion="rrf"
-    also matches images by what they show; such results have `match: "image"`
+    also matches images by what they show. Such results have `match: "image"`
     and no excerpt. fusion="dbsf" searches text only.
 
     Requires VECTOR_SYNC_ENABLED=true. Supports indexing of notes, files,
