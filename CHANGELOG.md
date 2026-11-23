@@ -5,6 +5,35 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.217.0 (2026-11-23)
+
+### Feat
+
+- **search**: match images in hybrid search (ADR-042 step 5)
+- **vector**: report image counts in sync status (ADR-042 step 4c)
+- **vector**: write image points at ingest (ADR-042 step 4b)
+- **vector**: exclude image points from every text read (ADR-042 step 4a)
+- **vector**: add the image named vector and image_vector_ready (ADR-042 step 3)
+
+### Fix
+
+- **search**: drop the semicolon from the search tool description
+- **search**: convert image hits safely; cache a failed image embedding
+- **vector**: keep the text figures when the image count fails
+- **vector**: drop failed placeholders from image_pending
+- **vector**: count images concurrently; pin the tool test's auth mode
+- **vector**: index an image even when its text extraction fails
+- **vector**: exclude image points from the document count explicitly
+- **vector**: resolve the provider inside the image-vector guard
+- **vector**: keep text search starting when image confirmation raises
+- **vector**: never report image_vector_ready without a width
+
+### Refactor
+
+- **search**: move query embedding out of search(); word the hit metric
+- **vector**: rebuild the worker's DocumentTask from its own fields
+- **vector**: split image-vector provisioning out of the readiness check
+
 ## v0.216.0 (2026-11-22)
 
 ### Feat
