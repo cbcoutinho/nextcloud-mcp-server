@@ -8,6 +8,7 @@ from nextcloud_mcp_server.models.contacts import (
     Contact,
     ListContactsResponse,
 )
+from nextcloud_mcp_server.models.cookbook import Recipe
 from nextcloud_mcp_server.models.notes import (
     CreateNoteResponse,
     Note,
@@ -919,3 +920,33 @@ def test_table_schema_tolerates_missing_columns_and_views():
 
     assert schema.columns == []
     assert schema.views == []
+
+
+@pytest.mark.unit
+def test_recipe_tolerates_explicit_null_yield():
+    """Cookbook's FixRecipeYieldFilter writes `"recipeYield": null` for any
+    recipe with no serving count, on every read - not just as an edge case.
+    `nc_cookbook_get_recipe` failed the whole call with two validation errors
+    (`recipeYield.int`, `recipeYield.str` both "Input should be a valid ...")
+    since Union[int, str] didn't accept None.
+    """
+    recipe = Recipe(**{"name": "Schokokuchen", "recipeYield": None})
+
+    assert recipe.recipeYield is None
+
+
+@pytest.mark.unit
+def test_recipe_unaffected_when_fully_populated():
+    """A well-formed recipe must round-trip exactly as given."""
+    recipe = Recipe(
+        **{
+            "name": "Test",
+            "recipeYield": 4,
+            "recipeIngredient": ["a"],
+            "recipeInstructions": ["b"],
+        }
+    )
+
+    assert recipe.recipeYield == 4
+    assert recipe.recipeIngredient == ["a"]
+    assert recipe.recipeInstructions == ["b"]
