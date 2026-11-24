@@ -1685,6 +1685,43 @@ async def _token_refresh(request: Request, form) -> JSONResponse:
     return JSONResponse(_without_id_token(refreshed))
 
 
+_NON_NATIVE_SCHEMES = {"", "http", "https", "javascript", "data", "file", "vbscript"}
+
+
+def _is_native_redirect(uri: str) -> bool:
+    """A loopback http redirect or a private-use scheme (RFC 8252 sections 7.1, 7.3)."""
+    try:
+        parsed = parse_url(uri)
+        host = parsed.hostname
+    except ValueError:
+        return False
+    if parsed.scheme == "http":
+        return host in ("localhost", "127.0.0.1", "::1")
+    return parsed.scheme not in _NON_NATIVE_SCHEMES
+
+
+def _with_native_application_type(body: dict[str, Any]) -> dict[str, Any]:
+    """Mark a public loopback/custom-scheme client as native for the upstream IdP.
+
+    RFC 7591 defaults ``application_type`` to "web", and Nextcloud's oidc app
+    rejects a public (``token_endpoint_auth_method: none``) web client whose
+    redirect is plain http (400 invalid_redirect_uri). Browser-based inspectors
+    and CLI clients register exactly that: a public client with a localhost
+    redirect and no application_type. Such a client is native in RFC 8252
+    terms, so say so. Anything else is forwarded unchanged and left to the IdP.
+    """
+    uris = body.get("redirect_uris")
+    if (
+        body.get("token_endpoint_auth_method") != "none"
+        or "application_type" in body
+        or not isinstance(uris, list)
+        or not uris
+        or not all(isinstance(u, str) and _is_native_redirect(u) for u in uris)
+    ):
+        return body
+    return {**body, "application_type": "native"}
+
+
 async def oauth_register_proxy(request: Request) -> JSONResponse:
     """
     DCR proxy endpoint for AS proxy (ADR-023).
@@ -1787,6 +1824,7 @@ async def oauth_register_proxy(request: Request) -> JSONResponse:
         )
 
     logger.info("DCR proxy: Forwarding registration to %s", registration_endpoint)
+    body = _with_native_application_type(body)
 
     async with nextcloud_httpx_client() as http_client:
         response = await http_client.post(

@@ -4,11 +4,88 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 import nextcloud_mcp_server.auth.client_registry as registry_mod
-from nextcloud_mcp_server.auth.oauth_routes import oauth_register_proxy
+from nextcloud_mcp_server.auth.oauth_routes import (
+    _with_native_application_type,
+    oauth_register_proxy,
+)
 
 pytestmark = pytest.mark.unit
+
+_PUBLIC = {"token_endpoint_auth_method": "none"}
+
+
+# --- application_type for public loopback clients (MCPJam, browser inspectors) ---
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            {**_PUBLIC, "redirect_uris": ["http://localhost:6274/oauth/callback"]},
+            "native",
+        ),
+        ({**_PUBLIC, "redirect_uris": ["http://127.0.0.1:33418/cb"]}, "native"),
+        ({**_PUBLIC, "redirect_uris": ["http://[::1]:8080/cb"]}, "native"),
+        ({**_PUBLIC, "redirect_uris": ["com.example.app:/oauth2redirect"]}, "native"),
+        # A real web redirect stays web; the IdP decides whether to accept it.
+        ({**_PUBLIC, "redirect_uris": ["https://app.example.com/cb"]}, None),
+        (
+            {
+                **_PUBLIC,
+                "redirect_uris": ["http://localhost/cb", "https://x.example/cb"],
+            },
+            None,
+        ),
+        ({**_PUBLIC, "redirect_uris": ["http://localhost.evil.example/cb"]}, None),
+        ({**_PUBLIC, "redirect_uris": ["javascript:alert(1)"]}, None),
+        ({**_PUBLIC, "redirect_uris": []}, None),
+        # Confidential clients and an explicit application_type are untouched.
+        (
+            {
+                "token_endpoint_auth_method": "client_secret_basic",
+                "redirect_uris": ["http://localhost/cb"],
+            },
+            None,
+        ),
+        (
+            {
+                **_PUBLIC,
+                "application_type": "web",
+                "redirect_uris": ["http://localhost/cb"],
+            },
+            "web",
+        ),
+    ],
+)
+def test_native_application_type(body, expected):
+    assert _with_native_application_type(body).get("application_type") == expected
+
+
+_json = st.recursive(
+    st.none() | st.booleans() | st.floats() | st.text(),
+    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
+    max_leaves=10,
+)
+
+
+@given(
+    st.dictionaries(
+        st.sampled_from(
+            ["token_endpoint_auth_method", "redirect_uris", "application_type", "x"]
+        ),
+        _json | st.just("none") | st.lists(st.text()),
+    )
+)
+@example({**_PUBLIC, "redirect_uris": ["http://[::1/cb"]})  # invalid IPv6 host
+def test_native_application_type_never_raises(body):
+    out = _with_native_application_type(body)
+    # Only ever adds application_type; every other field is forwarded as-is.
+    rest = {k: v for k, v in out.items() if k != "application_type"}
+    assert rest == {k: v for k, v in body.items() if k != "application_type"}
 
 
 @pytest.fixture(autouse=True)
