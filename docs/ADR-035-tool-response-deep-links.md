@@ -76,7 +76,8 @@ at a doubled `/apps/deck/index.php/apps/deck/...` path on any instance with
 pretty URLs, because Deck's `router.js` builds its history base from
 `generateUrl()` and assumes that contains `/index.php/`. The server answers the
 redirect route with `linkToRouteAbsolute()`, which leaves `index.php` out exactly
-when pretty URLs are on. Board and stack links have no redirect route and keep the
+when pretty URLs are on. The route has existed since Deck 1.6.1 (Nextcloud 23),
+so no supported Deck version lacks it. Board and stack links have no redirect route and keep the
 bug until Deck fixes its router. The decorator stays, because it is still the one
 place every tool's links are filled in.
 
