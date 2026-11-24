@@ -8,11 +8,6 @@ The links live in the response body rather than in the result's ``_meta`` becaus
 ``_meta`` is dropped by every MCP client today, whereas MCPServer serialises the
 model into both ``content`` and ``structuredContent``. See
 ``docs/ADR-035-tool-response-deep-links.md``.
-
-A decorator rather than population at each construction site: ``DeckCard`` and
-``DeckCardSummary`` carry ``stackId`` but no ``boardId``, so the board id has to
-come from an ancestor model or from the tool's own arguments — and only a wrapper
-sees both.
 """
 
 import functools
@@ -50,11 +45,18 @@ logger = logging.getLogger(__name__)
 _NOTE_PATH = "/index.php/apps/notes/note/{note_id}"
 _FILE_PATH = "/index.php/f/{file_id}"
 _BOARD_PATH = "/index.php/apps/deck/board/{board_id}"
-_CARD_PATH = "/index.php/apps/deck/board/{board_id}/card/{card_id}"
+# Deck's redirect route rather than /board/{b}/card/{c}. Opened directly, an
+# /index.php/apps/deck/... URL lands at /apps/deck/index.php/apps/deck/... on an
+# instance with pretty URLs, because Deck's router.js builds its base from
+# generateUrl() and assumes that contains /index.php/. The server answers this
+# route with linkToRouteAbsolute(), which drops index.php exactly when pretty URLs
+# are on. It also needs no board id. Board links have no such route and are still
+# affected.
+_CARD_PATH = "/index.php/apps/deck/card/{card_id}"
 _DECK_FILE_PATH = "/index.php/apps/deck/cards/{card_id}/attachment/{attachment_id}"
 
 
-def _note_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
+def _note_url(base: str, item: Any) -> str | None:
     return base + _NOTE_PATH.format(note_id=item.id)
 
 
@@ -76,27 +78,24 @@ def file_url(base: str | None, file_id: int | str | None) -> str | None:
     return base + _FILE_PATH.format(file_id=file_id)
 
 
-def _file_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
+def _file_url(base: str, item: Any) -> str | None:
     return file_url(base, item.file_id)
 
 
-def _board_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
+def _board_url(base: str, item: Any) -> str | None:
     return base + _BOARD_PATH.format(board_id=item.id)
 
 
-def _stack_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
+def _stack_url(base: str, item: Any) -> str | None:
     # Deck has no per-stack route; its board is the closest thing that opens.
     return base + _BOARD_PATH.format(board_id=item.boardId)
 
 
-def _card_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
-    board_id = ctx.get("board_id")
-    if board_id is None:
-        return None
-    return base + _CARD_PATH.format(board_id=board_id, card_id=item.id)
+def _card_url(base: str, item: Any) -> str | None:
+    return base + _CARD_PATH.format(card_id=item.id)
 
 
-def _attachment_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
+def _attachment_url(base: str, item: Any) -> str | None:
     # type="file" attachments are Files shares, so the file itself opens — this
     # is what Deck's own AttachmentList.vue links to. type="deck_file" ones live
     # in Deck's private storage and only have its download route.
@@ -105,9 +104,8 @@ def _attachment_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
     )
 
 
-def _card_operation_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None:
-    # This one carries both ids itself, so it never needs the walk context.
-    return base + _CARD_PATH.format(board_id=item.board_id, card_id=item.card_id)
+def _card_operation_url(base: str, item: Any) -> str | None:
+    return base + _CARD_PATH.format(card_id=item.card_id)
 
 
 #: Item model -> the function that builds its browser URL. Every model listed
@@ -116,9 +114,7 @@ def _card_operation_url(base: str, item: Any, ctx: dict[str, Any]) -> str | None
 #:
 #: DeckLabel is deliberately absent: every board and card carries a list of them
 #: and Deck has no route that opens one.
-_URL_BUILDERS: dict[
-    type[BaseModel], Callable[[str, Any, dict[str, Any]], str | None]
-] = {
+_URL_BUILDERS: dict[type[BaseModel], Callable[[str, Any], str | None]] = {
     Note: _note_url,
     NoteSearchResult: _note_url,
     CreateNoteResponse: _note_url,
@@ -135,45 +131,24 @@ _URL_BUILDERS: dict[
 }
 
 
-def _board_context(item: BaseModel, ctx: dict[str, Any]) -> dict[str, Any]:
-    """Overlay the board id ``item`` exposes, for use by its descendants.
-
-    Cards know their stack but not their board, so the id comes from whichever
-    ancestor has it — ``BoardOverviewResponse.board_id``, ``DeckStack.boardId``,
-    or ``DeckBoard.id`` — falling back to the ``board_id`` the tool itself was
-    called with. Returns ``ctx`` unchanged when this model adds nothing.
-    """
-    board_id = getattr(item, "board_id", None)
-    if board_id is None:
-        board_id = getattr(item, "boardId", None)
-    if board_id is None and isinstance(item, DeckBoard):
-        board_id = item.id
-    if board_id is None:
-        return ctx
-    return {**ctx, "board_id": board_id}
-
-
-def attach_urls(result: BaseModel, arguments: dict[str, Any] | None = None) -> None:
+def attach_urls(result: BaseModel) -> None:
     """Fill in ``url`` on every linkable item inside ``result``, in place.
 
-    ``arguments`` are the tool's own keyword arguments, which seed the walk
-    context — that is where ``deck_get_cards(board_id=...)`` supplies the board id
-    its cards lack. A no-op when no browser-reachable base URL is configured.
+    A no-op when no browser-reachable base URL is configured.
     """
     base = browser_base()
     if base is None:
         # browser_base already logged why, when the value was set but unusable.
         return
-    _walk(result, base, dict(arguments or {}))
+    _walk(result, base)
 
 
-def _walk(item: BaseModel, base: str, ctx: dict[str, Any]) -> None:
-    ctx = _board_context(item, ctx)
+def _walk(item: BaseModel, base: str) -> None:
     fields = type(item).model_fields
 
     build = _URL_BUILDERS.get(type(item))
     if build is not None and "url" in fields:
-        url = build(base, item, ctx)
+        url = build(base, item)
         if url is not None:
             setattr(item, "url", url)
 
@@ -183,11 +158,11 @@ def _walk(item: BaseModel, base: str, ctx: dict[str, Any]) -> None:
     for name in fields:
         value = getattr(item, name, None)
         if isinstance(value, BaseModel):
-            _walk(value, base, ctx)
+            _walk(value, base)
         elif isinstance(value, (list, tuple)):
             for element in value:
                 if isinstance(element, BaseModel):
-                    _walk(element, base, ctx)
+                    _walk(element, base)
 
 
 def with_links(fn):
@@ -209,7 +184,7 @@ def with_links(fn):
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         result = await fn(*args, **kwargs)
         if isinstance(result, BaseModel):
-            attach_urls(result, kwargs)
+            attach_urls(result)
         return result
 
     # Marks the tool as opted in, so a test can check that every tool returning

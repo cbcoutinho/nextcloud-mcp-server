@@ -52,13 +52,13 @@ def _settings(browser_url: str | None = BASE) -> SimpleNamespace:
     return SimpleNamespace(nextcloud_browser_url=browser_url)
 
 
-def _attach(result, arguments=None, browser_url: str | None = BASE):
+def _attach(result, browser_url: str | None = BASE):
     """Run the walker with a stubbed browser base URL."""
     with patch(
         "nextcloud_mcp_server.astrolabe_links.get_settings",
         return_value=_settings(browser_url),
     ):
-        attach_urls(result, arguments)
+        attach_urls(result)
     return result
 
 
@@ -154,7 +154,7 @@ def test_deck_file_attachment_links_to_decks_download_route():
 def test_card_attachments_are_linked_through_the_card():
     card = _card(42)
     card.attachments = [_attachment(fileid=99)]
-    _attach(card, {"board_id": 7})
+    _attach(card)
     assert card.attachments[0].url == f"{BASE}/index.php/f/99"
 
 
@@ -180,21 +180,22 @@ def test_attachment_survives_an_empty_extended_data():
 
 def test_card_operation_response_uses_the_ids_it_carries():
     result = _attach(CardOperationResponse(card_id=42, stack_id=3, board_id=7))
-    assert result.url == f"{BASE}/index.php/apps/deck/board/7/card/42"
+    assert result.url == f"{BASE}/index.php/apps/deck/card/42"
 
 
-# --- board-id threading -----------------------------------------------------
+# --- card links ------------------------------------------------------------- -----------------------------------------------------
 
 
-def test_card_takes_the_board_id_from_the_tools_arguments():
-    """DeckCard carries stackId but no boardId — this is why a decorator exists."""
+def test_card_links_through_decks_redirect_route():
+    """Not /board/{b}/card/{c}: opened directly, that lands at a doubled
+    /apps/deck/index.php/apps/deck/... path on a pretty-URL instance. The redirect
+    route lets the server pick the right form, and needs no board id."""
     response = ListCardsResponse(cards=[_card(42)], total=1)
-    _attach(response, {"board_id": 7, "stack_id": 3})
-    assert response.cards[0].url == f"{BASE}/index.php/apps/deck/board/7/card/42"
+    _attach(response)
+    assert response.cards[0].url == f"{BASE}/index.php/apps/deck/card/42"
 
 
-def test_card_takes_the_board_id_from_an_enclosing_model():
-    """deck_get_board_overview does not take a board_id kwarg per card."""
+def test_cards_nested_in_a_board_overview_are_linked():
     response = BoardOverviewResponse(
         board_id=7,
         title="B",
@@ -208,22 +209,13 @@ def test_card_takes_the_board_id_from_an_enclosing_model():
             )
         ],
     )
-    _attach(response, {})
-    assert (
-        response.stacks[0].cards[0].url == f"{BASE}/index.php/apps/deck/board/7/card/42"
-    )
+    _attach(response)
+    assert response.stacks[0].cards[0].url == f"{BASE}/index.php/apps/deck/card/42"
 
 
-def test_card_with_no_known_board_gets_no_link():
-    response = ListCardsResponse(cards=[_card(42)], total=1)
-    _attach(response, {})
-    assert response.cards[0].url is None
-
-
-def test_created_card_is_linked_from_the_tools_board_id():
-    created = CreateCardResponse(id=42, title="C", stackId=3)
-    _attach(created, {"board_id": 7, "stack_id": 3, "title": "C"})
-    assert created.url == f"{BASE}/index.php/apps/deck/board/7/card/42"
+def test_created_card_is_linked():
+    created = _attach(CreateCardResponse(id=42, title="C", stackId=3))
+    assert created.url == f"{BASE}/index.php/apps/deck/card/42"
 
 
 # --- nested collections -----------------------------------------------------
@@ -330,7 +322,7 @@ async def test_decorator_returns_the_same_model_instance():
         "nextcloud_mcp_server.astrolabe_links.get_settings",
         return_value=_settings(),
     ):
-        result = await tool(board_id=7)
+        result = await tool()
 
     assert isinstance(result, Note)
     assert result.url == f"{BASE}/index.php/apps/notes/note/42"

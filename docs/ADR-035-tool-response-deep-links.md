@@ -69,6 +69,17 @@ The alternative — adding `boardId` to the card models — would change what th
 Deck API layer returns to satisfy a presentation concern, and would still leave
 ~30 construction sites to edit.
 
+**Amended (card links):** cards now link through Deck's redirect route,
+`/index.php/apps/deck/card/{cardId}`, so the board-id threading described above
+is gone. Opened directly, an `/index.php/apps/deck/board/{b}/card/{c}` URL lands
+at a doubled `/apps/deck/index.php/apps/deck/...` path on any instance with
+pretty URLs, because Deck's `router.js` builds its history base from
+`generateUrl()` and assumes that contains `/index.php/`. The server answers the
+redirect route with `linkToRouteAbsolute()`, which leaves `index.php` out exactly
+when pretty URLs are on. Board and stack links have no redirect route and keep the
+bug until Deck fixes its router. The decorator stays, because it is still the one
+place every tool's links are filled in.
+
 `with_links` returns the same model instance it received, so declared return
 annotations stay truthful, the advertised `outputSchema` is unchanged, and the
 "every tool returns a `BaseResponse` model" rule in `CLAUDE.md` continues to hold
@@ -101,7 +112,7 @@ cannot silently return `None`.
 
 - Adding an app means one registry entry plus one `url` field. A unit test
   asserts every registered model declares the field, so the two cannot drift.
-- **A link is either usable or absent.** Missing `file_id`, unknown board, or no
+- **A link is either usable or absent.** Missing `file_id` or no
   configured base URL all yield `None` rather than a URL that 404s — the caller
   cannot distinguish a broken link from a working one, but `None` is unambiguous.
   This follows `chunk_url`'s existing contract.
@@ -128,4 +139,6 @@ item inflates large listings. Revisit alongside `_meta`.
 **A Pydantic `computed_field` on each model** — no decorator at all, and the URL
 would always be present. Rejected because it cannot work for cards (the board id
 is not on the model), so it would have meant two mechanisms instead of one, and
-it would couple model serialisation to global configuration.
+it would couple model serialisation to global configuration. (Card links no
+longer need the board id, see the amendment under decision 2, but the coupling
+to global configuration still rules this out.)
