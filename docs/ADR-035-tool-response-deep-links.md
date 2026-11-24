@@ -116,6 +116,9 @@ cannot silently return `None`.
   configured base URL all yield `None` rather than a URL that 404s — the caller
   cannot distinguish a broken link from a working one, but `None` is unambiguous.
   This follows `chunk_url`'s existing contract.
+  One weaker case: a card link goes through Deck's redirect route, so a card
+  deleted after the response was built does not 404. Deck redirects a card the
+  user cannot read to its board list instead.
 - No new configuration: the base URL comes from `astrolabe_browser_base()`
   (`NEXTCLOUD_PUBLIC_URL` → `NEXTCLOUD_PUBLIC_ISSUER_URL` → `NEXTCLOUD_HOST`).
   Deployments that never set a public URL simply get no links.

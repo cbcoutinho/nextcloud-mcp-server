@@ -183,7 +183,7 @@ def test_card_operation_response_uses_the_ids_it_carries():
     assert result.url == f"{BASE}/index.php/apps/deck/card/42"
 
 
-# --- card links ------------------------------------------------------------- -----------------------------------------------------
+# --- card links -------------------------------------------------------------
 
 
 def test_card_links_through_decks_redirect_route():

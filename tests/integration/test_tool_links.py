@@ -133,8 +133,8 @@ async def test_file_link_opens_the_file_not_just_its_folder(
     )
 
 
-async def test_board_overview_links_cards_using_the_boards_id(nc_mcp_client, nc_client):
-    """Cards carry no boardId — the link proves the id was threaded from the envelope."""
+async def test_board_overview_links_every_card(nc_mcp_client, nc_client):
+    """Cards nested two levels down (board -> stacks -> cards) are each linked."""
     boards = await nc_client.deck.get_boards()
     if not boards:
         pytest.skip("No Deck board available")
