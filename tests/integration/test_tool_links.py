@@ -2,10 +2,9 @@
 
 The unit tests pin the URL builders against hand-built models. What they cannot
 show is that the real tools reach them with real values — the ids the links are
-built from (a note's id, a file's ``file_id``, a card's board) come from live
-Nextcloud responses, and the board id in particular is threaded out of either the
-enclosing model or the tool's own arguments. So this drives the actual MCP tools
-and asserts a link comes back that a browser could open.
+built from (a note's id, a file's ``file_id``, a card's id) come from live
+Nextcloud responses. So this drives the actual MCP tools and asserts a link comes
+back that a browser could open.
 """
 
 import json
@@ -134,8 +133,8 @@ async def test_file_link_opens_the_file_not_just_its_folder(
     )
 
 
-async def test_board_overview_links_cards_using_the_boards_id(nc_mcp_client, nc_client):
-    """Cards carry no boardId — the link proves the id was threaded from the envelope."""
+async def test_board_overview_links_every_card(nc_mcp_client, nc_client):
+    """Cards nested two levels down (board -> stacks -> cards) are each linked."""
     boards = await nc_client.deck.get_boards()
     if not boards:
         pytest.skip("No Deck board available")
@@ -150,7 +149,7 @@ async def test_board_overview_links_cards_using_the_boards_id(nc_mcp_client, nc_
         pytest.skip("Board has no cards to link")
 
     for card in cards:
-        _assert_openable(card["url"], f"/apps/deck/board/{board.id}/card/{card['id']}")
+        _assert_openable(card["url"], f"/apps/deck/card/{card['id']}")
 
 
 async def test_created_card_is_linked_and_no_longer_echoes_its_description(
@@ -180,9 +179,18 @@ async def test_created_card_is_linked_and_no_longer_echoes_its_description(
     )
 
     try:
-        _assert_openable(
-            created["url"], f"/apps/deck/board/{board.id}/card/{created['id']}"
+        _assert_openable(created["url"], f"/apps/deck/card/{created['id']}")
+        # The link goes through Deck's redirect route, so pin where it lands:
+        # the server-built card route, never a doubled /apps/deck/index.php/...
+        # path. Requested by path, because the browser base URL the link is built
+        # from need not be reachable from the test runner.
+        response = await nc_client._client.request(
+            "GET", urlparse(created["url"]).path, follow_redirects=False
         )
+        assert response.is_redirect, f"expected a redirect, got {response.status_code}"
+        location = urlparse(response.headers["location"]).path
+        assert location.endswith(f"/apps/deck/board/{board.id}/card/{created['id']}")
+        assert "/apps/deck/index.php" not in location
         assert "description" not in created, (
             "create responses should not echo the description back"
         )
