@@ -89,7 +89,7 @@ services:
   # runs on plain GitHub-hosted runners. CPU OCR is slow; give it a generous
   # DOCLING_TIMEOUT.
   docling:
-    image: ghcr.io/docling-project/docling-serve-cpu:v1.38.2@sha256:7a480a1604fa3b42efeddc7db9527690d9f9bc903226136013e2bfe6b1a4dfb0
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.39.0@sha256:ee8cfe61c8e1bc3beef20dfc09d223699eed5364d9ac54bd1c5f2265c018ac68
     restart: always
     ports:
       - 127.0.0.1:5001:5001
