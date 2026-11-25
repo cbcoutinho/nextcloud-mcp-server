@@ -39,8 +39,21 @@
       "description": "Cap Python at 3.14 until psycopg-binary ships cp315 wheels — 3.15 broke bump-version",
       "matchPackageNames": ["python", "actions/python-versions", "docker.io/library/python"],
       "allowedVersions": "<3.15"
+    },
+    {
+      "description": "pdf.js in the open_document viewer (cdnjs <script> pins); both tags bump together",
+      "matchManagers": ["html"],
+      "matchDepNames": ["pdf.js"],
+      "groupName": "pdf.js",
+      "prBodyNotes": [
+        "The viewer serves pdf.js inline from `nextcloud_mcp_server/server/vendor/pdfjs/`, and cdnjs publishes no SRI hashes for pdf.js 4+, so this PR's `integrity` attributes are stale. Run `uv run python scripts/sync_pdfjs.py --repin` on this branch and commit the result; until then `test_served_viewer_loads_no_external_script` fails."
+      ]
     }
   ],
+  "html": {
+    "enabled": true,
+    "managerFilePatterns": ["/^nextcloud_mcp_server/server/document_viewer\\.html$/"]
+  },
   "customManagers": [
     {
       "customType": "regex",

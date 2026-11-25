@@ -470,9 +470,50 @@ async def test_save_does_nothing_when_the_user_declines(stub, mocker):
 
 def test_every_external_script_is_pinned_with_sri():
     """Bumping a pdf.js URL without its hash must fail here, not in a browser."""
-    tags = re.findall(r"<script\b[^>]*\bsrc=[^>]*>", dv._viewer_html())
+    tags = re.findall(r"<script\b[^>]*\bsrc=[^>]*>", dv._VIEWER_FILE.read_text())
     assert len(tags) == 2
     for tag in tags:
         assert 'src="https://cdnjs.cloudflare.com/' in tag
         assert re.search(r'integrity="sha384-[A-Za-z0-9+/]{64}"', tag), tag
         assert 'crossorigin="anonymous"' in tag
+
+
+def test_served_viewer_loads_no_external_script():
+    """claude.ai ignores csp.resourceDomains, so pdf.js must arrive inline.
+
+    Also fails when a pinned tag is bumped without replacing the vendored file.
+    """
+    html = dv._viewer_html()
+    assert re.findall(r"<script\b[^>]*\bsrc=", html) == []
+    assert html.count('<script type="module">/* pdf') == 2
+    # an inlined file containing "</script" would end its block early
+    assert html.count("<script") == html.count("</script>")
+
+
+@pytest.mark.parametrize("alg", ["sha256", "sha384", "sha512"])
+def test_a_module_tag_is_inlined_as_a_module_under_any_sri_algorithm(
+    tmp_path, monkeypatch, alg
+):
+    """cdnjs's own SRI for pdf.js is sha512; a Renovate repin may switch algorithms."""
+    (tmp_path / "x.min.mjs").write_bytes(b"globalThis.x = 1;")
+    monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
+    sri = dv.sri_digest(alg, b"globalThis.x = 1;")
+    tag = (
+        '<script type="module" src="https://cdnjs.cloudflare.com/ajax/libs/x/1.0.0/x.min.mjs"'
+        f' integrity="{sri}" crossorigin="anonymous"></script>'
+    )
+    out = dv._inline_vendored_scripts(tag)
+    assert out.startswith('<script type="module">') and "globalThis.x = 1;" in out
+
+
+def test_a_vendored_file_that_misses_its_pin_is_not_inlined(tmp_path, monkeypatch):
+    (tmp_path / "pdf.min.js").write_text("tampered")
+    monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
+    tag = (
+        '<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"'
+        ' integrity="sha384-' + "A" * 64 + '" crossorigin="anonymous"></script>'
+    )
+    assert dv._inline_vendored_scripts(tag) == tag
+    assert dv._inline_vendored_scripts(tag.replace("pdf.min", "absent")) == tag.replace(
+        "pdf.min", "absent"
+    )

@@ -9,7 +9,9 @@ rasterising.
 """
 
 import base64
+import hashlib
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -42,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 VIEWER_URI = "ui://nextcloud-mcp/document-viewer.html"
 _VIEWER_FILE = Path(__file__).with_name("document_viewer.html")
+_VENDOR_DIR = Path(__file__).with_name("vendor") / "pdfjs"
 MAX_BYTES = 25 * 1024 * 1024
 MAX_CHUNKS = 1000  # shortcut: one scroll page; paginate if docs exceed this
 # A term matching more than this is almost certainly a fragment ("D", "mother").
@@ -621,9 +624,46 @@ async def save_redaction(
     )
 
 
+_SCRIPT_TAG = re.compile(
+    r'<script\b[^>]*?\bsrc="(?P<url>https://cdnjs\.cloudflare\.com/[^"]*/(?P<name>[\w.-]+\.m?js))"'
+    r'[^>]*?\bintegrity="(?P<sri>(?P<alg>sha256|sha384|sha512)-[A-Za-z0-9+/=]+)"[^>]*></script>'
+)
+
+
+def sri_digest(alg: str, data: bytes) -> str:
+    """The SRI `integrity` value for `data` under `alg` (sha256/sha384/sha512)."""
+    return f"{alg}-" + base64.b64encode(hashlib.new(alg, data).digest()).decode()
+
+
+def _inline_vendored_scripts(html: str) -> str:
+    """Swap each pinned cdnjs <script src> for the vendored copy, inline.
+
+    Hosts don't reliably honour `_meta.ui.csp.resourceDomains` (claude.ai
+    serves views with `script-src 'self' 'unsafe-inline' …` and blocks
+    cdnjs), but every host must allow the view's own inline script. The tag's
+    `integrity` hash stays the single pin: a vendored file that doesn't match
+    it is refused and the cdnjs tag is left in place.
+    """
+
+    def inline(m: re.Match[str]) -> str:
+        path = _VENDOR_DIR / m["name"]
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            logger.warning("%s missing; viewer keeps the cdnjs tag", path)
+            return m[0]
+        if sri_digest(m["alg"], data) != m["sri"]:
+            logger.error("%s does not match its pinned %s; not inlined", path, m["sri"])
+            return m[0]
+        module = ' type="module"' if 'type="module"' in m[0] else ""
+        return f"<script{module}>/* {m['name']} (vendored, {m['sri']}) */\n{data.decode()}\n</script>"
+
+    return _SCRIPT_TAG.sub(inline, html)
+
+
 def _viewer_html() -> str:
     try:
-        return _VIEWER_FILE.read_text()
+        return _inline_vendored_scripts(_VIEWER_FILE.read_text())
     except FileNotFoundError:
         logger.warning("%s missing; serving a placeholder viewer", _VIEWER_FILE)
         return "<!doctype html><p>Document viewer not installed.</p>"
@@ -633,6 +673,7 @@ apps.add_html_resource(
     VIEWER_URI,
     _viewer_html(),
     title="Document viewer",
-    # pdf.js 3.11.174 is the viewer's only external load, pinned with SRI hashes.
+    # pdf.js is inlined from vendor/pdfjs (see its README). cdnjs stays declared for
+    # the fallback, a vendored file missing or off its pin, on hosts that honour it.
     csp=ResourceCsp(resource_domains=["https://cdnjs.cloudflare.com"]),
 )

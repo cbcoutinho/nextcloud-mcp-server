@@ -7,10 +7,15 @@
 <!--
   MCP App view (io.modelcontextprotocol/ui, apps spec 2026-01-26) for nextcloud-mcp-server's
   open_document tool. Self-contained: the postMessage dialect is hand-rolled below, and
-  pdf.js is the only external load, pinned with SRI hashes (declare https://cdnjs.cloudflare.com in the resource's
-  csp.resourceDomains). The worker script is loaded on the main thread on purpose: a
-  sandboxed iframe has an opaque origin and cannot start a cross-origin Worker, and pdf.js 3
-  picks up globalThis.pdfjsWorker as an in-thread "fake worker" instead.
+  pdf.js is the only external script, pinned with SRI hashes. The server serves it INLINE: it
+  swaps each cdnjs tag below for the matching file in vendor/pdfjs/ after checking the hash,
+  because hosts don't reliably honour csp.resourceDomains (claude.ai blocks cdnjs). The tags
+  stay here as the version/hash pin (Renovate's html manager bumps them; then run
+  scripts/sync_pdfjs.py --repin) and so the file still works opened on its own. Both are ES
+  modules that also set globals (pdfjsLib, pdfjsWorker); module scripts run deferred, so code
+  here awaits `pdfjsReady` before touching pdfjsLib. The worker runs on the main thread on
+  purpose: pdf.js picks up globalThis.pdfjsWorker as an in-thread "fake worker", which avoids
+  starting a Worker from a sandboxed, opaque-origin iframe.
 
   Tools it calls (via the host's tools/call proxy):
     read_document_bytes(file_id)                             app-only, PDF bytes for pdf.js
@@ -24,8 +29,8 @@
   Host requests it uses: ui/message (Summarize / Ask), ui/update-model-context (selection),
   ui/request-display-mode (fullscreen), ui/notifications/size-changed.
 -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js" integrity="sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.5.438/pdf.min.mjs" integrity="sha384-6MTG6VynDVMfHzijur0VKc9BdrA6HaXHZd+pK6iGWh2acDj3CibR0CRwHizMoy1N" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.5.438/pdf.worker.min.mjs" integrity="sha384-/+r9qqXFj/8aZJ0d2yiuf6sqAR9T1UyN6NdZoI8cMvzccicdUNx62wDS8JsPedce" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <style>
   :root {
     color-scheme: light dark;
@@ -88,9 +93,17 @@
   body.drawing rect.chunk { pointer-events: none; }
   body.previewing .wrap svg, body.previewing .textLayer { display: none; }
   rect.tsel { fill: rgba(240,180,0,.30); stroke: #d49a00; stroke-width: 1; vector-effect: non-scaling-stroke; }
-  /* pdf.js 3.11 text layer (from pdf_viewer.css): invisible text over the canvas, so text can be drag-selected */
-  .textLayer { position: absolute; inset: 0; overflow: hidden; opacity: .25; line-height: 1; text-align: initial; transform-origin: 0 0; text-size-adjust: none; forced-color-adjust: none; }
-  .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+  /* pdf.js 6 text layer (from pdf_viewer.css): invisible text over the canvas, so text can be drag-selected.
+     The sizer keeps --total-scale-factor (CSS px per PDF unit) current on .wrap. */
+  .wrap { --scale-round-x: 1px; --scale-round-y: 1px; }
+  .textLayer { position: absolute; inset: 0; overflow: clip; opacity: .25; line-height: 1; letter-spacing: normal; word-spacing: normal; text-align: initial; transform-origin: 0 0; text-size-adjust: none; forced-color-adjust: none; z-index: 0;
+    --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
+  .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; user-select: text; }
+  .textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) {
+    z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height));
+    --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+  .textLayer .markedContent { display: contents; }
+  .textLayer span[role="img"] { user-select: none; cursor: default; }
   .textLayer ::selection { background: #0050ff; }
   .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; user-select: none; }
   .textLayer .endOfContent.active { top: 0; }
@@ -163,6 +176,10 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
+// pdf.js arrives as module scripts, which run after this classic one but before DOMContentLoaded.
+const pdfjsReady = document.readyState === "loading"
+  ? new Promise((resolve) => document.addEventListener("DOMContentLoaded", resolve, { once: true }))
+  : Promise.resolve();
 
 // ---- JSON-RPC over postMessage (View side) -------------------------------
 let nextId = 1;
@@ -278,6 +295,7 @@ async function renderPages(dataB64) {
   const keep = [host.scrollLeft, host.scrollTop];   // preview/discard/save re-render: stay on the same spot
   host.innerHTML = ""; sizer.disconnect();
   const isPdf = /pdf/i.test(doc.mime_type || "") || /\.pdf$/i.test(doc.path || "");
+  if (isPdf) await pdfjsReady;
   if (!isPdf || !window.pdfjsLib) {
     host.innerHTML = '<div class="empty"></div>';
     host.firstChild.textContent = !isPdf ? "No page preview for " + (doc.mime_type || "this file type") + " — use the passage list."
@@ -320,16 +338,16 @@ async function drawPage(pdf, card) {
   canvas.width = vp.width; canvas.height = vp.height;
   await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
   const tl = card.querySelector(".textLayer");
-  // pdf.js wants viewport.scale == --scale-factor at render time; the sizer keeps the variable current on zoom/resize.
-  const wrap = card.querySelector(".wrap"), sf = wrap.clientWidth / +wrap.dataset.pw;
-  wrap.style.setProperty("--scale-factor", sf);
-  await pdfjsLib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: page.getViewport({ scale: sf }), textDivs: [] }).promise;
+  // Spans are placed in % and sized from --total-scale-factor, which the sizer keeps current on zoom/resize.
+  const wrap = card.querySelector(".wrap");
+  wrap.style.setProperty("--total-scale-factor", wrap.clientWidth / +wrap.dataset.pw);
+  await new pdfjsLib.TextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: page.getViewport({ scale: 1 }) }).render();
   const end = document.createElement("div"); end.className = "endOfContent"; tl.append(end);
   // pdf.js's trick so a drag that leaves the text doesn't select the whole page
   tl.addEventListener("mousedown", () => end.classList.add("active"));
   document.addEventListener("mouseup", () => end.classList.remove("active"));
 }
-const sizer = new ResizeObserver((es) => { for (const e of es) e.target.style.setProperty("--scale-factor", e.contentRect.width / +e.target.dataset.pw); });
+const sizer = new ResizeObserver((es) => { for (const e of es) e.target.style.setProperty("--total-scale-factor", e.contentRect.width / +e.target.dataset.pw); });
 
 function rectEl(cls, [x0, y0, x1, y1]) {
   const r = document.createElementNS(SVG, "rect");
