@@ -345,6 +345,20 @@ def test_a_change_must_name_a_known_kind():
         )
 
 
+def test_apply_refuses_a_kind_it_does_not_handle():
+    """A kind added to the schema but not to _apply must fail, not be dropped."""
+    change = dv.RedactChange.model_construct(
+        kind="annotate", page=1, bbox=(0.1, 0.1, 0.5, 0.2)
+    )
+    with pytest.raises(ValueError, match="annotate"):
+        dv._apply(b"%PDF", [change])
+
+
+def test_change_counts_read_as_plain_english():
+    assert dv._describe({"redact": 1}) == "1 redaction"
+    assert dv._describe({"redact": 3}) == "3 redactions"
+
+
 def test_the_viewer_tools_are_app_only():
     tools = {b.fn.__name__: b for b in dv.apps.tools()}
     for name in (

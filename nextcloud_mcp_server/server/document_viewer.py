@@ -139,6 +139,14 @@ def _counts(changes: list[Change]) -> dict[str, int]:
     return dict(Counter(c.kind for c in changes))
 
 
+_NOUNS = {"redact": ("redaction", "redactions")}
+
+
+def _describe(counts: dict[str, int]) -> str:
+    """``{"redact": 3}`` -> ``"3 redactions"``."""
+    return ", ".join(f"{n} {_NOUNS[kind][n != 1]}" for kind, n in counts.items())
+
+
 async def _resolve(ctx: Context, file_id: int) -> tuple[Any, dict[str, Any]]:
     """The client plus the file's row; raises if the user can't reach it."""
     client = await get_client(ctx)
@@ -449,7 +457,14 @@ def _apply(pdf: bytes, changes: list[Change]) -> bytes:
     """``pdf`` with every change applied, in memory. Dispatches on ``kind``."""
     if not changes:
         raise ValueError("No changes to apply")
-    return _redact(pdf, [c for c in changes if c.kind == "redact"])
+    redactions: list[Region] = []
+    for change in changes:
+        match change.kind:
+            case "redact":
+                redactions.append(change)
+            case kind:  # A new kind must be handled here, not silently dropped.
+                raise ValueError(f"Unsupported change kind {kind!r}")
+    return _redact(pdf, redactions)
 
 
 async def _preview(ctx: Context, file_id: int, changes: list[Change]) -> CallToolResult:
@@ -457,9 +472,8 @@ async def _preview(ctx: Context, file_id: int, changes: list[Change]) -> CallToo
     data, etag = await _download_pdf(client, row)
     out = await anyio.to_thread.run_sync(_apply, data, changes)
     counts = _counts(changes)
-    summary = ", ".join(f"{n} {kind}" for kind, n in counts.items())
     return _result(
-        f"Preview of {row['path']} with {summary} change(s) applied; nothing saved.",
+        f"Preview of {row['path']} with {_describe(counts)} applied; nothing saved.",
         {
             "mime_type": "application/pdf",
             "size": len(out),
@@ -617,9 +631,8 @@ async def _save(
         logger.warning("Saved %s but could not read its file id", path, exc_info=True)
         new_id = None
     counts = _counts(changes)
-    summary = ", ".join(f"{n} {kind}" for kind, n in counts.items())
     return _result(
-        f"Saved a copy with {summary} change(s) as {path}; the original {src} is unchanged.",
+        f"Saved a copy with {_describe(counts)} as {path}; the original {src} is unchanged.",
         {
             "file_id": int(new_id) if new_id else None,
             "source_file_id": file_id,
