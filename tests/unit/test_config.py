@@ -120,6 +120,13 @@ class TestGetSettings:
         assert settings.qdrant_location == ":memory:"
         assert settings.qdrant_url is None
 
+    @patch.dict(os.environ, {"BM25_LANGUAGES": "russian,english"}, clear=True)
+    def test_get_settings_reads_bm25_languages(self):
+        """BM25_LANGUAGES must be a declared key: an undeclared one is silently
+        dropped under ignore_unknown_envvars."""
+        _reload_config()
+        assert get_settings().bm25_language_list == ("english", "russian")
+
     @patch.dict(
         os.environ,
         {
@@ -897,6 +904,26 @@ class TestCollectionNameWithProviders:
             qdrant_collection="custom-collection",
             openai_api_key="test-key",
             openai_embedding_model="text-embedding-3-large",
+        )
+        assert settings.get_collection_name() == "custom-collection"
+
+    def test_collection_name_carries_non_default_bm25_languages(self):
+        """A BM25_LANGUAGES change re-stems every sparse vector, so it must land
+        in a fresh collection, keyed independently of how the list is written."""
+        settings = Settings(
+            ollama_base_url="http://ollama:11434",
+            ollama_embedding_model="nomic-embed-text",
+            otel_service_name="my-deployment",
+            bm25_languages="Russian, english",
+        )
+        assert (
+            settings.get_collection_name()
+            == "my-deployment-nomic-embed-text-bm25-english-russian"
+        )
+
+    def test_explicit_collection_ignores_bm25_languages(self):
+        settings = Settings(
+            qdrant_collection="custom-collection", bm25_languages="russian"
         )
         assert settings.get_collection_name() == "custom-collection"
 

@@ -23,9 +23,9 @@ dependencies = [
     "uvicorn>=0.30", # cli.py serves the ASGI app
     "cryptography>=42.0", # auth/storage.py token encryption
     "packaging>=24.0", # capabilities.py compares advertised app versions
-    # utils/image_view.py, search/pdf_highlighter.py. Upper bound for fastembed
-    # compatibility in the semantic extra.
-    "pillow (>=10.3.0,<12.0.0)",
+    # utils/image_view.py, search/pdf_highlighter.py. Major-version cap; the
+    # semantic extra's fastembed>=0.9 needs pillow 12 on Python 3.14.
+    "pillow (>=10.3.0,<13.0.0)",
     "pydantic>=2.11.4",
     "click>=8.1.8",
     "pyjwt[crypto]>=2.8.0",
@@ -215,7 +215,8 @@ nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 semantic = [
     "nextcloud-mcp-server[documents]", # ingest parses every indexed document
     "qdrant-client>=1.18.0",
-    "fastembed>=0.7.3", # BM25 sparse vector embeddings for hybrid search
+    "fastembed>=0.9.0", # BM25 sparse vector embeddings for hybrid search
+    "py-rust-stemmers>=0.1.0", # providers/bm25.py per-script stemmer (BM25_LANGUAGES)
     "numpy>=1.26", # vector/pca.py, vector/visualization.py
     "openai>=2.8.1",
     "boto3>=1.35.0", # Amazon Bedrock provider

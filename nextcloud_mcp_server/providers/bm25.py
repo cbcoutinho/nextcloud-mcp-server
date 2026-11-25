@@ -1,12 +1,78 @@
 """BM25 sparse embedding provider using FastEmbed."""
 
 import logging
+import unicodedata
+from collections.abc import Sequence
 from typing import Any
 
 import anyio
 from fastembed import SparseTextEmbedding
+from fastembed.sparse.bm25 import Bm25
+
+# A Rust extension that ships no type stubs, so ty cannot see its members.
+from py_rust_stemmers import SnowballStemmer  # ty: ignore[missing-module-member]
+
+from nextcloud_mcp_server.config import BM25_LANGUAGE_SCRIPTS, get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _script_of(word: str) -> str | None:
+    """The Unicode script of a word's first letter (``"LATIN"``, ``"CYRILLIC"``,
+    ...), or None when it has no letters (``"2026"``, ``"__"``)."""
+    for ch in word:
+        if ch.isalpha():
+            return unicodedata.name(ch, "").split(" ", 1)[0] or None
+    return None
+
+
+class ScriptStemmer:
+    """Stem each word with the Snowball stemmer of the language its script
+    belongs to, for text that mixes languages (``BM25_LANGUAGES=russian,english``).
+
+    FastEmbed's ``Bm25`` takes one stemmer for all tokens, so this dispatches per
+    word. A word in a script no configured language uses (a CJK word, or a Latin
+    one with only ``russian`` configured) is left unstemmed, as is a word with no
+    letters. A word that mixes scripts is stemmed by its first letter's script.
+
+    ``languages`` must already be validated (one per script, see
+    ``parse_bm25_languages``).
+    """
+
+    def __init__(self, languages: Sequence[str]):
+        self.languages = tuple(languages)
+        self._stemmers = {
+            BM25_LANGUAGE_SCRIPTS[lang]: SnowballStemmer(lang)
+            for lang in self.languages
+        }
+
+    def __reduce__(self) -> tuple[type["ScriptStemmer"], tuple[tuple[str, ...]]]:
+        # SnowballStemmer is a Rust object that cannot be pickled or deep-copied;
+        # FastEmbed needs both for parallel embedding, so rebuild from languages.
+        return (type(self), (self.languages,))
+
+    def stem_word(self, word: str) -> str:
+        stemmer = self._stemmers.get(_script_of(word) or "")
+        return stemmer.stem_word(word) if stemmer is not None else word
+
+
+def _build_model(model_name: str, languages: tuple[str, ...]) -> SparseTextEmbedding:
+    """Build the FastEmbed BM25 model for the configured languages.
+
+    One language uses FastEmbed's own ``language`` support unchanged, so the
+    default (``english``) produces exactly the vectors it always has. Several
+    use a :class:`ScriptStemmer` and the union of each language's stopwords.
+    """
+    if len(languages) == 1:
+        return SparseTextEmbedding(model_name=model_name, language=languages[0])
+    # Each language's bundled stopword list, loaded the way FastEmbed loads it
+    # (the model files are already cached, so this costs no download).
+    stopwords: set[str] = set()
+    for lang in languages:
+        stopwords |= Bm25(model_name=model_name, language=lang).stopwords
+    return SparseTextEmbedding(
+        model_name=model_name, stemmer=ScriptStemmer(languages), stopwords=stopwords
+    )
 
 
 class BM25SparseEmbeddingProvider:
@@ -22,18 +88,32 @@ class BM25SparseEmbeddingProvider:
     term frequencies in the BM25 vocabulary.
     """
 
-    def __init__(self, model_name: str = "Qdrant/bm25"):
+    def __init__(
+        self,
+        model_name: str = "Qdrant/bm25",
+        languages: Sequence[str] | None = None,
+    ):
         """
         Initialize BM25 sparse embedding provider.
 
         Args:
             model_name: FastEmbed BM25 model name (default: Qdrant/bm25)
+            languages: Validated stemming/stopword languages. Defaults to
+                BM25_LANGUAGES from settings.
         """
         self.model_name = model_name
-        logger.info("Initializing BM25 sparse embedding provider: %s", model_name)
+        self.languages = (
+            tuple(languages)
+            if languages is not None
+            else get_settings().bm25_language_list
+        )
+        logger.info(
+            "Initializing BM25 sparse embedding provider: %s (languages: %s)",
+            model_name,
+            ", ".join(self.languages),
+        )
 
-        # Initialize FastEmbed sparse embedding model
-        self.model = SparseTextEmbedding(model_name=model_name)
+        self.model = _build_model(model_name, self.languages)
         logger.info("BM25 sparse embedding model loaded: %s", model_name)
 
     def encode(self, text: str) -> dict[str, Any]:
