@@ -476,7 +476,12 @@ def test_every_external_script_is_pinned_with_sri():
     assert len(tags) == 2
     for tag in tags:
         assert 'src="https://cdnjs.cloudflare.com/' in tag
-        assert re.search(r'integrity="sha384-[A-Za-z0-9+/]{64}"', tag), tag
+        # The algorithms _SCRIPT_TAG accepts, each with its base64 digest length.
+        assert re.search(
+            r'integrity="(sha256-[A-Za-z0-9+/]{43}=|sha384-[A-Za-z0-9+/]{64}'
+            r'|sha512-[A-Za-z0-9+/]{86}==)"',
+            tag,
+        ), tag
         assert 'crossorigin="anonymous"' in tag
 
 

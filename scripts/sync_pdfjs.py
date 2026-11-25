@@ -71,8 +71,15 @@ def main() -> int:
             # Replacing by hash string is safe: a pin's hash occurs only in its own tag.
             html = html.replace(m["sri"], digest)
             print(f"{m['name']}: repinned {m['sri']} -> {digest}")
+        # The server inlines these into a <script> body, which "</script" would end.
+        if b"</script" in data.lower():
+            print(
+                f"{m['url']}: contains '</script', cannot be inlined", file=sys.stderr
+            )
+            return 1
         fetched.append((m["name"], data))
         print(f"{m['name']}: {len(data)} bytes, {digest}")
+    VENDOR_DIR.mkdir(parents=True, exist_ok=True)
     for name, data in fetched:
         (VENDOR_DIR / name).write_bytes(data)
     VIEWER_FILE.write_text(html)

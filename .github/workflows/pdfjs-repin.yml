@@ -7,6 +7,12 @@ name: pdf.js repin
 # so this job does that step on Renovate's own branch: re-download the pinned
 # files, rewrite the hashes and commit the result back to the PR.
 #
+# The new hashes are trust-on-first-use: they record what cdnjs served at
+# repin time, and nothing upstream vouches for them. The check is a person
+# reading the repin diff (new hashes, new vendored files) before merging.
+# From then on the pins do hold: a vendored file that later differs from its
+# pin is never inlined.
+#
 # The commit is authored as github-actions[bot], which renovate.json lists in
 # gitIgnoredAuthors, so Renovate keeps managing (and rebasing) the branch. A
 # rebase drops this commit and this job runs again.
