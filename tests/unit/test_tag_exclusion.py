@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, patch
 
 import anyio
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.config import _reload_config
 from nextcloud_mcp_server.server.tag_exclusion import (
@@ -34,6 +36,81 @@ class TestNormalisePath:
     @pytest.mark.unit
     def test_empty_string(self):
         assert _normalise_path("") == ""
+
+    @pytest.mark.unit
+    def test_keeps_dotdot_and_dot_prefixed_names(self):
+        # `..` is left for _reject_path_traversal; names that merely start
+        # with dots are ordinary names.
+        assert _normalise_path("a/../b") == "a/../b"
+        assert _normalise_path("./.hidden/..x/a..b") == ".hidden/..x/a..b"
+
+
+# Path segments as Nextcloud stores them: no slashes/backslashes, and not
+# the `.`/`..` special segments.
+_segment = st.text(
+    alphabet=st.characters(blacklist_characters="/\\", blacklist_categories=["Cs"]),
+    min_size=1,
+    max_size=8,
+).filter(lambda s: s not in (".", ".."))
+
+# Separators the URL layer collapses to a single `/` between segments.
+_separator = st.sampled_from(["/", "//", "\\", "/./", "\\.\\", "/.//", "\\/"])
+_prefix = st.sampled_from(["", "/", "./", ".\\", "\\", "//", "/./"])
+_suffix = st.sampled_from(["", "/", "//", "\\", "/."])
+
+
+@st.composite
+def _spellings(draw) -> tuple[str, str]:
+    """``(non_canonical_spelling, canonical_path)`` of the same file."""
+    segments = draw(st.lists(_segment, min_size=1, max_size=5))
+    canonical = "/".join(segments)
+    spelling = draw(_prefix)
+    for i, seg in enumerate(segments):
+        if i:
+            spelling += draw(_separator)
+        spelling += seg
+    spelling += draw(_suffix)
+    return spelling, canonical
+
+
+class TestNonCanonicalSpellings:
+    """GHSA-xg6j-v24f-jv8q: every spelling of an excluded path is excluded."""
+
+    @pytest.mark.unit
+    @given(_spellings())
+    @example(("./Private/x.txt", "Private/x.txt"))
+    @example((".//Private/x.txt", "Private/x.txt"))
+    @example(("/./Private/x.txt", "Private/x.txt"))
+    @example(("Public/./secret.txt", "Public/secret.txt"))
+    @example(("Public//secret.txt", "Public/secret.txt"))
+    @example(("\\Private\\x.txt", "Private/x.txt"))
+    @example((".\\Private\\x.txt", "Private/x.txt"))
+    def test_normalises_to_canonical(self, pair):
+        spelling, canonical = pair
+        assert _normalise_path(spelling) == canonical
+
+    @pytest.mark.unit
+    @given(_spellings())
+    def test_idempotent(self, pair):
+        once = _normalise_path(pair[0])
+        assert _normalise_path(once) == once
+
+    @pytest.mark.unit
+    @given(_spellings())
+    def test_excluded_file_spelling_is_excluded(self, pair):
+        spelling, canonical = pair
+        assert is_path_excluded(spelling, {canonical}) is True
+
+    @pytest.mark.unit
+    @given(_spellings(), _segment)
+    def test_descendant_spelling_of_excluded_dir_is_excluded(self, pair, child):
+        spelling, canonical = pair
+        assert is_path_excluded(f"{spelling}/./{child}", {canonical}) is True
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("name", [".hidden", "..hidden", "a..b"])
+    def test_dot_prefixed_names_not_falsely_excluded(self, name):
+        assert is_path_excluded(name, {"Private", "Public/secret.txt"}) is False
 
 
 class TestIsPathExcluded:

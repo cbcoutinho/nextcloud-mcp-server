@@ -160,5 +160,18 @@ def is_path_excluded(path: str, excluded_paths: set[str]) -> bool:
 
 
 def _normalise_path(path: str) -> str:
-    """Strip leading/trailing slashes for consistent comparison."""
-    return path.strip("/")
+    """Canonicalise *path* for comparison against the excluded set.
+
+    Every spelling that the URL layer / Nextcloud resolves to the same file
+    must normalise to the same string, or a non-canonical spelling slips past
+    :func:`is_path_excluded` (GHSA-xg6j-v24f-jv8q): backslashes are folded to
+    ``/`` (as ``_reject_path_traversal`` does), and empty segments (leading,
+    trailing or doubled slashes) and ``.`` segments are dropped. ``..`` is kept
+    verbatim: the WebDAV client rejects it before any request is sent, and
+    resolving it here would only hide that rejection.
+
+    Unicode normal form is *not* folded: Nextcloud can hold two distinct
+    files whose names differ only by NFC/NFD.
+    """
+    segments = path.replace("\\", "/").split("/")
+    return "/".join(seg for seg in segments if seg not in ("", "."))
