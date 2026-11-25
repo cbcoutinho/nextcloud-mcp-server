@@ -377,6 +377,26 @@ async def test_a_saved_copy_is_reported_even_if_its_id_lookup_fails(stub, mocker
     assert res.structured_content["path"] == "/Docs/report-redacted.pdf"
 
 
+def test_an_unreadable_pdf_is_a_value_error():
+    with pytest.raises(ValueError, match="Could not read"):
+        dv._find_text(b"not a pdf", ["Jane Doe"])
+
+
+def test_a_password_protected_pdf_is_refused():
+    with pymupdf.open(stream=PDF, filetype="pdf") as doc:
+        locked = doc.tobytes(
+            encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="u", owner_pw="o"
+        )
+    with pytest.raises(ValueError, match="password"):
+        dv._redact(locked, [dv.Region(page=1, bbox=(0.1, 0.1, 0.5, 0.2))])
+
+
+async def test_save_turns_a_transport_failure_into_a_tool_error(stub, mocker):
+    stub.webdav.write_file = mocker.AsyncMock(side_effect=RuntimeError("network"))
+    res = await _save(mocker, confirmation=_accepted())
+    assert res.is_error and "failed" in res.content[0].text
+
+
 async def test_save_does_nothing_when_the_user_declines(stub, mocker):
     stub.webdav.write_file = mocker.AsyncMock()
     res = await _save(mocker, confirmation=DeclinedElicitation())

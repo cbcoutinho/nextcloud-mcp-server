@@ -160,7 +160,8 @@ async def open_document(
     Pass items as ``{"text": ..., "group": ...}``. ``group`` is the label to
     review the text under: a person ("Mother", "Person A"), a data type ("Phone
     numbers", "Addresses") or a section, whichever fits the user's request.
-    The user accepts or rejects each group together.
+    The user accepts or rejects each group together. A text listed twice keeps
+    its first group.
     ``review``: use it to shape the review controls when the user asks for a
     particular view, e.g. buttons such as "Keep only Person A" or "Turn off all
     phone numbers". Omit it otherwise.
@@ -358,10 +359,22 @@ async def read_document_bytes(ctx: Context, file_id: int) -> CallToolResult:
     )
 
 
+def _open_pdf(pdf: bytes) -> pymupdf.Document:
+    """Open ``pdf``, turning an unreadable or locked file into a ValueError."""
+    try:
+        doc = pymupdf.open(stream=pdf, filetype="pdf")
+    except Exception as e:  # pymupdf raises several types for bad input
+        raise ValueError("Could not read the PDF") from e
+    if doc.needs_pass:
+        doc.close()
+        raise ValueError("The PDF is password-protected")
+    return doc
+
+
 def _find_text(pdf: bytes, needles: list[str]) -> list[dict[str, Any]]:
     """Every hit of each needle as a normalised region (the model-proposes path)."""
     found = []
-    with pymupdf_serialized(), pymupdf.open(stream=pdf, filetype="pdf") as doc:
+    with pymupdf_serialized(), _open_pdf(pdf) as doc:
         for page in doc:
             w, h = page.rect.width, page.rect.height
             for needle in needles:
@@ -377,7 +390,7 @@ def _find_text(pdf: bytes, needles: list[str]) -> list[dict[str, Any]]:
 
 
 def _redact(pdf: bytes, regions: list[Region]) -> bytes:
-    with pymupdf_serialized(), pymupdf.open(stream=pdf, filetype="pdf") as doc:
+    with pymupdf_serialized(), _open_pdf(pdf) as doc:
         for r in regions:
             if not 1 <= r.page <= doc.page_count:
                 raise ValueError(f"Page {r.page} out of range 1..{doc.page_count}")
@@ -566,6 +579,11 @@ async def save_redaction(
         path = await _write_copy(client, candidates, out, explicit)
     except ValueError as e:
         return _error(str(e))
+    except Exception:
+        logger.warning(
+            "Saving a redacted copy of file %s failed", file_id, exc_info=True
+        )
+        return _error("Saving the redacted copy failed; try again.")
 
     try:
         new_id = await client.webdav.get_fileid(path)
