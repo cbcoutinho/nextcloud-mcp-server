@@ -556,19 +556,24 @@ async def save_redaction(
     choice = confirmation.data
     if not choice.confirm:
         return _error("Redaction not saved: not confirmed.")
-    client, row = await _resolve(ctx, file_id)
-    data, current = await _download_pdf(client, row)
-    if current is None or normalize_etag(etag) != current:
-        return _error("conflict: file changed since it was opened")
-    src = row["path"]
     try:
+        client, row = await _resolve(ctx, file_id)
+        data, current = await _download_pdf(client, row)
+        if current is None or normalize_etag(etag) != current:
+            return _error("conflict: file changed since it was opened")
+        src = row["path"]
         out = await anyio.to_thread.run_sync(_redact, data, regions)
         candidates, explicit = _copy_candidates(src, choice.name, name)
         path = await _write_copy(client, candidates, out, explicit)
     except ValueError as e:
         return _error(str(e))
 
-    new_id = await client.webdav.get_fileid(path)
+    try:
+        new_id = await client.webdav.get_fileid(path)
+    except Exception:
+        # The copy exists; erroring here would make a retry write -v2.
+        logger.warning("Saved %s but could not read its file id", path, exc_info=True)
+        new_id = None
     return _result(
         f"Saved a redacted copy ({len(regions)} region(s)) as {path}; "
         f"the original {src} is unchanged.",

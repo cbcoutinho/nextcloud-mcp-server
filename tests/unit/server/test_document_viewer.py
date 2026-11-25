@@ -360,6 +360,23 @@ async def test_save_reports_a_region_off_the_document_as_an_error(stub, mocker):
     stub.webdav.write_file.assert_not_called()
 
 
+async def test_save_refuses_a_non_pdf_as_a_tool_error(stub, mocker):
+    stub.webdav.find_files_by_ids.return_value = [
+        {"path": "/Docs/notes.txt", "content_type": "text/plain"}
+    ]
+    res = await _save(mocker, confirmation=_accepted())
+    assert res.is_error and "not a PDF" in res.content[0].text
+
+
+async def test_a_saved_copy_is_reported_even_if_its_id_lookup_fails(stub, mocker):
+    stub.webdav.write_file = mocker.AsyncMock(return_value={"status_code": 201})
+    stub.webdav.get_fileid = mocker.AsyncMock(side_effect=RuntimeError("boom"))
+    res = await _save(mocker, confirmation=_accepted())
+    assert not res.is_error
+    assert res.structured_content["file_id"] is None
+    assert res.structured_content["path"] == "/Docs/report-redacted.pdf"
+
+
 async def test_save_does_nothing_when_the_user_declines(stub, mocker):
     stub.webdav.write_file = mocker.AsyncMock()
     res = await _save(mocker, confirmation=DeclinedElicitation())
