@@ -248,7 +248,11 @@ def _table_text(html: Any) -> str | None:
 
 
 class _TableText(HTMLParser):
-    """Collects the cell texts of an HTML table, row by row."""
+    """Collects the cell texts of an HTML table, row by row.
+
+    Nested tables are not supported: the inner ``</td>`` ends the outer cell, so
+    the rest of that cell's text is lost.
+    """
 
     def __init__(self) -> None:
         super().__init__()

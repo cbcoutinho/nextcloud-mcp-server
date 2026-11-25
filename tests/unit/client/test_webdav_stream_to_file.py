@@ -18,6 +18,7 @@ import httpx2
 import pytest
 from nextcloud_client.webdav import (
     OversizeDownload,
+    UnexpectedContentType,
     WebDAVClient,
     _read_complete_body,
     _verify_content_length,
@@ -196,6 +197,44 @@ async def test_max_bytes_fires_even_when_content_length_lies_small(tmp_path):
     with pytest.raises(OversizeDownload):
         await client.stream_to_file("/f.pdf", dest, max_bytes=100)
 
+    assert not dest.exists()
+
+
+@pytest.mark.parametrize(
+    "content_type", ["application/x-board", "Application/X-Board; charset=utf-8"]
+)
+async def test_expected_type_allows_the_type_with_parameters(tmp_path, content_type):
+    """Case and parameters of the media type do not matter."""
+    dest = tmp_path / "out.bin"
+    client = _client(b"board", {"content-type": content_type})
+    await client.stream_to_file("f", dest, expected_type="application/x-board")
+    assert dest.read_bytes() == b"board"
+
+
+@pytest.mark.parametrize("headers", [{"content-type": "application/pdf"}, {}])
+async def test_unexpected_type_is_refused_before_the_body_is_read(tmp_path, headers):
+    """No byte of another kind of file is downloaded, however large it is."""
+    chunks_read = 0
+
+    async def body():
+        nonlocal chunks_read
+        for _ in range(100):
+            chunks_read += 1
+            yield b"x" * 1024
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=body(), headers=headers)
+
+    transport = httpx2.MockTransport(handler)
+    client = _client_over(
+        httpx2.AsyncClient(transport=transport, base_url="https://nc")
+    )
+    dest = tmp_path / "out.bin"
+    with pytest.raises(UnexpectedContentType):
+        await client.stream_to_file(
+            "f", dest, max_bytes=10, expected_type="application/x-board"
+        )
+    assert chunks_read == 0
     assert not dest.exists()
 
 

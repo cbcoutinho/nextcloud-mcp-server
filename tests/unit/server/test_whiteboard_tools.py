@@ -13,7 +13,7 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from nextcloud_client.models.whiteboard import WHITEBOARD_MIME_TYPE
-from nextcloud_client.webdav import OversizeDownload
+from nextcloud_client.webdav import OversizeDownload, UnexpectedContentType
 
 from nextcloud_mcp_server.server.whiteboard import (
     MAX_BOARD_BYTES,
@@ -67,9 +67,12 @@ CTX = SimpleNamespace(request_context=SimpleNamespace())
 
 
 def _deliver(client, body: bytes, content_type: str = WHITEBOARD_MIME_TYPE) -> None:
-    async def stream_to_file(path, dest, *, max_bytes=None):
+    async def stream_to_file(path, dest, *, max_bytes=None, expected_type=None):
         await anyio.lowlevel.checkpoint()
         assert max_bytes == MAX_BOARD_BYTES
+        assert expected_type == WHITEBOARD_MIME_TYPE
+        if content_type.split(";")[0] != expected_type:
+            raise UnexpectedContentType(path)
         dest.write_bytes(body)
         return len(body), content_type, "etag1"
 
@@ -142,7 +145,7 @@ async def test_get_page_is_bounded_in_characters(client, tools):
 async def test_get_refuses_a_file_that_is_not_a_whiteboard(client, tools, content_type):
     """whiteboard.read must not read other files, even ones shaped like a board."""
     _deliver(client, _board(1), content_type)
-    with pytest.raises(ToolError, match="is not a whiteboard"):
+    with pytest.raises(ToolError, match="No whiteboard to read"):
         await tools.get(path="a.whiteboard", ctx=CTX)
 
 
@@ -160,19 +163,54 @@ async def test_get_refuses_an_excluded_path_before_reading(client, excluded, too
     client.webdav.stream_to_file.assert_not_called()
 
 
+async def test_get_says_the_same_for_every_file_it_will_not_read(client, tools):
+    """whiteboard.read must not tell which files exist, or how big they are."""
+    messages = set()
+    for error in (
+        _http_error(404),
+        _http_error(403),
+        OversizeDownload("over 40 MB"),
+        UnexpectedContentType("application/pdf"),
+    ):
+        client.webdav.stream_to_file.side_effect = error
+        with pytest.raises(ToolError) as raised:
+            await tools.get(path="a.whiteboard", ctx=CTX)
+        messages.add(str(raised.value))
+    assert len(messages) == 1
+    assert "No whiteboard to read at 'a.whiteboard'" in messages.pop()
+
+
+async def test_get_reports_a_server_error(client, tools):
+    """A failure that says nothing about the file keeps its status."""
+    client.webdav.stream_to_file.side_effect = _http_error(500)
+    with pytest.raises(ToolError, match="HTTP 500"):
+        await tools.get(path="a.whiteboard", ctx=CTX)
+
+
+@pytest.mark.parametrize("path", ["../a.whiteboard", "Work/../../a", "Work\\..\\a"])
+async def test_get_refuses_traversal(client, tools, path):
+    """Refused with a clear message, before any request."""
+    with pytest.raises(ToolError, match="segments"):
+        await tools.get(path=path, ctx=CTX)
+    client.webdav.stream_to_file.assert_not_called()
+
+
 @pytest.mark.parametrize(
-    ("error", "message"),
+    "path",
     [
-        (_http_error(404), "Whiteboard not found"),
-        (_http_error(403), "HTTP 403"),
-        (OversizeDownload("too big"), "larger than 40 MB"),
+        "/Private//a.whiteboard",
+        "Private/./a.whiteboard",
+        "./Private/a.whiteboard",
+        ".\\Private\\a.whiteboard",
     ],
 )
-async def test_get_translates_download_errors(client, tools, error, message):
-    """Download failures become messages the model can act on."""
-    client.webdav.stream_to_file.side_effect = error
-    with pytest.raises(ToolError, match=message):
-        await tools.get(path="a.whiteboard", ctx=CTX)
+async def test_get_refuses_an_excluded_path_however_it_is_spelled(
+    client, excluded, tools, path
+):
+    """A non-canonical spelling does not get past the exclusion."""
+    with pytest.raises(ToolError, match="excluded tag"):
+        await tools.get(path=path, ctx=CTX)
+    client.webdav.stream_to_file.assert_not_called()
 
 
 # ── nc_whiteboard_list ──────────────────────────────────────────────────
@@ -202,6 +240,18 @@ async def test_list_hides_excluded_boards(client, excluded, tools):
     result = await tools.list(ctx=CTX)
     assert [board.path for board in result.results] == ["b.whiteboard"]
     assert result.total_found == 1
+
+
+@pytest.mark.parametrize(
+    "path", ["/Private//", "./Private", "Private/./sub", ".\\Private\\sub"]
+)
+async def test_list_refuses_an_excluded_folder_however_it_is_spelled(
+    client, excluded, tools, path
+):
+    """A non-canonical spelling does not get past the exclusion."""
+    with pytest.raises(ToolError, match="excluded tag"):
+        await tools.list(ctx=CTX, path=path)
+    client.webdav.find_all_by_type.assert_not_called()
 
 
 async def test_list_refuses_an_excluded_folder(client, excluded, tools):

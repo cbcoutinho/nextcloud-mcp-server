@@ -26,12 +26,13 @@ from nextcloud_client.models.whiteboard import (
     parse_board,
     summarize_board,
 )
-from nextcloud_client.webdav import OversizeDownload
+from nextcloud_client.webdav import OversizeDownload, UnexpectedContentType
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.context import get_client
+from nextcloud_mcp_server.document_source import spool_target
 from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models.webdav import FileInfo, SearchFilesResponse
 from nextcloud_mcp_server.models.whiteboard import WhiteboardResponse
@@ -40,7 +41,6 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
     is_path_excluded,
 )
-from nextcloud_mcp_server.utils.text_edit import normalize_content_type
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, as in server/webdav.py
     from nextcloud_client import NextcloudClient
@@ -78,7 +78,7 @@ def _page(
 
 
 def _refuse_traversal(path: str) -> None:
-    """Refuse ``..`` in a folder path, as ``WebDAVClient`` does in a file path."""
+    """Refuse ``..`` with a message the model can act on."""
     if ".." in path.replace("\\", "/").split("/"):
         raise ToolError(f"Path may not contain '..' segments: {path!r}")
 
@@ -88,43 +88,42 @@ def _refuse_excluded(path: str, excluded: set[str]) -> None:
         raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
 
 
-def _http_error(e: HTTPStatusError, *, missing: str, action: str) -> ToolError:
-    """The message the model should act on for a failed request."""
-    status = e.response.status_code
-    return ToolError(missing if status == 404 else f"Failed to {action}: HTTP {status}")
-
-
 async def _read_board(
     client: "NextcloudClient", path: str
 ) -> tuple[list[WhiteboardElement], str | None]:
-    """Download a board and summarize it. Returns its elements and etag."""
-    # Lazily, like nc_webdav_read_file: the spool helpers live in the ingest
-    # layer, which server startup must not load.
-    from nextcloud_mcp_server.vector.spool import spooled_document  # noqa: PLC0415
+    """Download a board and summarize it. Returns its elements and etag.
 
+    A token may hold ``whiteboard.read`` without ``files.read``, so this must say
+    nothing about other files. The content type is checked before the body is
+    read, and a missing file, another kind of file and one that is too large all
+    get the same message.
+    """
     try:
-        async with spooled_document(
-            client,
-            path,
-            spool_dir=get_settings().document_spool_dir,
-            max_bytes=MAX_BOARD_BYTES,
-        ) as source:
-            # Before anything is parsed: this is what keeps whiteboard.read
-            # from reading any other file.
-            if normalize_content_type(source.content_type) != WHITEBOARD_MIME_TYPE:
-                raise ToolError(f"{path!r} is not a whiteboard")
-            elements = await run_sync(_read_elements, source.spool_path)
-            return elements, source.etag
-    except OversizeDownload as e:
-        raise ToolError(
-            f"{path!r} is larger than {MAX_BOARD_BYTES // (1024 * 1024)} MB."
-        ) from e
+        with spool_target(get_settings().document_spool_dir) as target:
+            _, _, etag = await client.webdav.stream_to_file(
+                path,
+                target,
+                max_bytes=MAX_BOARD_BYTES,
+                expected_type=WHITEBOARD_MIME_TYPE,
+            )
+            return await run_sync(_read_elements, target), etag
+    except (OversizeDownload, UnexpectedContentType) as e:
+        raise _no_board(path) from e
     except InvalidBoardError as e:
         raise ToolError(f"{path!r} is not a readable whiteboard: {e}") from e
     except HTTPStatusError as e:
-        raise _http_error(
-            e, missing=f"Whiteboard not found: {path!r}", action=f"read {path!r}"
+        if e.response.status_code in (403, 404):
+            raise _no_board(path) from e
+        raise ToolError(
+            f"Failed to read {path!r}: HTTP {e.response.status_code}"
         ) from e
+
+
+def _no_board(path: str) -> ToolError:
+    return ToolError(
+        f"No whiteboard to read at {path!r}: it is missing, not accessible, not a "
+        f"whiteboard, or over {MAX_BOARD_BYTES // (1024 * 1024)} MB."
+    )
 
 
 def configure_whiteboard_tools(mcp: MCPServer) -> None:
@@ -158,8 +157,10 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
                 WHITEBOARD_MIME_TYPE, scope=path
             )
         except HTTPStatusError as e:
-            raise _http_error(
-                e, missing=f"Folder not found: {path!r}", action="list whiteboards"
+            if e.response.status_code == 404:
+                raise ToolError(f"Folder not found: {path!r}") from e
+            raise ToolError(
+                f"Failed to list whiteboards: HTTP {e.response.status_code}"
             ) from e
         boards = [
             FileInfo(**item)
@@ -194,7 +195,8 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
         returns a board as base64.
 
         This is the last saved state. While someone has the board open, their
-        most recent changes may not be saved yet.
+        most recent changes may not be saved yet. A board over 40 MB cannot be
+        read.
 
         Every call reads the file again. When reading several pages, compare
         ``etag``: if it changed, the board was saved in between and elements may
@@ -207,6 +209,7 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
             limit: Maximum number of elements to return. A page with a lot of
                 text holds fewer
         """
+        _refuse_traversal(path)
         client = await get_client(ctx)
         excluded = await get_excluded_file_paths(client.webdav)
         _refuse_excluded(path, excluded)

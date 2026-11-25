@@ -112,12 +112,19 @@ async def test_mcp_whiteboard_get_empty_board(
     assert data["total_count"] == 0
 
 
-@pytest.mark.parametrize("name", ["not-a-board.json", "missing.whiteboard", ""])
-async def test_mcp_whiteboard_get_refuses_anything_else(
-    nc_mcp_client: ClientSession, board_dir: str, name: str
+async def test_mcp_whiteboard_get_refuses_anything_else_alike(
+    nc_mcp_client: ClientSession, board_dir: str
 ):
-    """A JSON file shaped like a board, a missing file, and the folder itself."""
-    result = await nc_mcp_client.call_tool(
-        "nc_whiteboard_get", {"path": f"{board_dir}/{name}"}
-    )
-    assert result.is_error is True
+    """A JSON file shaped like a board, a missing file, and the folder itself.
+
+    The message must not tell them apart: whiteboard.read does not grant
+    knowing which other files exist.
+    """
+    messages = set()
+    for name in ("not-a-board.json", "missing.whiteboard", ""):
+        path = f"{board_dir}/{name}"
+        result = await nc_mcp_client.call_tool("nc_whiteboard_get", {"path": path})
+        assert result.is_error is True
+        messages.add(result.content[0].text.replace(path, "PATH"))
+    assert len(messages) == 1, messages
+    assert "No whiteboard to read" in messages.pop()

@@ -8,7 +8,8 @@
 | `nc_whiteboard_get` | Read what is on a whiteboard, as a compact view |
 
 Both need the `whiteboard.read` scope. They do not need `files.read`: a file is
-read only if Nextcloud reports it as a whiteboard. `EXCLUDED_TAGS` applies to
+read only if Nextcloud reports it as a whiteboard, which is checked before its
+content is downloaded. `EXCLUDED_TAGS` applies to
 both, as it does to the file tools.
 
 ### What `nc_whiteboard_get` returns
