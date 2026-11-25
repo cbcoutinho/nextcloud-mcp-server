@@ -172,7 +172,8 @@ jobs:
             # Also start GreenMail (SMTP/IMAP) so the Mail integration tests have
             # a real backend; the Mail account is provisioned in a step below.
             # And a Qdrant server, for tests of what only a server evaluates
-            # (test_exact_match_qdrant_server.py: the phrase text index).
+            # (test_exact_match_qdrant_server.py: the phrase text index;
+            # test_bm25_languages_qdrant_server.py: BM25_LANGUAGES stemming).
             extra-compose-profiles: "--profile mail --profile qdrant"
             # This is the long pole of the whole workflow (~15min of pytest),
             # and the only lane that can be fanned out: the other modes go

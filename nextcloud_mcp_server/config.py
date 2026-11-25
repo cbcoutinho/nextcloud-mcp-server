@@ -35,6 +35,67 @@ GATEWAY_MODEL_NAMESPACES = frozenset(
     {"local", "openrouter", "mistral", "bedrock", "vllm"}
 )
 
+# Languages BM25_LANGUAGES accepts, mapped to the Unicode script their words are
+# written in (the first word of ``unicodedata.name`` for a letter). This is
+# FastEmbed's ``Bm25`` supported-language list, kept here so config validation
+# does not import fastembed (tests/unit/test_core_import_boundary.py); a unit
+# test keeps the two in sync. The script decides which stemmer a word gets
+# when several languages are configured (providers/bm25.py).
+BM25_LANGUAGE_SCRIPTS: dict[str, str] = {
+    "arabic": "ARABIC",
+    "danish": "LATIN",
+    "dutch": "LATIN",
+    "english": "LATIN",
+    "finnish": "LATIN",
+    "french": "LATIN",
+    "german": "LATIN",
+    "greek": "GREEK",
+    "hungarian": "LATIN",
+    "italian": "LATIN",
+    "norwegian": "LATIN",
+    "portuguese": "LATIN",
+    "romanian": "LATIN",
+    "russian": "CYRILLIC",
+    "spanish": "LATIN",
+    "swedish": "LATIN",
+    "tamil": "TAMIL",
+    "turkish": "LATIN",
+}
+
+
+def parse_bm25_languages(raw: str | None) -> tuple[str, ...]:
+    """Parse BM25_LANGUAGES into a sorted, de-duplicated tuple of languages.
+
+    Raises ``ValueError`` for an empty value, an unsupported language, or two
+    languages written in the same script. Each word is stemmed by the language
+    of its script, so a second language in one script could never apply.
+    """
+    languages = tuple(sorted({lang.lower() for lang in split_csv(raw)}))
+    if not languages:
+        raise ValueError("BM25_LANGUAGES must name at least one language")
+    unknown = [lang for lang in languages if lang not in BM25_LANGUAGE_SCRIPTS]
+    if unknown:
+        raise ValueError(
+            f"BM25_LANGUAGES: unsupported language(s) {', '.join(unknown)}; "
+            f"supported: {', '.join(BM25_LANGUAGE_SCRIPTS)}"
+        )
+    by_script: dict[str, list[str]] = {}
+    for lang in languages:
+        by_script.setdefault(BM25_LANGUAGE_SCRIPTS[lang], []).append(lang)
+    clashes = [
+        f"{', '.join(langs)} ({script.lower()})"
+        for script, langs in by_script.items()
+        if len(langs) > 1
+    ]
+    if clashes:
+        raise ValueError(
+            "BM25_LANGUAGES: configure at most one language per script, because "
+            "a word's script decides which stemmer it gets. Conflicting: "
+            + "; ".join(clashes)
+        )
+    return languages
+
+
 # Built-in defaults — declared in Python so env vars work without any settings
 # file being present (e.g., `uvx` / `pip install` deployments). Mirrors the
 # [default] section that used to live in settings.toml. Keys set here are
@@ -198,6 +259,8 @@ _DEFAULTS: dict[str, Any] = {
     "qdrant_location": None,
     "qdrant_api_key": None,
     "qdrant_collection": "nextcloud_content",
+    # BM25 stemming/stopword languages, comma-separated (parse_bm25_languages).
+    "bm25_languages": "english",
     # Ollama
     "ollama_base_url": None,
     "ollama_embedding_model": "nomic-embed-text",
@@ -1421,6 +1484,18 @@ class Settings:
     qdrant_api_key: str | None = None
     qdrant_collection: str = "nextcloud_content"
 
+    # Languages the BM25 sparse vectors are stemmed and stopword-filtered for,
+    # comma-separated (e.g. ``russian,english``). One language per script; with
+    # several, each word is stemmed by the language of its script. Changing it
+    # changes every sparse vector, so a non-default value is folded into the
+    # auto-generated collection name (get_collection_name).
+    bm25_languages: str = "english"
+
+    @property
+    def bm25_language_list(self) -> tuple[str, ...]:
+        """BM25_LANGUAGES parsed and validated (sorted, de-duplicated)."""
+        return parse_bm25_languages(self.bm25_languages)
+
     # Ollama settings
     ollama_base_url: str | None = None
     ollama_embedding_model: str = "nomic-embed-text"
@@ -1787,6 +1862,9 @@ class Settings:
             logger.info("Using custom CA bundle: %s", self.nextcloud_ca_bundle)
 
         _warn_low_parse_mem_limit(self.document_parse_mem_limit_mb)
+
+        # Fail at startup, not on the first BM25 encode deep inside ingest.
+        _ = self.bm25_language_list
 
         # Page-packing is a sub-mode of page-aware chunking (the packing logic
         # only runs inside the page-aware branch). Enabling it without page-aware
@@ -2238,6 +2316,13 @@ class Settings:
         # Identity, not bare model name: a Matryoshka width change must land in
         # a different collection (the vectors are a different length).
         model_name = self.get_embedding_identity().replace("/", "-").replace(":", "-")
+
+        # BM25 languages change every sparse vector, so a change must land in a
+        # fresh collection (re-indexed from scratch) rather than mix old and new
+        # stems. The default adds nothing, keeping existing names stable.
+        languages = self.bm25_language_list
+        if languages != ("english",):
+            model_name += "-bm25-" + "-".join(languages)
 
         return f"{deployment_id}-{model_name}"
 
