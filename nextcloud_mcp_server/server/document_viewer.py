@@ -499,7 +499,7 @@ def _detected_terms(
 )
 @require_scopes("files.read")
 async def detect_personal_data(ctx: Context, file_id: int) -> CallToolResult:
-    """Propose every personal identifier in the PDF for redaction; nothing is written.
+    """Propose every personal identifier in the PDF for redaction. Nothing is written.
 
     Names and addresses come from the embedding gateway's NER, emails, phone
     numbers, NI numbers and UK postcodes from patterns: the SAR export's
