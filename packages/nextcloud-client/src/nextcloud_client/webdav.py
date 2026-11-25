@@ -2045,7 +2045,7 @@ class WebDAVClient(BaseNextcloudClient):
         Batched form of :meth:`file_accessible_by_id`: one SEARCH over the
         user's whole files tree (incl. mounted shares) per ``FILE_ID_BATCH``
         ids, OR-ing an ``oc:fileid`` match per id. Each row carries ``file_id``,
-        the user-relative ``path`` and ``content_type``; an id absent from the
+        the user-relative ``path``, ``content_type`` and ``size``; an id absent from the
         result is not in the user's tree. Raises on transport/server errors,
         like ``file_accessible_by_id``.
         """
@@ -2065,7 +2065,7 @@ class WebDAVClient(BaseNextcloudClient):
                 where_conditions=matches
                 if len(batch) == 1
                 else f"<d:or>{matches}</d:or>",
-                properties=["fileid", "getcontenttype"],
+                properties=["fileid", "getcontenttype", "getcontentlength"],
                 limit=limit,
             )
             if len(page) >= limit:

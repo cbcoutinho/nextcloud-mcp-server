@@ -216,9 +216,14 @@ def _is_pdf(row: dict[str, Any]) -> bool:
 
 
 async def _download_pdf(client: Any, row: dict[str, Any]) -> tuple[bytes, str | None]:
-    """The file's bytes and etag, refusing a non-PDF or an oversized file."""
+    """The file's bytes and etag, refusing a non-PDF or an oversized file.
+
+    The listed size is checked before downloading, the real one after.
+    """
     if not _is_pdf(row):
-        raise ValueError(f"{row['path']} is not a PDF; redaction needs a PDF")
+        raise ValueError(f"{row['path']} is not a PDF; the viewer needs a PDF")
+    if (row.get("size") or 0) > MAX_BYTES:
+        raise ValueError(f"File is {row['size']} bytes; the cap is {MAX_BYTES}")
     data, _, etag = await client.webdav.read_file(row["path"])
     if len(data) > MAX_BYTES:
         raise ValueError(f"File is {len(data)} bytes; the cap is {MAX_BYTES}")
@@ -342,9 +347,8 @@ async def _indexed_chunks(file_id: int) -> tuple[dict[str, Any], list[dict[str, 
 async def read_document_bytes(ctx: Context, file_id: int) -> CallToolResult:
     """Return a file's raw bytes (base64) for the viewer to render."""
     client, row = await _resolve(ctx, file_id)
-    data, mime_type, _ = await client.webdav.read_file(row["path"])
-    if len(data) > MAX_BYTES:
-        raise ValueError(f"File is {len(data)} bytes; viewer cap is {MAX_BYTES}")
+    data, _ = await _download_pdf(client, row)
+    mime_type = "application/pdf"
     return _result(
         f"{row['path']}: {len(data)} bytes ({mime_type})",
         {
@@ -556,9 +560,9 @@ async def save_redaction(
     data, current = await _download_pdf(client, row)
     if current is None or normalize_etag(etag) != current:
         return _error("conflict: file changed since it was opened")
-    out = await anyio.to_thread.run_sync(_redact, data, regions)
     src = row["path"]
     try:
+        out = await anyio.to_thread.run_sync(_redact, data, regions)
         candidates, explicit = _copy_candidates(src, choice.name, name)
         path = await _write_copy(client, candidates, out, explicit)
     except ValueError as e:

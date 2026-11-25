@@ -326,6 +326,40 @@ async def test_accepting_the_suggested_name_steps_like_the_default(stub, mocker)
     assert res.structured_content["path"] == "/Docs/report-redacted-v2.pdf"
 
 
+async def test_an_oversized_file_is_refused_before_downloading(stub, mocker):
+    stub.webdav.find_files_by_ids.return_value = [
+        {
+            "path": "/Docs/report.pdf",
+            "content_type": "application/pdf",
+            "size": dv.MAX_BYTES + 1,
+        }
+    ]
+    with pytest.raises(ValueError, match="cap"):
+        await dv.read_document_bytes(ctx=mocker.MagicMock(), file_id=7)
+    stub.webdav.read_file.assert_not_called()
+
+
+async def test_read_document_bytes_refuses_a_non_pdf(stub, mocker):
+    stub.webdav.find_files_by_ids.return_value = [
+        {"path": "/Docs/notes.txt", "content_type": "text/plain"}
+    ]
+    with pytest.raises(ValueError, match="not a PDF"):
+        await dv.read_document_bytes(ctx=mocker.MagicMock(), file_id=7)
+
+
+async def test_save_reports_a_region_off_the_document_as_an_error(stub, mocker):
+    stub.webdav.write_file = mocker.AsyncMock()
+    res = await dv.save_redaction(
+        ctx=mocker.MagicMock(),
+        file_id=7,
+        regions=[dv.Region(page=5, bbox=(0.1, 0.1, 0.5, 0.2))],
+        etag='"e1"',
+        confirmation=_accepted(),
+    )
+    assert res.is_error and "out of range" in res.content[0].text
+    stub.webdav.write_file.assert_not_called()
+
+
 async def test_save_does_nothing_when_the_user_declines(stub, mocker):
     stub.webdav.write_file = mocker.AsyncMock()
     res = await _save(mocker, confirmation=DeclinedElicitation())
