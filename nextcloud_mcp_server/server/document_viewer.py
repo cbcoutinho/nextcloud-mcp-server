@@ -51,6 +51,10 @@ MAX_REGIONS = MAX_TERMS * MAX_TERM_REGIONS
 # shortcut: linear -vN probe, and each taken name re-uploads the whole copy.
 # Probe with get_file_info first if copies pile up.
 MAX_COPY_SUFFIX = 100
+# pymupdf's PDF_REDACT_* values (set at runtime, so invisible to type checkers).
+REDACT_IMAGE_PIXELS = 2
+REDACT_LINE_ART_IF_TOUCHED = 2
+REDACT_TEXT_REMOVE = 0
 
 apps = Apps()
 
@@ -405,7 +409,14 @@ def _redact(pdf: bytes, regions: list[Region]) -> bytes:
             shown = pymupdf.Rect(x0 * w, y0 * h, x1 * w, y1 * h)
             page.add_redact_annot(shown * page.derotation_matrix, fill=(0, 0, 0))
         for page in doc:
-            page.apply_redactions()
+            # Scans are one page-sized image, so blank only the pixels under a
+            # box (removing the image would drop the whole page). Line art the
+            # box touches goes too.
+            page.apply_redactions(
+                images=REDACT_IMAGE_PIXELS,
+                graphics=REDACT_LINE_ART_IF_TOUCHED,
+                text=REDACT_TEXT_REMOVE,
+            )
         # Metadata, XMP and attachments can repeat what was redacted; drop them.
         doc.set_metadata({})
         doc.del_xml_metadata()
@@ -480,6 +491,7 @@ async def _confirm_save(
     """
     caps = ctx.client_capabilities
     if caps is None or caps.elicitation is None:
+        logger.info("Saving a redacted copy of file %s without a prompt", file_id)
         return SaveConfirmation(confirm=True, name=name or "")
     _, row = await _resolve(ctx, file_id)
     suggested = name or _default_name(row["path"])

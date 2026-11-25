@@ -94,6 +94,31 @@ def test_a_box_drawn_on_a_rotated_page_redacts_what_the_user_saw():
     assert "Keep this line" in _text(out)
 
 
+def test_redaction_blanks_the_pixels_of_a_scanned_page_under_the_box():
+    """A scan is one page-sized image: the box must blank its pixels, not keep them."""
+    red = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 100, 100), False)
+    red.set_rect(red.irect, (255, 0, 0))
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=100, height=100)
+        page.insert_image(page.rect, pixmap=red)
+        scan = doc.tobytes()
+    out = dv._redact(scan, [dv.Region(page=1, bbox=(0.4, 0.4, 0.6, 0.6))])
+    with pymupdf.open(stream=out, filetype="pdf") as doc:
+        (xref, *_), *_ = doc[0].get_images()
+        img = pymupdf.Pixmap(doc, xref)
+        sx, sy = img.width / 100, img.height / 100
+        assert img.pixel(int(50 * sx), int(50 * sy)) != (255, 0, 0)  # under the box
+        assert img.pixel(int(5 * sx), int(5 * sy)) == (255, 0, 0)  # rest of the page
+
+
+def test_redaction_modes_match_pymupdf():
+    assert dv.REDACT_IMAGE_PIXELS == pymupdf.PDF_REDACT_IMAGE_PIXELS
+    assert (
+        dv.REDACT_LINE_ART_IF_TOUCHED == pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED
+    )
+    assert dv.REDACT_TEXT_REMOVE == pymupdf.PDF_REDACT_TEXT_REMOVE
+
+
 def test_redact_rejects_a_page_out_of_range():
     with pytest.raises(ValueError, match="out of range"):
         dv._redact(PDF, [dv.Region(page=2, bbox=(0, 0, 1, 1))])
