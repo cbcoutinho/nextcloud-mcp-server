@@ -52,7 +52,8 @@ DEFAULT_OIDC_SCOPES = (
     " deck.read deck.write cookbook.read cookbook.write sharing.read sharing.write"
     " news.read news.write mail.read mail.write mail.send mail.draft"
     " talk.read talk.write collectives.read collectives.write"
-    " shopping_list.read shopping_list.write semantic.read sar.read sar.write"
+    " shopping_list.read shopping_list.write whiteboard.read"
+    " semantic.read sar.read sar.write"
 )
 
 logger = logging.getLogger(__name__)
