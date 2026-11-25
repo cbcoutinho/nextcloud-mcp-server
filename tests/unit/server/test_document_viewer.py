@@ -745,3 +745,20 @@ def test_a_vendored_file_that_misses_its_pin_is_not_inlined(tmp_path, monkeypatc
     assert dv._inline_vendored_scripts(tag.replace("pdf.min", "absent")) == tag.replace(
         "pdf.min", "absent"
     )
+
+
+def test_vendored_pdfjs_reaches_the_docker_image():
+    """.dockerignore is a whitelist; a vendored file it drops leaves the cdnjs tag
+    in place, which claude.ai's CSP blocks (the viewer never renders there)."""
+    from fnmatch import fnmatch
+
+    root = Path(__file__).resolve().parents[3]
+    keep = [
+        line[1:]
+        for line in (root / ".dockerignore").read_text().splitlines()
+        if line.startswith("!")
+    ]
+    vendored = [p.relative_to(root).as_posix() for p in dv._VENDOR_DIR.glob("*.mjs")]
+    assert vendored
+    # shortcut: fnmatch approximates Docker's pattern matching; fine for these globs.
+    assert [p for p in vendored if not any(fnmatch(p, k) for k in keep)] == []

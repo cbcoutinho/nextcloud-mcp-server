@@ -6,6 +6,7 @@
 
 !nextcloud_mcp_server/**/*.py
 !nextcloud_mcp_server/**/*.html
+!nextcloud_mcp_server/server/vendor/pdfjs/*.mjs
 !nextcloud_mcp_server/auth/static/*
 
 !packages/nextcloud-client/pyproject.toml
