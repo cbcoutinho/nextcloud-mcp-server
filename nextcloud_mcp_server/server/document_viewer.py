@@ -913,6 +913,8 @@ def _viewer_html() -> str:
 
 # add_resource rather than add_html_resource: only this way can _meta carry the
 # scopes next to the "ui" entry (add_html_resource builds _meta itself).
+# Keep this last in the module: it reads _VIEWER_SCOPES, which each
+# @viewer_tool above adds to (test_the_viewer_resource_publishes_... guards it).
 apps.add_resource(
     TextResource(
         uri=VIEWER_URI,
