@@ -160,7 +160,7 @@ jobs:
           # A non-zero result means the release is live and these lanes should go
           # green on a re-run.
           - nextcloud_version: "34"
-            nextcloud_image: "docker.io/library/nextcloud:34.0.6@sha256:3031e7f87baaceb863a755921ebf463bc26ea71855c07ad7858e2ae25a5a0ad7"
+            nextcloud_image: "docker.io/library/nextcloud:34.0.6@sha256:82f16a4729bf5246782960824d9a5a1d48d9aa0ad36beae2f42d3ad7c6843646"
 
           # Mode-specific properties
           - mode: single-user
