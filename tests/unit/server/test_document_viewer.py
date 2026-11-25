@@ -528,10 +528,12 @@ def test_sync_script_reads_pins_exactly_like_the_server():
         assert sync.sri_digest(alg, b"pdf.js") == dv.sri_digest(alg, b"pdf.js")
 
 
+@pytest.mark.parametrize(
+    "data", [b"var s = '</SCRIPT><script>alert(1)';", b"var s = '<!-- <script>';"]
+)
 def test_a_vendored_file_that_would_end_the_script_is_not_inlined(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, data
 ):
-    data = b"var s = '</SCRIPT><script>alert(1)';"
     (tmp_path / "x.min.js").write_bytes(data)
     monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
     tag = (

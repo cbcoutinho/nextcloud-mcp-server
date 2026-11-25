@@ -635,6 +635,11 @@ def sri_digest(alg: str, data: bytes) -> str:
     return f"{alg}-" + base64.b64encode(hashlib.new(alg, data).digest()).decode()
 
 
+# "</script" ends an inline script early; "<!--" can make the parser skip the
+# real end tag. sync_pdfjs.py refuses files containing either too.
+_UNINLINABLE = (b"</script", b"<!--")
+
+
 def _inline_vendored_scripts(html: str) -> str:
     """Swap each pinned cdnjs <script src> for the vendored copy, inline.
 
@@ -655,9 +660,9 @@ def _inline_vendored_scripts(html: str) -> str:
         if sri_digest(m["alg"], data) != m["sri"]:
             logger.error("%s does not match its pinned %s; not inlined", path, m["sri"])
             return m[0]
-        if b"</script" in data.lower():
-            # It would end the inline <script> early; sync_pdfjs.py refuses such files too.
-            logger.error("%s contains '</script'; not inlined", path)
+        if any(s in data.lower() for s in _UNINLINABLE):
+            # They change how the HTML parser ends an inline <script>.
+            logger.error("%s contains '</script' or '<!--'; not inlined", path)
             return m[0]
         module = ' type="module"' if 'type="module"' in m[0] else ""
         return f"<script{module}>/* {m['name']} (vendored, {m['sri']}) */\n{data.decode()}\n</script>"

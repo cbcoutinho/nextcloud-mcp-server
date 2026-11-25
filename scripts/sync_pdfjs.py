@@ -72,9 +72,10 @@ def main() -> int:
             html = html.replace(m["sri"], digest)
             print(f"{m['name']}: repinned {m['sri']} -> {digest}")
         # The server inlines these into a <script> body, which "</script" would end.
-        if b"</script" in data.lower():
+        if b"</script" in data.lower() or b"<!--" in data:
             print(
-                f"{m['url']}: contains '</script', cannot be inlined", file=sys.stderr
+                f"{m['url']}: contains '</script' or '<!--', cannot be inlined",
+                file=sys.stderr,
             )
             return 1
         fetched.append((m["name"], data))
