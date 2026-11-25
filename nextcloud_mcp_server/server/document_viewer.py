@@ -11,6 +11,7 @@ rasterising.
 import base64
 import logging
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
@@ -168,27 +169,129 @@ async def open_document(
     """
     client, row = await _resolve(ctx, file_id)
     items = [RedactTerm(text=t) if isinstance(t, str) else t for t in redact_text or []]
+    staging: _Staging | None = None
+    if items:
+        data, etag = await _download_pdf(client, row)
+        staging = await anyio.to_thread.run_sync(_stage, data, items)
+    else:
+        info = await client.webdav.get_file_info(row["path"])
+        if not info:
+            logger.warning("No file info for %s; opening without an etag", row["path"])
+        etag = normalize_etag((info or {}).get("etag"))
+    first, chunks = await _indexed_chunks(file_id)
+    path = row["path"]
+    title = first.get("title") or PurePosixPath(path).name
+    structured = {
+        "file_id": file_id,
+        "path": path,
+        "title": title,
+        "mime_type": row.get("content_type") or "",
+        "page_count": first.get("page_count"),
+        "focus_chunk": chunk_index,
+        "chunks": chunks,
+        "etag": etag,
+        "staged_regions": staging.regions if staging else [],
+        "review": review.model_dump(exclude_none=True) if review else None,
+    }
+    lines = [
+        f"{title}",
+        f"Path: {path}",
+        f"Pages: {structured['page_count'] or 'unknown'}",
+        f"{len(chunks)} indexed chunks" + ("" if chunks else " (file not indexed yet)"),
+    ]
+    if len(chunks) >= MAX_CHUNKS:
+        lines.append(f"Only the first {MAX_CHUNKS} chunks are listed.")
+    if staging:
+        lines += _staging_lines(staging)
+    lines += [
+        f"[c{c['index']} p{c['page']}] {' '.join(str(c['text']).split())[:120]}"
+        for c in chunks
+    ]
+    return _result("\n".join(lines), structured)
+
+
+def _is_pdf(row: dict[str, Any]) -> bool:
+    mime = (row.get("content_type") or "").lower()
+    return "pdf" in mime or str(row.get("path", "")).lower().endswith(".pdf")
+
+
+async def _download_pdf(client: Any, row: dict[str, Any]) -> tuple[bytes, str | None]:
+    """The file's bytes and etag, refusing a non-PDF or an oversized file."""
+    if not _is_pdf(row):
+        raise ValueError(f"{row['path']} is not a PDF; redaction needs a PDF")
+    data, _, etag = await client.webdav.read_file(row["path"])
+    if len(data) > MAX_BYTES:
+        raise ValueError(f"File is {len(data)} bytes; the cap is {MAX_BYTES}")
+    return data, etag
+
+
+@dataclass
+class _Staging:
+    texts: list[str]
+    terms: list[str]
+    regions: list[dict[str, Any]]
+    hits: Counter[str]
+    too_broad: set[str]
+
+
+def _stage(pdf: bytes, items: list[RedactTerm]) -> _Staging:
+    """Find each term's regions, dropping fragments that match too much."""
     groups: dict[str, str] = {}
     for it in items:
         if it.group:
             groups.setdefault(it.text, it.group)
     texts = [it.text for it in items]
-    staged: list[dict[str, Any]] = []
-    if texts:
-        data, _, etag = await client.webdav.read_file(row["path"])
-        if len(data) > MAX_BYTES:
-            raise ValueError(f"File is {len(data)} bytes; viewer cap is {MAX_BYTES}")
-        terms = [t for t in texts if len(t.strip()) >= MIN_TERM_CHARS]
-        staged = await anyio.to_thread.run_sync(_find_text, data, terms)
-        hits = Counter(r["term"] for r in staged)
-        too_broad = {t for t, n in hits.items() if n > MAX_TERM_REGIONS}
-        staged = [r for r in staged if r["term"] not in too_broad]
-        for r in staged:
-            if r["term"] in groups:
-                r["group"] = groups[r["term"]]
-    else:
-        info = await client.webdav.get_file_info(row["path"]) or {}
-        etag = normalize_etag(info.get("etag"))
+    terms = [t for t in texts if len(t.strip()) >= MIN_TERM_CHARS]
+    found = _find_text(pdf, terms)
+    hits = Counter(r["term"] for r in found)
+    too_broad = {t for t, n in hits.items() if n > MAX_TERM_REGIONS}
+    regions = [
+        {**r, "group": groups[r["term"]]} if r["term"] in groups else r
+        for r in found
+        if r["term"] not in too_broad
+    ]
+    return _Staging(texts, terms, regions, hits, too_broad)
+
+
+def _staging_lines(st: _Staging) -> list[str]:
+    """What was staged, plus each kind of term that was not, for the model."""
+    missing = [t for t in st.terms if t not in st.hits]
+    staged_terms = len(st.terms) - len(missing) - len(st.too_broad)
+    lines = [
+        f"Staged {len(st.regions)} region(s) for redaction in the viewer "
+        f"({staged_terms} of {len(st.texts)} term(s) staged); the user must "
+        "review and save them there.",
+        "Regions per term (case-insensitive substring match): "
+        + "; ".join(f"{t!r}: {st.hits[t]}" for t in st.terms if t in st.hits),
+    ]
+    broad = [t for t in st.terms if WARN_TERM_REGIONS < st.hits[t] <= MAX_TERM_REGIONS]
+    notes = [
+        (
+            f"Broad terms (over {WARN_TERM_REGIONS} regions; likely matching more "
+            "than intended, consider a longer phrase): ",
+            broad,
+        ),
+        (
+            f"Skipped (shorter than {MIN_TERM_CHARS} characters): ",
+            [t for t in st.texts if len(t.strip()) < MIN_TERM_CHARS],
+        ),
+        (
+            f"Not staged, too broad (over {MAX_TERM_REGIONS} regions each; use a "
+            "longer, more specific phrase): ",
+            sorted(st.too_broad),
+        ),
+        (
+            "Not found in the document text (pass the exact text as it "
+            "appears in the chunks below, not a description): ",
+            missing,
+        ),
+    ]
+    lines += [label + "; ".join(repr(t) for t in ts) for label, ts in notes if ts]
+    return lines
+
+
+async def _indexed_chunks(file_id: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The first chunk's payload and every chunk's geometry, by chunk index."""
     points, _ = await (await get_qdrant_client()).scroll(
         collection_name=get_settings().get_collection_name(),
         scroll_filter=Filter(
@@ -216,10 +319,6 @@ async def open_document(
     for p in points:
         payload = p.payload or {}
         by_index.setdefault(payload.get("chunk_index", -1), payload)
-
-    first = next(iter(by_index.values()), {})
-    path = row["path"]
-    title = first.get("title") or PurePosixPath(path).name
     chunks = [
         {
             "index": i,
@@ -230,65 +329,7 @@ async def open_document(
         }
         for i, pl in sorted(by_index.items())
     ]
-    structured = {
-        "file_id": file_id,
-        "path": path,
-        "title": title,
-        "mime_type": row.get("content_type") or "",
-        "page_count": first.get("page_count"),
-        "focus_chunk": chunk_index,
-        "chunks": chunks,
-        "etag": etag,
-        "staged_regions": staged,
-        "review": review.model_dump(exclude_none=True) if review else None,
-    }
-    lines = [
-        f"{title}",
-        f"Path: {path}",
-        f"Pages: {structured['page_count'] or 'unknown'}",
-        f"{len(chunks)} indexed chunks" + ("" if chunks else " (file not indexed yet)"),
-    ]
-    if texts:
-        short = [t for t in texts if len(t.strip()) < MIN_TERM_CHARS]
-        missing = [t for t in terms if t not in hits]
-        lines.append(
-            f"Staged {len(staged)} region(s) for redaction in the viewer "
-            f"({len(terms) - len(missing) - len(too_broad)} of {len(texts)} "
-            "term(s) staged); the user must review and save them there."
-        )
-        lines.append(
-            "Regions per term (case-insensitive substring match): "
-            + "; ".join(f"{t!r}: {hits[t]}" for t in terms if t in hits)
-        )
-        broad = [t for t in terms if WARN_TERM_REGIONS < hits[t] <= MAX_TERM_REGIONS]
-        if broad:
-            lines.append(
-                f"Broad terms (over {WARN_TERM_REGIONS} regions; likely matching more "
-                "than intended, consider a longer phrase): "
-                + "; ".join(repr(t) for t in broad)
-            )
-        if short:
-            lines.append(
-                f"Skipped (shorter than {MIN_TERM_CHARS} characters): "
-                + "; ".join(repr(t) for t in short)
-            )
-        if too_broad:
-            lines.append(
-                f"Not staged, too broad (over {MAX_TERM_REGIONS} regions each; use a "
-                "longer, more specific phrase): "
-                + "; ".join(repr(t) for t in sorted(too_broad))
-            )
-        if missing:
-            lines.append(
-                "Not found in the document text (pass the exact text as it "
-                "appears in the chunks below, not a description): "
-                + "; ".join(repr(t) for t in missing)
-            )
-    lines += [
-        f"[c{c['index']} p{c['page']}] {' '.join(str(c['text']).split())[:120]}"
-        for c in chunks
-    ]
-    return _result("\n".join(lines), structured)
+    return next(iter(by_index.values()), {}), chunks
 
 
 @apps.tool(
@@ -362,9 +403,7 @@ async def _redacted(
     if not regions:
         raise ValueError("No regions to redact")
     client, row = await _resolve(ctx, file_id)
-    data, _, etag = await client.webdav.read_file(row["path"])
-    if len(data) > MAX_BYTES:
-        raise ValueError(f"File is {len(data)} bytes; redaction cap is {MAX_BYTES}")
+    data, etag = await _download_pdf(client, row)
     return client, row, await anyio.to_thread.run_sync(_redact, data, regions), etag
 
 
@@ -437,6 +476,45 @@ async def _confirm_save(
     )
 
 
+def _copy_candidates(src: str, chosen: str, name: str | None) -> tuple[list[str], bool]:
+    """Paths to try in order, and whether the name was explicit (no stepping).
+
+    The elicitation form's unedited suggestion (no ``name`` was passed) is the
+    default, so it still gets -vN; a name the caller passed is explicit.
+    """
+    explicit = chosen or None
+    if name is None and explicit == _default_name(src):
+        explicit = None
+    if explicit:
+        return [_target_path(src, explicit)], True
+    parent = PurePosixPath(src).parent
+    return [
+        str(parent / _default_name(src, n)) for n in range(1, MAX_COPY_SUFFIX + 1)
+    ], False
+
+
+async def _write_copy(
+    client: Any, candidates: list[str], out: bytes, explicit: bool
+) -> str:
+    """Create the first free candidate; never overwrites. Returns its path."""
+    for path in candidates:
+        # if_match=None sends If-None-Match: * -- create-only, never overwrites.
+        written = await client.webdav.write_file(
+            path, out, content_type="application/pdf"
+        )
+        status = written.get("status_code") or 0
+        if status == 412 and explicit:
+            raise ValueError(f"{path} already exists; choose another name")
+        if status == 412:
+            continue
+        if not 200 <= status < 300:
+            raise ValueError(
+                written.get("message") or f"Save failed with HTTP {status}"
+            )
+        return path
+    raise ValueError(f"No free name for a redacted copy (tried up to {candidates[-1]})")
+
+
 def _error(text: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True)
 
@@ -466,48 +544,25 @@ async def save_redaction(
     The source must still be at ``etag`` (the version the user reviewed). With no
     ``name`` the copy is ``<stem>-redacted.pdf`` beside the original, stepping to
     ``-redacted-v2.pdf``… if taken. An explicit ``name`` (bare file name, or a
-    path) must not exist yet.
+    path) must not exist yet. Accepting the form's suggested name unchanged
+    counts as the default, so it steps too.
     """
     if not isinstance(confirmation, AcceptedElicitation):
         return _error(f"Redaction not saved: {confirmation.action}.")
     choice = confirmation.data
     if not choice.confirm:
         return _error("Redaction not saved: not confirmed.")
-    client, row, out, current = await _redacted(ctx, file_id, regions)
+    client, row = await _resolve(ctx, file_id)
+    data, current = await _download_pdf(client, row)
     if current is None or normalize_etag(etag) != current:
         return _error("conflict: file changed since it was opened")
-
+    out = await anyio.to_thread.run_sync(_redact, data, regions)
     src = row["path"]
-    # The elicitation form's unedited suggestion (no ``name`` was passed) is the
-    # default, so it still gets -vN; a name the caller passed is explicit.
-    explicit = choice.name or None
-    if name is None and explicit == _default_name(src):
-        explicit = None
     try:
-        candidates = (
-            [_target_path(src, explicit)]
-            if explicit
-            else [
-                str(PurePosixPath(src).parent / _default_name(src, n))
-                for n in range(1, MAX_COPY_SUFFIX + 1)
-            ]
-        )
+        candidates, explicit = _copy_candidates(src, choice.name, name)
+        path = await _write_copy(client, candidates, out, explicit)
     except ValueError as e:
         return _error(str(e))
-    for path in candidates:
-        # if_match=None sends If-None-Match: * -- create-only, never overwrites.
-        written = await client.webdav.write_file(
-            path, out, content_type="application/pdf"
-        )
-        if written.get("status_code") != 412:
-            break
-        if explicit:
-            return _error(f"{path} already exists; choose another name")
-    else:
-        return _error(f"No free name for a redacted copy of {src}")
-    status = written.get("status_code") or 0
-    if not 200 <= status < 300:
-        return _error(written.get("message") or f"Save failed with HTTP {status}")
 
     new_id = await client.webdav.get_fileid(path)
     return _result(

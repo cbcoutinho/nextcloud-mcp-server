@@ -238,6 +238,23 @@ async def test_open_document_without_terms_does_not_download_the_file(stub, mock
     )
 
 
+async def test_open_document_refuses_to_stage_redactions_in_a_non_pdf(stub, mocker):
+    stub.webdav.find_files_by_ids.return_value = [
+        {"path": "/Docs/notes.docx", "content_type": "application/msword"}
+    ]
+    with pytest.raises(ValueError, match="not a PDF"):
+        await dv.open_document(
+            ctx=mocker.MagicMock(), file_id=7, redact_text=["Jane Doe"]
+        )
+    stub.webdav.read_file.assert_not_called()
+
+
+async def test_open_document_says_when_the_chunk_list_is_truncated(stub, mocker):
+    mocker.patch.object(dv, "MAX_CHUNKS", 1)
+    res = await dv.open_document(ctx=mocker.MagicMock(), file_id=7)
+    assert "Only the first 1 chunks are listed." in res.content[0].text
+
+
 # --- save_redaction ------------------------------------------------------------
 
 
@@ -297,6 +314,16 @@ async def test_save_reports_a_failed_write_instead_of_succeeding(stub, mocker):
     res = await _save(mocker, confirmation=_accepted())
     assert res.is_error and "locked" in res.content[0].text
     stub.webdav.get_fileid.assert_not_called()
+
+
+async def test_accepting_the_suggested_name_steps_like_the_default(stub, mocker):
+    stub.webdav.write_file = mocker.AsyncMock(
+        side_effect=[{"status_code": 412}, {"status_code": 201}]
+    )
+    stub.webdav.get_fileid = mocker.AsyncMock(return_value="99")
+    res = await _save(mocker, confirmation=_accepted("report-redacted.pdf"))
+    assert not res.is_error
+    assert res.structured_content["path"] == "/Docs/report-redacted-v2.pdf"
 
 
 async def test_save_does_nothing_when_the_user_declines(stub, mocker):
