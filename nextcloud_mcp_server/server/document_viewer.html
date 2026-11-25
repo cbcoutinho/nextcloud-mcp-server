@@ -286,15 +286,19 @@ const b64ToBytes = (b64) => {
 // itself: a sandboxed view can't count on fetching them. A block the server didn't fill (the
 // file opened on its own) falls back to its data-src. Anything else (CMaps, standard fonts)
 // is refused, as the default factory would without URLs; pdf.js then degrades.
+const wasmBlocks = [...document.querySelectorAll('script[type="application/wasm"][data-src]')];
 class EmbeddedBinaryDataFactory {
   async fetch({ kind, filename }) {
-    const el = kind === "wasmUrl" && [...document.querySelectorAll('script[type="application/wasm"]')]
-      .find((s) => s.dataset.src.endsWith("/" + filename));
+    const el = kind === "wasmUrl" && wasmBlocks.find((s) => s.dataset.src.endsWith("/" + filename));
     if (!el) throw new Error("no embedded " + kind + " for " + filename);
     const b64 = el.textContent.trim();
     if (b64) return b64ToBytes(b64);
-    // The pin holds on this path too: fetch rejects bytes that don't match `integrity`.
-    return new Uint8Array(await (await fetch(el.dataset.src, { integrity: el.integrity })).arrayBuffer());
+    // Not embedded by the server: on a sandboxed host this fetch usually fails, and scanned
+    // pages render blank. The pin holds here too: fetch rejects bytes that miss `integrity`.
+    console.warn("document viewer: " + filename + " is not embedded; fetching " + el.dataset.src);
+    const res = await fetch(el.dataset.src, { integrity: el.integrity });
+    if (!res.ok) throw new Error(filename + ": HTTP " + res.status);
+    return new Uint8Array(await res.arrayBuffer());
   }
 }
 
