@@ -19,7 +19,7 @@ services:
   # Note: Redis is an external service. You can find more information about the configuration here:
   # https://hub.docker.com/_/redis
   redis:
-    image: docker.io/library/redis:8.12.0-alpine@sha256:ff55e25203f915f2fe9cc1428e6da969fec257dd6e6feb71a34fd0cf3a86b289
+    image: docker.io/library/redis:8.12.0-alpine@sha256:5af80107c1eeecb484a2269b80a26d12bfa6521787da4663bd9f19f60a163483
     restart: always
 
   app:
