@@ -5,7 +5,9 @@ name: pdf.js repin
 # stale `integrity` attributes and stale vendored copies (the server inlines
 # vendor/pdfjs/, see its README). Hosted Renovate can't run postUpgradeTasks,
 # so this job does that step on Renovate's own branch: re-download the pinned
-# files, rewrite the hashes and commit the result back to the PR.
+# files, rewrite the hashes and commit the result back to the PR. It also moves
+# the pdf.js wasm image-decoder pins (pdfjs-dist on jsDelivr, which Renovate's
+# html manager doesn't track) to the bumped version.
 #
 # The new hashes are trust-on-first-use: they record what cdnjs served at
 # repin time, and nothing upstream vouches for them. The check is a person

@@ -42,6 +42,14 @@
 -->
 <script type="module" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.5.438/pdf.min.mjs" integrity="sha384-6MTG6VynDVMfHzijur0VKc9BdrA6HaXHZd+pK6iGWh2acDj3CibR0CRwHizMoy1N" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script type="module" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.5.438/pdf.worker.min.mjs" integrity="sha384-/+r9qqXFj/8aZJ0d2yiuf6sqAR9T1UyN6NdZoI8cMvzccicdUNx62wDS8JsPedce" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<!--
+  pdf.js 4+ decodes JPEG 2000 and JBIG2/CCITT images (what scanners write) with wasm it asks the
+  embedder for; without it a scanned page renders blank. These data blocks are the pin (not
+  fetched as written); the server embeds each vendored file in its tag as base64, after checking
+  the hash. scripts/sync_pdfjs.py --repin keeps their pdfjs-dist version equal to the tags above.
+-->
+<script type="application/wasm" data-src="https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/wasm/openjpeg.wasm" integrity="sha384-zUaz4HmvfKEHP9lus9TOMat1FFL0UcpbPw5V11mhoW2ma/L1IDw03o1QQqv7AkF2"></script>
+<script type="application/wasm" data-src="https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/wasm/jbig2.wasm" integrity="sha384-iaCfit7ahDwR6i0sUBtQtjqoUs/cixFPu1hRkl4j14vBZ9WWoGkJhy0wQ9N9P5ED"></script>
 <style>
   :root {
     color-scheme: light dark;
@@ -268,6 +276,32 @@ const pdfjsReady = document.readyState === "loading"
   ? new Promise((resolve) => document.addEventListener("DOMContentLoaded", resolve, { once: true }))
   : Promise.resolve();
 
+const b64ToBytes = (b64) => {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+};
+// Hands pdf.js its wasm decoders (see the application/wasm blocks in <head>) from the page
+// itself: a sandboxed view can't count on fetching them. A block the server didn't fill (the
+// file opened on its own) falls back to its data-src. Anything else (CMaps, standard fonts)
+// is refused, as the default factory would without URLs; pdf.js then degrades.
+const wasmBlocks = [...document.querySelectorAll('script[type="application/wasm"][data-src]')];
+class EmbeddedBinaryDataFactory {
+  async fetch({ kind, filename }) {
+    const el = kind === "wasmUrl" && wasmBlocks.find((s) => s.dataset.src.endsWith("/" + filename));
+    if (!el) throw new Error("no embedded " + kind + " for " + filename);
+    const b64 = el.textContent.trim();
+    if (b64) return b64ToBytes(b64);
+    // Not embedded by the server: on a sandboxed host this fetch usually fails, and scanned
+    // pages render blank. The pin holds here too: fetch rejects bytes that miss `integrity`.
+    console.warn("document viewer: " + filename + " is not embedded; fetching " + el.dataset.src);
+    const res = await fetch(el.dataset.src, { integrity: el.integrity });
+    if (!res.ok) throw new Error(filename + ": HTTP " + res.status);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+}
+
 // ---- JSON-RPC over postMessage (View side) -------------------------------
 let nextId = 1;
 const pending = new Map();
@@ -464,10 +498,8 @@ async function renderPages(dataB64) {
     return;
   }
   setStatus("Loading…");
-  const bin = atob(dataB64 || (await callTool("read_document_bytes", { file_id: doc.file_id })).structuredContent.data_b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+  const bytes = b64ToBytes(dataB64 || (await callTool("read_document_bytes", { file_id: doc.file_id })).structuredContent.data_b64);
+  const pdf = await pdfjsLib.getDocument({ data: bytes, BinaryDataFactory: EmbeddedBinaryDataFactory }).promise;
 
   // Lazy: lay out every page at its real aspect ratio, render a canvas only when it scrolls near.
   const io = new IntersectionObserver((entries) => {
