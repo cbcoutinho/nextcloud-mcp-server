@@ -2281,7 +2281,7 @@ wheels = [
 
 [[package]]
 name = "nextcloud-client"
-version = "0.219.1"
+version = "0.220.0"
 source = { editable = "packages/nextcloud-client" }
 dependencies = [
     { name = "anyio" },
@@ -2310,7 +2310,7 @@ requires-dist = [
 
 [[package]]
 name = "nextcloud-mcp-server"
-version = "0.219.1"
+version = "0.220.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
