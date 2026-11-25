@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import logging
 import re
 from pathlib import Path
 
@@ -319,6 +320,118 @@ async def test_open_document_says_when_the_chunk_list_is_truncated(stub, mocker)
     assert "Only the first 1 chunks are listed." in res.content[0].text
 
 
+# --- detect_personal_data ----------------------------------------------------------
+
+
+def test_detected_terms_group_each_person_and_each_identifier_type():
+    texts = ["Name: Jane Doe\nPhone: 07700 900123", "Seen by Doe and Jane\nDoe again"]
+    terms = dv._detected_terms(texts, {"Jane Doe"}, set())
+    # The bare "Doe" joins Jane's group, and "Jane\nDoe" (a name broken over a
+    # PDF line) is the same search phrase as "Jane Doe", so it is not repeated.
+    assert [(t.text, t.group) for t in terms] == [
+        ("07700 900123", "Phone numbers"),
+        ("Jane Doe", "Jane Doe"),
+        ("Doe", "Jane Doe"),
+    ]
+
+
+@pytest.fixture
+def detector(stub, mocker):
+    mocker.patch.object(dv, "redaction_available", return_value=True)
+    mocker.patch.object(dv, "get_ner_client", mocker.AsyncMock())
+    detect = mocker.patch.object(
+        dv,
+        "detect_entities",
+        mocker.AsyncMock(return_value=({"Jane Doe"}, {"1 Example Street"})),
+    )
+    return detect
+
+
+async def test_detect_personal_data_stages_grouped_regions_and_says_only_counts(
+    detector, mocker
+):
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    s = res.structured_content
+    assert not res.is_error and s["etag"] == "e1"
+    # "Jane Doe" and "jane doe" are one term, case-insensitively found twice.
+    assert s["groups"] == {"Jane Doe": 2, "Addresses": 1}
+    assert {r["page"] for r in s["staged_regions"]} == {1}
+    # The NER read the page text, and the result text never echoes what it found.
+    assert "Jane Doe" in detector.await_args.args[1][0]
+    assert "Jane" not in res.content[0].text and "Example" not in res.content[0].text
+
+
+async def test_detect_personal_data_needs_the_gateway(stub, mocker):
+    mocker.patch.object(dv, "redaction_available", return_value=False)
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    assert res.is_error and "EMBEDDING_GATEWAY_URL" in res.content[0].text
+
+
+async def test_detect_personal_data_reports_a_ner_failure_as_a_tool_error(
+    detector, mocker, caplog
+):
+    caplog.set_level(logging.WARNING, logger=dv.logger.name)
+    detector.side_effect = dv.NerError("gateway 503")
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    assert res.is_error and "Try again" in res.content[0].text
+    assert "NER failed for file 7" in caplog.text
+
+
+async def test_detect_personal_data_refuses_a_non_pdf(detector, stub, mocker):
+    stub.webdav.find_files_by_ids.return_value = [
+        {"path": "/Docs/notes.txt", "content_type": "text/plain"}
+    ]
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    assert res.is_error and "not a PDF" in res.content[0].text
+    detector.assert_not_awaited()
+
+
+async def test_detect_personal_data_reports_a_corrupt_pdf_as_a_tool_error(
+    detector, stub, mocker, caplog
+):
+    caplog.set_level(logging.WARNING, logger=dv.logger.name)
+    mocker.patch.object(dv, "_page_texts", side_effect=RuntimeError("bad xref"))
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    assert res.is_error and "Detection failed" in res.content[0].text
+    assert "Detection failed for file 7" in caplog.text
+
+
+def _r(group: str | None) -> dict:
+    return {"page": 1, "bbox": (0, 0, 1, 1), "term": "t", "group": group}
+
+
+def test_whole_groups_never_splits_a_group_and_lets_a_smaller_one_fit():
+    regions = [_r("A"), _r("B"), _r("A"), _r("B"), _r("B"), _r("C")]
+    kept, dropped = dv._whole_groups(regions, 3)
+    # A (2) fits, B (3) would make 5 and is dropped whole, C (1) still fits.
+    assert [r["group"] for r in kept] == ["A", "A", "C"] and dropped == 1
+
+
+def test_whole_groups_keeps_everything_under_the_limit():
+    regions = [_r("A"), _r(None), _r("A")]
+    assert dv._whole_groups(regions, 3) == (regions, 0)
+
+
+def test_detected_terms_give_a_surname_two_people_share_its_own_group():
+    """A bare surname that could be either person is not filed under one of them."""
+    texts = ["Jane Doe met John Doe. Doe left."]
+    items = dv._detected_terms(texts, {"Jane Doe", "John Doe"}, set())
+    assert [(it.text, it.group) for it in items] == [
+        ("Jane Doe", "Jane Doe"),
+        ("John Doe", "John Doe"),
+        ("Doe", "Doe"),
+    ]
+
+
+@pytest.mark.parametrize("available", [True, False])
+async def test_open_document_says_whether_detection_is_available(
+    stub, mocker, available
+):
+    mocker.patch.object(dv, "redaction_available", return_value=available)
+    res = await dv.open_document(ctx=mocker.MagicMock(), file_id=7)
+    assert res.structured_content["detect_available"] is available
+
+
 # --- preview_changes / apply_changes -------------------------------------------
 
 
@@ -362,6 +475,7 @@ def test_change_counts_read_as_plain_english():
 def test_the_viewer_tools_are_app_only():
     tools = {b.fn.__name__: b for b in dv.apps.tools()}
     for name in (
+        "detect_personal_data",
         "preview_changes",
         "apply_changes",
     ):

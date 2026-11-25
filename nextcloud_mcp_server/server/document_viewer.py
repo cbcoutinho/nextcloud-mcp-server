@@ -34,6 +34,18 @@ from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.document_processors._native_locks import (
     pymupdf_serialized,
 )
+from nextcloud_mcp_server.features import redaction_available
+from nextcloud_mcp_server.providers.ner import NerError
+from nextcloud_mcp_server.redaction import (
+    ADDRESS,
+    EMAIL,
+    NI,
+    PERSON,
+    PHONE,
+    Redactor,
+    detect_entities,
+    get_ner_client,
+)
 from nextcloud_mcp_server.vector.placeholder import (
     exclude_image_points,
     get_placeholder_filter,
@@ -223,6 +235,8 @@ async def open_document(
         "etag": etag,
         "staged_regions": staging.regions if staging else [],
         "review": review.model_dump(exclude_none=True) if review else None,
+        # The viewer offers "Find personal data" only when the server can detect.
+        "detect_available": redaction_available(get_settings()),
     }
     lines = [
         f"{title}",
@@ -270,8 +284,15 @@ class _Staging:
     too_broad: set[str]
 
 
-def _stage(pdf: bytes, items: list[RedactTerm]) -> _Staging:
-    """Find each term's regions, dropping fragments that match too much."""
+def _stage(
+    pdf: bytes, items: list[RedactTerm], max_term_regions: int | None = None
+) -> _Staging:
+    """Find each term's regions, dropping fragments that match too much.
+
+    ``max_term_regions`` (default MAX_TERM_REGIONS) guards against a model's
+    over-broad term ("the"); detected identifiers are whole names and numbers,
+    so detection raises it.
+    """
     groups: dict[str, str] = {}
     for it in items:
         if it.group:
@@ -280,7 +301,9 @@ def _stage(pdf: bytes, items: list[RedactTerm]) -> _Staging:
     terms = [t for t in texts if len(t.strip()) >= MIN_TERM_CHARS]
     found = _find_text(pdf, terms)
     hits = Counter(r["term"] for r in found)
-    too_broad = {t for t, n in hits.items() if n > MAX_TERM_REGIONS}
+    if max_term_regions is None:
+        max_term_regions = MAX_TERM_REGIONS
+    too_broad = {t for t, n in hits.items() if n > max_term_regions}
     regions = [
         {**r, "group": groups[r["term"]]} if r["term"] in groups else r
         for r in found
@@ -422,6 +445,132 @@ def _find_text(pdf: bytes, needles: list[str]) -> list[dict[str, Any]]:
                         }
                     )
     return found
+
+
+# Review group for each pattern-detected type; a person gets their own group.
+_DETECT_GROUPS = {
+    ADDRESS: "Addresses",
+    EMAIL: "Email addresses",
+    NI: "NI numbers",
+    PHONE: "Phone numbers",
+}
+
+
+def _page_texts(pdf: bytes) -> list[str]:
+    with pymupdf_serialized(), _open_pdf(pdf) as doc:
+        return [page.get_text() for page in doc]
+
+
+def _detected_terms(
+    texts: list[str], names: set[str], addresses: set[str]
+) -> list[RedactTerm]:
+    """What the SAR redactor would replace in ``texts``, as review terms.
+
+    Each person is one group, named by the longest form seen for them, holding
+    every form found ("Jane Doe", "Doe", "J. Doe" when detected); other
+    identifiers are grouped by type. Matching reuses the SAR export's rules
+    (ADR-040): propagation, token expansion, role words never names.
+    """
+    found: list[tuple[str, str, str]] = []
+    redactor = Redactor(names, addresses=addresses)
+    for text in texts:
+        redactor.redact(text, found=found)
+    shown: dict[str, str] = {}
+    for label, key, surface in found:
+        if label == PERSON:
+            # A PDF line break inside a name is a space to search_for.
+            surface = " ".join(surface.split())
+            if len(surface) > len(shown.get(key, "")):
+                shown[key] = surface
+    terms: dict[str, RedactTerm] = {}
+    for label, key, surface in found:
+        text = " ".join(surface.split())[:MAX_TERM_CHARS]
+        group = shown[key] if label == PERSON else _DETECT_GROUPS[label]
+        # First group wins, as in open_document: a surface is staged once.
+        terms.setdefault(text.casefold(), RedactTerm(text=text, group=group[:60]))
+    return list(terms.values())
+
+
+@apps.tool(
+    resource_uri=VIEWER_URI,
+    visibility=["app"],
+    title="Detect Personal Data",
+    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+)
+@require_scopes("files.read")
+async def detect_personal_data(ctx: Context, file_id: int) -> CallToolResult:
+    """Propose every personal identifier in the PDF for redaction; nothing is written.
+
+    Names and addresses come from the embedding gateway's NER, emails, phone
+    numbers, NI numbers and UK postcodes from patterns: the SAR export's
+    detector (ADR-040). Returns ``staged_regions`` like open_document's, grouped
+    per person and per identifier type, for the user to review in the viewer.
+    The tool result text carries counts only, never the detected text.
+    Needs EMBEDDING_GATEWAY_URL. A page with no text layer yields nothing.
+    """
+    settings = get_settings()
+    if not redaction_available(settings):
+        return _error(
+            "Personal-data detection needs the embedding gateway "
+            "(EMBEDDING_GATEWAY_URL is not set)."
+        )
+    try:
+        client, row = await _resolve(ctx, file_id)
+        data, etag = await _download_pdf(client, row)
+        texts = await anyio.to_thread.run_sync(_page_texts, data)
+        names, addresses = await detect_entities(await get_ner_client(settings), texts)
+        items = _detected_terms(texts, names, addresses)
+        staging = await anyio.to_thread.run_sync(_stage, data, items, MAX_REGIONS)
+    except ValueError as e:
+        return _error(str(e))
+    except NerError:
+        logger.warning("NER failed for file %s", file_id, exc_info=True)
+        return _error("Detection failed: the NER service did not answer. Try again.")
+    except Exception:  # e.g. a corrupt PDF; pymupdf raises several types
+        logger.warning("Detection failed for file %s", file_id, exc_info=True)
+        return _error("Detection failed; try again.")
+    regions, dropped = _whole_groups(staging.regions, MAX_REGIONS)
+    groups = Counter(r.get("group") for r in regions)
+    text = (
+        f"Detected {len(groups)} group(s), {len(regions)} region(s) staged for "
+        "review in the viewer; nothing was changed."
+    )
+    if dropped:
+        text += (
+            f" {dropped} more group(s) did not fit the {MAX_REGIONS}-region "
+            "limit and were left out whole."
+        )
+    return _result(
+        text,
+        {
+            "file_id": file_id,
+            "etag": etag,
+            "staged_regions": regions,
+            "groups": dict(groups),
+            "dropped_groups": dropped,
+        },
+    )
+
+
+def _whole_groups(
+    regions: list[dict[str, Any]], limit: int
+) -> tuple[list[dict[str, Any]], int]:
+    """At most ``limit`` regions, keeping or dropping each group whole.
+
+    Cutting the list by position could stage half of a person's mentions, which
+    a reviewer would read as all of them. Groups are taken in order of first
+    appearance; one that does not fit is skipped and a smaller later one may
+    still fit. Returns the kept regions and the number of groups dropped.
+    """
+    sizes = Counter(r.get("group") for r in regions)
+    kept_groups: set[str | None] = set()
+    total = 0
+    for group, n in sizes.items():
+        if total + n <= limit:
+            kept_groups.add(group)
+            total += n
+    kept = [r for r in regions if r.get("group") in kept_groups]
+    return kept, len(sizes) - len(kept_groups)
 
 
 def _redact(pdf: bytes, regions: list[Region]) -> bytes:

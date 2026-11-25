@@ -24,11 +24,14 @@
 
   Changes: anything that alters the document is a staged change {kind, page, bbox, ...}. Only
   kind "redact" exists today; a new kind is a TOOLS entry plus a server-side union member.
-  Sources: the model's proposals (open_document(redact_text=…) → staged_regions), a box drawn
+  Sources: the model's proposals (open_document(redact_text=…) → staged_regions), the server's
+  detector ("Find personal data" → detect_personal_data, offered when open_document says
+  detect_available), a box drawn
   with a tool, or a selection staged from the selection bar. Staged → Preview → Save copy | Back.
 
   Tools it calls (via the host's tools/call proxy):
     read_document_bytes(file_id)                         app-only, PDF bytes for pdf.js
+    detect_personal_data(file_id)                        app-only, NER + pattern proposals, writes nothing
     preview_changes(file_id, changes[])                  app-only, changed bytes, writes nothing
     apply_changes(file_id, changes[], etag, name?)       app-only, writes a NEW copy
   The original is never changed: copies are for sharing externally (like SAR exports). Without
@@ -171,6 +174,7 @@
   #groups .rb { display: flex; flex-wrap: wrap; gap: 4px; }
   #groups .rb button { font-size: 12px; padding: 3px 8px; }
   #groups .term span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .detect { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin-bottom: 10px; }
   ul.items { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
   ul.items li { display: flex; gap: 6px; align-items: center; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-size: 12px; min-width: 0; }
   ul.items li:hover { border-color: var(--accent); }
@@ -223,6 +227,10 @@
       <button class="ghost x" id="drawerClose" title="Close" aria-label="Close the drawer">✕</button>
     </div>
     <section class="pane" data-pane="changes">
+      <div class="detect" id="detectRow" hidden>
+        <button id="detect" title="Find names, addresses, emails, phone and NI numbers in this file and propose them for redaction">Find personal data</button>
+        <span class="hint" id="detectNote"></span>
+      </div>
       <div id="groups" hidden></div>
       <div id="mine"></div>
       <p class="hint" id="changesEmpty">Nothing staged yet. Pick <b>Redact</b> in the toolbar and drag a box, or select text and choose <b>Redact</b>.</p>
@@ -353,6 +361,8 @@ let zoom = 1;
 let previewing = null;       // the changes shown in the current preview, or null
 let drawerOpen = false, drawerTab = "changes";
 
+// Proposals are reviewed by group with toggles; the user's own changes are listed one by one.
+const isProposal = (c) => c.source === "model" || c.source === "detect";
 const kindName = (k, n) => (KINDS[k] || { one: k, many: k + "s" })[n === 1 ? "one" : "many"];
 const activeChanges = () => staged.filter((c) => c.on !== false);
 function setStatus(text, err = false) { const s = $("status"); s.textContent = text; s.title = text; s.className = err ? "err" : ""; }
@@ -423,6 +433,8 @@ async function onToolResult(result) {
   $("title").textContent = doc.title || doc.path || "Document " + doc.file_id;
   $("title").title = doc.path || "";
   renderList(); renderInfo();
+  $("detectRow").hidden = !doc.detect_available || !/pdf/i.test((doc.mime_type || "") + (doc.path || ""));
+  $("detectNote").textContent = "";
   if (staged.length) {
     toast("The assistant proposed " + staged.length + " " + kindName("redact", staged.length) + " (red boxes).",
       { action: { label: "Review", run: () => openDrawer("changes") } });
@@ -542,7 +554,7 @@ const redrawOverlays = () => document.querySelectorAll(".page").forEach((c) => b
 
 // ---- changes ------------------------------------------------------------------
 function changeLabel(ch) {
-  const what = ch.source === "model" ? "“" + (ch.term || ch.group || "proposal") + "”"
+  const what = isProposal(ch) ? "“" + (ch.term || ch.group || "proposal") + "”"
     : ch.source === "box" ? "Box"
     : "“" + (ch.label || "selection") + "”";
   return (KINDS[ch.kind]?.verb || ch.kind) + " " + what + " · p" + ch.page;
@@ -551,13 +563,35 @@ function changeLabel(ch) {
 function removeChange(i) {
   const ch = staged[i];
   if (!ch) return;
-  if (ch.source === "model") ch.on = false; else staged.splice(i, 1);
+  if (isProposal(ch)) ch.on = false; else staged.splice(i, 1);
   redrawOverlays(); refresh();
 }
 function stage(kind, regions, source, label) {
   for (const { page, bbox } of regions) staged.push({ kind, page, bbox, on: true, source, label });
   redrawOverlays(); refresh();
 }
+
+// ---- detected personal data (detect_personal_data) -------------------------------
+$("detect").onclick = async () => {
+  const b = $("detect");
+  b.disabled = true; b.textContent = "Finding…"; $("detectNote").textContent = "";
+  try {
+    const r = await callTool("detect_personal_data", { file_id: doc.file_id });
+    const sc = r.structuredContent || {};
+    // A re-run replaces the last detection; the model's proposals and the user's own stay.
+    staged = staged.filter((c) => c.source !== "detect").concat((sc.staged_regions || []).map((x) =>
+      ({ kind: "redact", page: x.page, bbox: x.bbox, term: x.term, group: x.group, on: true, source: "detect" })));
+    const n = Object.keys(sc.groups || {}).length;
+    // Detection is best-effort (no scanned pages, dates of birth or IDs): say so, so an
+    // empty or short list is not read as "this document holds nothing else".
+    const more = sc.dropped_groups ? ` ${sc.dropped_groups} more did not fit and were left out.` : "";
+    $("detectNote").textContent = (n ? n + (n === 1 ? " group" : " groups") + " found — review below." : "Nothing found.")
+      + more + " Detection can miss things (scans, dates of birth, IDs): check the pages too.";
+    redrawOverlays(); refresh();
+  } catch (err) {
+    $("detectNote").textContent = err.message;
+  } finally { b.disabled = false; b.textContent = "Find personal data"; }
+};
 
 // ---- free-drawn changes (any tool with a kind) ----------------------------------
 let drawing = false;
@@ -744,7 +778,7 @@ function selectionText() {
 function stagedTerms() {
   const groups = new Map();
   for (const d of staged) {
-    if (d.source !== "model") continue;
+    if (!isProposal(d)) continue;
     const g = d.group || d.term, terms = groups.get(g) || groups.set(g, new Map()).get(g);
     (terms.get(d.term || g) || terms.set(d.term || g, []).get(d.term || g)).push(d);
   }
@@ -753,7 +787,7 @@ function stagedTerms() {
 function stagedSummary() {
   const on = [], off = [];
   for (const [g, terms] of stagedTerms()) for (const [t, ds] of terms) (ds.every((d) => d.on !== false) ? on : off).push((g === t ? "" : g + ": ") + "\"" + t + "\"");
-  const mine = staged.filter((c) => c.source !== "model");
+  const mine = staged.filter((c) => !isProposal(c));
   if (!on.length && !off.length && !mine.length) {
     return "";
   }
@@ -767,7 +801,7 @@ function reviewButton({ label, set, groups: names }) {
   b.textContent = String(label || "").slice(0, 40);
   b.onclick = () => {
     for (const d of staged) {
-      if (d.source !== "model") continue;
+      if (!isProposal(d)) continue;
       const hit = want.has(String(d.group || d.term).toLowerCase());
       if (set === "only") d.on = hit;
       else if (hit) d.on = set === "on";
@@ -783,7 +817,7 @@ function renderChanges() {
   box.replaceChildren();
   if (groups.length) {
     const review = doc.review || {};
-    const h = document.createElement("h4"); h.textContent = String(review.heading || "Proposed by the assistant").slice(0, 60); box.append(h);
+    const h = document.createElement("h4"); h.textContent = String(review.heading || (staged.some((d) => d.source === "model") ? "Proposed by the assistant" : "Detected personal data")).slice(0, 60); box.append(h);
     const buttons = (Array.isArray(review.buttons) ? review.buttons : []).filter((b) => ["on", "off", "only"].includes(b?.set) && b.label).slice(0, 6);
     if (buttons.length) { const row = document.createElement("div"); row.className = "rb"; row.append(...buttons.map(reviewButton)); box.append(row); }
   }
@@ -812,7 +846,7 @@ function renderChanges() {
     if (!(terms.length === 1 && terms[0][0] === g)) for (const [t, ds] of terms) det.append(check(ds, t, "term"));
     box.append(det);
   }
-  const mine = staged.filter((c) => c.source !== "model");
+  const mine = staged.filter((c) => !isProposal(c));
   const wrap = $("mine");
   wrap.replaceChildren();
   if (mine.length) {

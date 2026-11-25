@@ -1188,6 +1188,21 @@ tier. When upgrading from a deployment that used the split tiers:
   / `ingest-ocr-upstream` queues during a rolling upgrade are processed by the new
   `ocr` worker and routed back to the single `ocr` tier — nothing is stranded.
 
+### Document viewer: "Find personal data"
+
+The `open_document` viewer's **Find personal data** button (`detect_personal_data`)
+runs the SAR export's detector (ADR-040) over the PDF's text layer. It appears only
+when `EMBEDDING_GATEWAY_URL` is set.
+
+- **Page text goes to the gateway.** Names and addresses come from the gateway's
+  `/v1/ner`, so every page's text is sent to it. Point `EMBEDDING_GATEWAY_URL` only
+  at a gateway you trust with the documents' personal data. Emails, phone numbers,
+  NI numbers and UK postcodes are matched locally.
+- **Best-effort.** A scanned page with no text layer yields nothing, and dates of
+  birth and staff/student IDs are not detected. The viewer says so next to the
+  result; the user reviews every group before anything is saved.
+- At most 5000 regions are staged, keeping or dropping each person/type group whole.
+
 ### Embedding Service Configuration
 
 The server picks an embedding provider via auto-detection. Priority order
