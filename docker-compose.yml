@@ -33,14 +33,12 @@ services:
     volumes:
       - nextcloud:/var/www/html
       - ./app-hooks:/docker-entrypoint-hooks.d:ro
-      # Mount OIDC development directory outside /var/www/html to avoid rsync conflicts
-      # The post-installation hook will register /opt/apps as an additional app directory
+      # oidc and astrolabe install from the app store. To develop against an
+      # unreleased build, mount it in a local docker-compose.override.yml, e.g.
+      # ./third_party/oidc:/opt/apps/oidc:ro (outside /var/www/html to avoid
+      # rsync conflicts); the post-installation hooks prefer a mounted copy.
       #- ./third_party:/opt/apps:ro
       #- ./third_party/astrolabe:/opt/apps/astrolabe:ro
-      # TEMPORARY: test the unreleased group scope limits (third_party/oidc
-      # pinned to cbcoutinho/oidc feat/group-scope-ceiling). Revert to the
-      # commented form before merging; app-store oidc is the baseline.
-      - ./third_party/oidc:/opt/apps/oidc:ro
     environment:
       - NEXTCLOUD_TRUSTED_DOMAINS=app
       - NEXTCLOUD_ADMIN_USER=admin
