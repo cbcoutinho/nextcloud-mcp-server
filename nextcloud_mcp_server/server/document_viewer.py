@@ -655,6 +655,10 @@ def _inline_vendored_scripts(html: str) -> str:
         if sri_digest(m["alg"], data) != m["sri"]:
             logger.error("%s does not match its pinned %s; not inlined", path, m["sri"])
             return m[0]
+        if b"</script" in data.lower():
+            # It would end the inline <script> early; sync_pdfjs.py refuses such files too.
+            logger.error("%s contains '</script'; not inlined", path)
+            return m[0]
         module = ' type="module"' if 'type="module"' in m[0] else ""
         return f"<script{module}>/* {m['name']} (vendored, {m['sri']}) */\n{data.decode()}\n</script>"
 

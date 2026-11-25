@@ -524,6 +524,21 @@ def test_sync_script_reads_pins_exactly_like_the_server():
     assert sync.SCRIPT_TAG.pattern == dv._SCRIPT_TAG.pattern
     assert sync.VIEWER_FILE == dv._VIEWER_FILE.resolve()
     assert sync.VENDOR_DIR == dv._VENDOR_DIR.resolve()
+    for alg in ("sha256", "sha384", "sha512"):
+        assert sync.sri_digest(alg, b"pdf.js") == dv.sri_digest(alg, b"pdf.js")
+
+
+def test_a_vendored_file_that_would_end_the_script_is_not_inlined(
+    tmp_path, monkeypatch
+):
+    data = b"var s = '</SCRIPT><script>alert(1)';"
+    (tmp_path / "x.min.js").write_bytes(data)
+    monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
+    tag = (
+        '<script src="https://cdnjs.cloudflare.com/ajax/libs/x/1.0.0/x.min.js"'
+        f' integrity="{dv.sri_digest("sha384", data)}" crossorigin="anonymous"></script>'
+    )
+    assert dv._inline_vendored_scripts(tag) == tag
 
 
 def test_a_vendored_file_that_misses_its_pin_is_not_inlined(tmp_path, monkeypatch):
