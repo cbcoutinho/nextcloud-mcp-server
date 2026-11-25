@@ -1,0 +1,78 @@
+name: pdf.js repin
+
+# Renovate's html manager bumps the cdnjs pdf.js <script> tags in the document
+# viewer, but cdnjs publishes no SRI hashes for pdf.js 4+, so the bump leaves
+# stale `integrity` attributes and stale vendored copies (the server inlines
+# vendor/pdfjs/, see its README). Hosted Renovate can't run postUpgradeTasks,
+# so this job does that step on Renovate's own branch: re-download the pinned
+# files, rewrite the hashes and commit the result back to the PR.
+#
+# The commit is authored as github-actions[bot], which renovate.json lists in
+# gitIgnoredAuthors, so Renovate keeps managing (and rebasing) the branch. A
+# rebase drops this commit and this job runs again.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - nextcloud_mcp_server/server/document_viewer.html
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pdfjs-repin-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  repin:
+    # Renovate's branches only, and only from this repository (fork PRs get a
+    # read-only token and must never run with a write credential).
+    if: >-
+      startsWith(github.head_ref, 'renovate/')
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      # A push made with GITHUB_TOKEN does not trigger workflows, so CI would
+      # never run on the repinned commit. PERSONAL_ACCESS_TOKEN (contents:write
+      # on this repo) makes the push fire `synchronize` like any other.
+      - name: Choose push token
+        id: token
+        env:
+          PAT: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          if [ -n "$PAT" ]; then
+            echo "source=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::PERSONAL_ACCESS_TOKEN is not set; pushing with GITHUB_TOKEN, so CI will not re-run on the repin commit (close and reopen the PR to trigger it)."
+            echo "source=github" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+          # The push token is handed to `git push` alone, not left in
+          # .git/config while the script runs.
+          persist-credentials: false
+
+      # Standard library only: no dependency install, nothing from the PR is
+      # imported beyond this script.
+      - name: Repin and refresh vendored pdf.js
+        run: python3 scripts/sync_pdfjs.py --repin
+
+      - name: Commit the result
+        env:
+          PUSH_TOKEN: ${{ steps.token.outputs.source == 'pat' && secrets.PERSONAL_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          git add nextcloud_mcp_server/server/document_viewer.html nextcloud_mcp_server/server/vendor/pdfjs
+          if git diff --cached --quiet; then
+            echo "Pins and vendored files already match cdnjs; nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(deps): repin pdf.js integrity hashes and refresh vendored copies"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${HEAD_REF}"

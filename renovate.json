@@ -46,10 +46,11 @@
       "matchDepNames": ["pdf.js"],
       "groupName": "pdf.js",
       "prBodyNotes": [
-        "The viewer serves pdf.js inline from `nextcloud_mcp_server/server/vendor/pdfjs/`, and cdnjs publishes no SRI hashes for pdf.js 4+, so this PR's `integrity` attributes are stale. Run `uv run python scripts/sync_pdfjs.py --repin` on this branch and commit the result; until then `test_served_viewer_loads_no_external_script` fails."
+        "cdnjs publishes no SRI hashes for pdf.js 4+, so this bump leaves stale `integrity` attributes. The `pdf.js repin` workflow (`.github/workflows/pdfjs-repin.yml`) fixes that on this branch: it runs `scripts/sync_pdfjs.py --repin`, which re-downloads the pinned files, rewrites the hashes and refreshes `nextcloud_mcp_server/server/vendor/pdfjs/`, then commits the result. Review that commit's hashes; nothing else is needed."
       ]
     }
   ],
+  "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
   "html": {
     "enabled": true,
     "managerFilePatterns": ["/^nextcloud_mcp_server/server/document_viewer\\.html$/"]

@@ -12,10 +12,12 @@ with `script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:` and blocks
 cdnjs.
 
 Do not edit these files. Renovate's `html` manager bumps the URLs in
-`document_viewer.html`. Then run
+`document_viewer.html`, and the `pdf.js repin` workflow
+(`.github/workflows/pdfjs-repin.yml`) then runs
 
-    uv run python scripts/sync_pdfjs.py --repin
+    python3 scripts/sync_pdfjs.py --repin
 
-which downloads the pinned files, rewrites the `integrity` hashes (cdnjs
-publishes none for pdf.js 4+, so Renovate cannot) and replaces these copies.
-Without `--repin` it only verifies and re-downloads.
+on Renovate's branch and commits the result. It downloads the pinned files,
+rewrites the `integrity` hashes (cdnjs publishes none for pdf.js 4+, so
+Renovate cannot) and replaces these copies. Run it by hand only for a manual
+bump; without `--repin` it just verifies and re-downloads.

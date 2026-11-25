@@ -9,7 +9,9 @@ unknown field or action is refused at the boundary rather than trusted).
 
 from __future__ import annotations
 
+import importlib.util
 import re
+from pathlib import Path
 
 import pymupdf
 import pytest
@@ -504,6 +506,19 @@ def test_a_module_tag_is_inlined_as_a_module_under_any_sri_algorithm(
     )
     out = dv._inline_vendored_scripts(tag)
     assert out.startswith('<script type="module">') and "globalThis.x = 1;" in out
+
+
+def test_sync_script_reads_pins_exactly_like_the_server():
+    """scripts/sync_pdfjs.py is stdlib-only, so it carries its own copy of the tag regex."""
+    spec = importlib.util.spec_from_file_location(
+        "sync_pdfjs", Path(__file__).parents[3] / "scripts" / "sync_pdfjs.py"
+    )
+    assert spec and spec.loader
+    sync = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sync)
+    assert sync.SCRIPT_TAG.pattern == dv._SCRIPT_TAG.pattern
+    assert sync.VIEWER_FILE == dv._VIEWER_FILE.resolve()
+    assert sync.VENDOR_DIR == dv._VENDOR_DIR.resolve()
 
 
 def test_a_vendored_file_that_misses_its_pin_is_not_inlined(tmp_path, monkeypatch):
