@@ -4,8 +4,8 @@ Tools bound to ``ui://nextcloud-mcp/document-viewer.html``: open a file with its
 indexed chunk geometry (optionally staging proposed redactions), and, app-only,
 read its bytes, preview a typed list of changes (redactions today) in memory,
 and save them as a NEW copy (etag-guarded, create-only; the original is never
-changed). Geometry comes from the Qdrant payload (``chunk_bbox``, ``page_number``), never from server-side
-rasterising.
+changed). Geometry comes from the Qdrant payload (``chunk_bbox``,
+``page_number``), never from server-side rasterising.
 """
 
 import base64
@@ -503,7 +503,10 @@ async def preview_changes(
 
 
 def _default_name(src: str, n: int = 1) -> str:
-    """``<stem>-redacted.pdf``, then ``-redacted-v2.pdf``… (mirrors SAR's -vN)."""
+    """``<stem>-redacted.pdf``, then ``-redacted-v2.pdf``… (mirrors SAR's -vN).
+
+    "redacted" holds while redact is the only change kind; revisit with the next.
+    """
     stem = PurePosixPath(src).stem
     return f"{stem}-redacted.pdf" if n == 1 else f"{stem}-redacted-v{n}.pdf"
 
