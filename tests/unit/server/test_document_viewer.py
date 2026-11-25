@@ -63,6 +63,45 @@ def test_redact_rejects_a_page_out_of_range():
         dv._redact(PDF, [dv.Region(page=2, bbox=(0, 0, 1, 1))])
 
 
+def test_redacted_copy_drops_metadata_and_attachments():
+    with pymupdf.open(stream=PDF, filetype="pdf") as doc:
+        doc.set_metadata({"title": "Jane Doe", "author": "Jane Doe"})
+        doc.embfile_add("notes.txt", b"Jane Doe")
+        src = doc.tobytes()
+    out = dv._redact(src, [dv.Region(page=1, bbox=(0.0, 0.0, 0.01, 0.01))])
+    with pymupdf.open(stream=out, filetype="pdf") as doc:
+        assert not any(doc.metadata.get(k) for k in ("title", "author"))
+        assert doc.embfile_names() == []
+
+
+@pytest.mark.parametrize(
+    "bbox",
+    [
+        (0.5, 0.1, 0.4, 0.2),  # inverted x
+        (0.1, 0.2, 0.5, 0.2),  # zero height
+        (float("nan"), 0.1, 0.5, 0.2),
+        (0.1, 0.1, float("inf"), 0.2),
+        (1.2, 0.1, 1.5, 0.2),  # entirely off the page once clamped
+    ],
+)
+def test_region_refuses_boxes_that_are_not_on_the_page(bbox):
+    with pytest.raises(ValidationError):
+        dv.Region(page=1, bbox=bbox)
+
+
+def test_region_clamps_an_edge_overshoot_and_refuses_page_zero():
+    assert dv.Region(page=1, bbox=(-0.01, 0.1, 1.02, 0.2)).bbox == (0.0, 0.1, 1.0, 0.2)
+    with pytest.raises(ValidationError):
+        dv.Region(page=0, bbox=(0.1, 0.1, 0.2, 0.2))
+
+
+def test_redact_term_refuses_extra_fields_and_overlong_text():
+    with pytest.raises(ValidationError):
+        dv.RedactTerm.model_validate({"text": "Jane Doe", "colour": "red"})
+    with pytest.raises(ValidationError):
+        dv.RedactTerm(text="x" * (dv.MAX_TERM_CHARS + 1))
+
+
 # --- copy naming ---------------------------------------------------------------
 
 
@@ -240,6 +279,24 @@ async def test_save_refuses_when_the_file_changed_since_review(stub, mocker):
     res = await _save(mocker, confirmation=_accepted())
     assert res.is_error and "conflict" in res.content[0].text
     stub.webdav.write_file.assert_not_called()
+
+
+async def test_save_refuses_when_the_file_version_cannot_be_checked(stub, mocker):
+    stub.webdav.read_file.return_value = (PDF, "application/pdf", None)
+    stub.webdav.write_file = mocker.AsyncMock()
+    res = await _save(mocker, confirmation=_accepted())
+    assert res.is_error and "conflict" in res.content[0].text
+    stub.webdav.write_file.assert_not_called()
+
+
+async def test_save_reports_a_failed_write_instead_of_succeeding(stub, mocker):
+    stub.webdav.write_file = mocker.AsyncMock(
+        return_value={"status_code": 423, "message": "file is locked"}
+    )
+    stub.webdav.get_fileid = mocker.AsyncMock()
+    res = await _save(mocker, confirmation=_accepted())
+    assert res.is_error and "locked" in res.content[0].text
+    stub.webdav.get_fileid.assert_not_called()
 
 
 async def test_save_does_nothing_when_the_user_declines(stub, mocker):

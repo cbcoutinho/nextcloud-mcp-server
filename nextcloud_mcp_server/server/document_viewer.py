@@ -23,7 +23,7 @@ from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.types import ToolAnnotations
 from mcp_types import CallToolResult, TextContent
 from nextcloud_client.webdav import normalize_etag
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -41,12 +41,26 @@ VIEWER_URI = "ui://nextcloud-mcp/document-viewer.html"
 _VIEWER_FILE = Path(__file__).with_name("document_viewer.html")
 MAX_BYTES = 25 * 1024 * 1024
 MAX_CHUNKS = 1000  # shortcut: one scroll page; paginate if docs exceed this
+# A term matching more than this is almost certainly a fragment ("D", "mother").
+MAX_TERM_REGIONS = 100
+WARN_TERM_REGIONS = 25
+MIN_TERM_CHARS = 3
+MAX_TERMS = 50
+MAX_TERM_CHARS = 200
+MAX_REGIONS = MAX_TERMS * MAX_TERM_REGIONS
+# shortcut: linear -vN probe, and each taken name re-uploads the whole copy.
+# Probe with get_file_info first if copies pile up.
+MAX_COPY_SUFFIX = 100
 
 apps = Apps()
 
 
 class RedactTerm(BaseModel):
-    text: str = Field(description="Exact text as it appears in the document")
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(
+        max_length=MAX_TERM_CHARS,
+        description="Exact text as it appears in the document",
+    )
     group: str | None = Field(
         default=None,
         max_length=60,
@@ -79,9 +93,27 @@ class Review(BaseModel):
     buttons: list[ReviewButton] = Field(default_factory=list, max_length=6)
 
 
+_Coord = Annotated[float, Field(allow_inf_nan=False)]
+
+
 class Region(BaseModel):
-    page: int  # 1-based
-    bbox: tuple[float, float, float, float]  # normalised 0..1, top-left origin
+    model_config = ConfigDict(extra="forbid")
+    page: int = Field(ge=1)  # 1-based
+    bbox: tuple[_Coord, _Coord, _Coord, _Coord]  # normalised 0..1, top-left origin
+
+    @field_validator("bbox")
+    @classmethod
+    def _ordered_on_page(
+        cls, v: tuple[float, float, float, float]
+    ) -> tuple[float, float, float, float]:
+        """Clamp to the page (a drag may overshoot an edge); refuse inverted boxes."""
+        x0, y0, x1, y1 = (min(max(c, 0.0), 1.0) for c in v)
+        if x0 >= x1 or y0 >= y1:
+            raise ValueError("bbox must have x0 < x1 and y0 < y1 within the page")
+        return x0, y0, x1, y1
+
+
+Regions = Annotated[list[Region], Field(min_length=1, max_length=MAX_REGIONS)]
 
 
 async def _resolve(ctx: Context, file_id: int) -> tuple[Any, dict[str, Any]]:
@@ -110,7 +142,10 @@ async def open_document(
     ctx: Context,
     file_id: int,
     chunk_index: int | None = None,
-    redact_text: list[str | RedactTerm] | None = None,
+    redact_text: Annotated[
+        list[Annotated[str, Field(max_length=MAX_TERM_CHARS)] | RedactTerm] | None,
+        Field(max_length=MAX_TERMS),
+    ] = None,
     review: Review | None = None,
 ) -> CallToolResult:
     """Open an indexed file in the document viewer with its chunk layout.
@@ -312,6 +347,11 @@ def _redact(pdf: bytes, regions: list[Region]) -> bytes:
             )
         for page in doc:
             page.apply_redactions()
+        # Metadata, XMP and attachments can repeat what was redacted; drop them.
+        doc.set_metadata({})
+        doc.del_xml_metadata()
+        for name in doc.embfile_names():
+            doc.embfile_del(name)
         return doc.tobytes(garbage=3, deflate=True)
 
 
@@ -336,7 +376,7 @@ async def _redacted(
 )
 @require_scopes("files.read")
 async def preview_redaction(
-    ctx: Context, file_id: int, regions: list[Region]
+    ctx: Context, file_id: int, regions: Regions
 ) -> CallToolResult:
     """Return the PDF with ``regions`` redacted (base64), without saving it."""
     _, row, out, etag = await _redacted(ctx, file_id, regions)
@@ -349,13 +389,6 @@ async def preview_redaction(
             "etag": etag,
         },
     )
-
-
-# A term matching more than this is almost certainly a fragment ("D", "mother").
-MAX_TERM_REGIONS = 100
-WARN_TERM_REGIONS = 25
-MIN_TERM_CHARS = 3
-MAX_COPY_SUFFIX = 100  # shortcut: linear -vN probe; list the folder if it grows
 
 
 def _default_name(src: str, n: int = 1) -> str:
@@ -418,7 +451,7 @@ def _error(text: str) -> CallToolResult:
 async def save_redaction(
     ctx: Context,
     file_id: int,
-    regions: list[Region],
+    regions: Regions,
     etag: str,
     confirmation: Annotated[
         ElicitationResult[SaveConfirmation], Resolve(_confirm_save)
@@ -427,6 +460,9 @@ async def save_redaction(
 ) -> CallToolResult:
     """Save ``regions`` redacted as a NEW PDF. The original is never changed.
 
+    The copy also drops document metadata, XMP and embedded files. Hosts without
+    elicitation are trusted to have confirmed in their own UI (the tool is
+    app-only), and the write is create-only either way.
     The source must still be at ``etag`` (the version the user reviewed). With no
     ``name`` the copy is ``<stem>-redacted.pdf`` beside the original, stepping to
     ``-redacted-v2.pdf``… if taken. An explicit ``name`` (bare file name, or a
@@ -438,7 +474,7 @@ async def save_redaction(
     if not choice.confirm:
         return _error("Redaction not saved: not confirmed.")
     client, row, out, current = await _redacted(ctx, file_id, regions)
-    if current is not None and normalize_etag(etag) != current:
+    if current is None or normalize_etag(etag) != current:
         return _error("conflict: file changed since it was opened")
 
     src = row["path"]
@@ -469,8 +505,9 @@ async def save_redaction(
             return _error(f"{path} already exists; choose another name")
     else:
         return _error(f"No free name for a redacted copy of {src}")
-    if "message" in written:
-        return _error(written["message"])
+    status = written.get("status_code") or 0
+    if not 200 <= status < 300:
+        return _error(written.get("message") or f"Save failed with HTTP {status}")
 
     new_id = await client.webdav.get_fileid(path)
     return _result(
