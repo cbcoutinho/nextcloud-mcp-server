@@ -54,6 +54,9 @@ def main() -> int:
     if not pins:
         print(f"no pinned cdnjs <script> tags in {VIEWER_FILE}", file=sys.stderr)
         return 1
+    # Download and check every file before writing any, so a failed download or
+    # a mismatch leaves the vendored files and the HTML pins consistent.
+    fetched: list[tuple[str, bytes]] = []
     for m in pins:
         with urllib.request.urlopen(m["url"], timeout=60) as resp:  # noqa: S310 (https cdnjs URL)
             data = resp.read()
@@ -65,10 +68,13 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 1
+            # Replacing by hash string is safe: a pin's hash occurs only in its own tag.
             html = html.replace(m["sri"], digest)
             print(f"{m['name']}: repinned {m['sri']} -> {digest}")
-        (VENDOR_DIR / m["name"]).write_bytes(data)
+        fetched.append((m["name"], data))
         print(f"{m['name']}: {len(data)} bytes, {digest}")
+    for name, data in fetched:
+        (VENDOR_DIR / name).write_bytes(data)
     VIEWER_FILE.write_text(html)
     pinned = {m["name"] for m in pins}
     for stale in [*VENDOR_DIR.glob("*.js"), *VENDOR_DIR.glob("*.mjs")]:
