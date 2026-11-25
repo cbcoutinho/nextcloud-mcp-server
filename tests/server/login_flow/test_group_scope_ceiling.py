@@ -86,6 +86,10 @@ async def _token_scopes(
         client,
         callback_server,
         scopes=REQUESTED,
+        # No RFC 8707 resource: this DCR client has none approved, and the oidc
+        # app (2.6+) refuses an unapproved one with invalid_target. These tests
+        # are about the scope ceiling, not the audience.
+        resource="",
         username=username,
         password=password,
     )

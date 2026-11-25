@@ -39,8 +39,22 @@
       "description": "Cap Python at 3.14 until psycopg-binary ships cp315 wheels — 3.15 broke bump-version",
       "matchPackageNames": ["python", "actions/python-versions", "docker.io/library/python"],
       "allowedVersions": "<3.15"
+    },
+    {
+      "description": "pdf.js in the open_document viewer (cdnjs <script> pins); both tags bump together",
+      "matchManagers": ["html"],
+      "matchDepNames": ["pdf.js"],
+      "groupName": "pdf.js",
+      "prBodyNotes": [
+        "cdnjs publishes no SRI hashes for pdf.js 4+, so this bump leaves stale `integrity` attributes. The `pdf.js repin` workflow (`.github/workflows/pdfjs-repin.yml`) fixes that on this branch: it runs `scripts/sync_pdfjs.py --repin`, which re-downloads the pinned files, rewrites the hashes and refreshes `nextcloud_mcp_server/server/vendor/pdfjs/`, then commits the result. Review that commit's hashes; nothing else is needed."
+      ]
     }
   ],
+  "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
+  "html": {
+    "enabled": true,
+    "managerFilePatterns": ["/^nextcloud_mcp_server/server/document_viewer\\.html$/"]
+  },
   "customManagers": [
     {
       "customType": "regex",

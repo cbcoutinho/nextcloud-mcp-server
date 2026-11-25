@@ -2,22 +2,25 @@
 
 Tools bound to ``ui://nextcloud-mcp/document-viewer.html``: open a file with its
 indexed chunk geometry (optionally staging proposed redactions), and, app-only,
-read its bytes, preview a redaction in memory, and save it as a NEW copy
-(etag-guarded, create-only; the original is never changed). Geometry comes from the
-Qdrant payload (``chunk_bbox``, ``page_number``), never from server-side
-rasterising.
+read its bytes, preview a typed list of changes (redactions today) in memory,
+and save them as a NEW copy (etag-guarded, create-only; the original is never
+changed). Geometry comes from the Qdrant payload (``chunk_bbox``,
+``page_number``), never from server-side rasterising.
 """
 
 import base64
+import hashlib
 import logging
+import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 import anyio
 import pymupdf
-from mcp.server.apps import Apps, ResourceCsp
+from mcp.server.apps import APP_MIME_TYPE, Apps, ResourceCsp, TextResource
 from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.resolve import Elicit, Resolve
@@ -32,6 +35,18 @@ from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.document_processors._native_locks import (
     pymupdf_serialized,
 )
+from nextcloud_mcp_server.features import redaction_available
+from nextcloud_mcp_server.providers.ner import NerError
+from nextcloud_mcp_server.redaction import (
+    ADDRESS,
+    EMAIL,
+    NI,
+    PERSON,
+    PHONE,
+    Redactor,
+    detect_entities,
+    get_ner_client,
+)
 from nextcloud_mcp_server.vector.placeholder import (
     exclude_image_points,
     get_placeholder_filter,
@@ -42,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 VIEWER_URI = "ui://nextcloud-mcp/document-viewer.html"
 _VIEWER_FILE = Path(__file__).with_name("document_viewer.html")
+_VENDOR_DIR = Path(__file__).with_name("vendor") / "pdfjs"
 MAX_BYTES = 25 * 1024 * 1024
 MAX_CHUNKS = 1000  # shortcut: one scroll page; paginate if docs exceed this
 # A term matching more than this is almost certainly a fragment ("D", "mother").
@@ -60,6 +76,33 @@ REDACT_LINE_ART_IF_TOUCHED = 2
 REDACT_TEXT_REMOVE = 0
 
 apps = Apps()
+
+# Each viewer tool's scopes, published in its _meta so a host's tools/call proxy
+# can mint a token for exactly that call. Astrolabe's McpAppController reads them
+# from tools/list instead of keeping its own list of tools and scopes.
+SCOPES_META_KEY = "nextcloud-mcp/scopes"
+
+
+# Every scope the viewer's tools need, published on the viewer resource too.
+# tools/list hides a tool whose scopes the token lacks, so a host's proxy lists
+# with a token requesting these; the IdP narrows that to what the user may have,
+# so the proxy sees exactly the viewer tools this user can call.
+_VIEWER_SCOPES: set[str] = set()
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def viewer_tool(*scopes: str, **tool_kwargs: Any) -> Callable[[_F], _F]:
+    """``apps.tool`` bound to the viewer, enforcing and publishing ``scopes``."""
+
+    _VIEWER_SCOPES.update(scopes)
+
+    def decorator(fn: _F) -> _F:
+        return apps.tool(
+            resource_uri=VIEWER_URI, meta={SCOPES_META_KEY: list(scopes)}, **tool_kwargs
+        )(require_scopes(*scopes)(fn))
+
+    return decorator
 
 
 class RedactTerm(BaseModel):
@@ -120,7 +163,28 @@ class Region(BaseModel):
         return x0, y0, x1, y1
 
 
-Regions = Annotated[list[Region], Field(min_length=1, max_length=MAX_REGIONS)]
+class RedactChange(Region):
+    """Remove everything under ``bbox`` (text, image pixels, touched line art)."""
+
+    kind: Literal["redact"]
+
+
+# One kind today. A new kind (highlight, comment, ...) becomes a member of a
+# union discriminated on ``kind``: an additive schema change, no new tools.
+Change = RedactChange
+Changes = Annotated[list[Change], Field(min_length=1, max_length=MAX_REGIONS)]
+
+
+def _counts(changes: list[Change]) -> dict[str, int]:
+    return dict(Counter(c.kind for c in changes))
+
+
+_NOUNS = {"redact": ("redaction", "redactions")}
+
+
+def _describe(counts: dict[str, int]) -> str:
+    """``{"redact": 3}`` -> ``"3 redactions"``."""
+    return ", ".join(f"{n} {_NOUNS[kind][n != 1]}" for kind, n in counts.items())
 
 
 async def _resolve(ctx: Context, file_id: int) -> tuple[Any, dict[str, Any]]:
@@ -139,12 +203,11 @@ def _result(text: str, structured: dict[str, Any]) -> CallToolResult:
     )
 
 
-@apps.tool(
-    resource_uri=VIEWER_URI,
+@viewer_tool(
+    "files.read",
     title="Open Document",
     annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
 )
-@require_scopes("files.read")
 async def open_document(
     ctx: Context,
     file_id: int,
@@ -199,6 +262,8 @@ async def open_document(
         "etag": etag,
         "staged_regions": staging.regions if staging else [],
         "review": review.model_dump(exclude_none=True) if review else None,
+        # The viewer offers "Find personal data" only when the server can detect.
+        "detect_available": redaction_available(get_settings()),
     }
     lines = [
         f"{title}",
@@ -246,8 +311,15 @@ class _Staging:
     too_broad: set[str]
 
 
-def _stage(pdf: bytes, items: list[RedactTerm]) -> _Staging:
-    """Find each term's regions, dropping fragments that match too much."""
+def _stage(
+    pdf: bytes, items: list[RedactTerm], max_term_regions: int | None = None
+) -> _Staging:
+    """Find each term's regions, dropping fragments that match too much.
+
+    ``max_term_regions`` (default MAX_TERM_REGIONS) guards against a model's
+    over-broad term ("the"); detected identifiers are whole names and numbers,
+    so detection raises it.
+    """
     groups: dict[str, str] = {}
     for it in items:
         if it.group:
@@ -256,7 +328,9 @@ def _stage(pdf: bytes, items: list[RedactTerm]) -> _Staging:
     terms = [t for t in texts if len(t.strip()) >= MIN_TERM_CHARS]
     found = _find_text(pdf, terms)
     hits = Counter(r["term"] for r in found)
-    too_broad = {t for t, n in hits.items() if n > MAX_TERM_REGIONS}
+    if max_term_regions is None:
+        max_term_regions = MAX_TERM_REGIONS
+    too_broad = {t for t, n in hits.items() if n > max_term_regions}
     regions = [
         {**r, "group": groups[r["term"]]} if r["term"] in groups else r
         for r in found
@@ -345,13 +419,12 @@ async def _indexed_chunks(file_id: int) -> tuple[dict[str, Any], list[dict[str, 
     return next(iter(by_index.values()), {}), chunks
 
 
-@apps.tool(
-    resource_uri=VIEWER_URI,
+@viewer_tool(
+    "files.read",
     visibility=["app"],
     title="Read Document Bytes",
     annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
 )
-@require_scopes("files.read")
 async def read_document_bytes(ctx: Context, file_id: int) -> CallToolResult:
     """Return a file's raw bytes (base64) for the viewer to render."""
     client, row = await _resolve(ctx, file_id)
@@ -400,6 +473,138 @@ def _find_text(pdf: bytes, needles: list[str]) -> list[dict[str, Any]]:
     return found
 
 
+# Review group for each pattern-detected type; a person gets their own group.
+_DETECT_GROUPS = {
+    ADDRESS: "Addresses",
+    EMAIL: "Email addresses",
+    NI: "NI numbers",
+    PHONE: "Phone numbers",
+}
+
+
+def _page_texts(pdf: bytes) -> list[str]:
+    with pymupdf_serialized(), _open_pdf(pdf) as doc:
+        return [page.get_text() for page in doc]
+
+
+def _detected_terms(
+    texts: list[str], names: set[str], addresses: set[str]
+) -> list[RedactTerm]:
+    """What the SAR redactor would replace in ``texts``, as review terms.
+
+    Each person is one group, named by the longest form seen for them, holding
+    every form found ("Jane Doe", "Doe", "J. Doe" when detected); other
+    identifiers are grouped by type. Matching reuses the SAR export's rules
+    (ADR-040): propagation, token expansion, role words never names.
+    """
+    found: list[tuple[str, str, str]] = []
+    redactor = Redactor(names, addresses=addresses)
+    for text in texts:
+        redactor.redact(text, found=found)
+    shown: dict[str, str] = {}
+    for label, key, surface in found:
+        if label == PERSON:
+            # A PDF line break inside a name is a space to search_for.
+            surface = " ".join(surface.split())
+            if len(surface) > len(shown.get(key, "")):
+                shown[key] = surface
+    terms: dict[str, RedactTerm] = {}
+    for label, key, surface in found:
+        text = " ".join(surface.split())[:MAX_TERM_CHARS]
+        group = shown[key] if label == PERSON else _DETECT_GROUPS[label]
+        # First group wins, as in open_document: a surface is staged once.
+        terms.setdefault(text.casefold(), RedactTerm(text=text, group=group[:60]))
+    return list(terms.values())
+
+
+@viewer_tool(
+    "files.read",
+    visibility=["app"],
+    title="Detect Personal Data",
+    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+)
+async def detect_personal_data(ctx: Context, file_id: int) -> CallToolResult:
+    """Propose every personal identifier in the PDF for redaction. Nothing is written.
+
+    Names and addresses come from the embedding gateway's NER, emails, phone
+    numbers, NI numbers and UK postcodes from patterns: the SAR export's
+    detector (ADR-040). Returns ``staged_regions`` like open_document's, grouped
+    per person and per identifier type, for the user to review in the viewer.
+    The tool result text carries counts only, never the detected text.
+    Needs EMBEDDING_GATEWAY_URL. A page with no text layer yields nothing.
+    """
+    settings = get_settings()
+    if not redaction_available(settings):
+        return _error(
+            "Personal-data detection needs the embedding gateway "
+            "(EMBEDDING_GATEWAY_URL is not set)."
+        )
+    try:
+        client, row = await _resolve(ctx, file_id)
+        data, etag = await _download_pdf(client, row)
+    except ValueError as e:  # not found, not a PDF, too large: written for the user
+        return _error(str(e))
+    try:
+        texts = await anyio.to_thread.run_sync(_page_texts, data)
+        names, addresses = await detect_entities(await get_ner_client(settings), texts)
+        items = _detected_terms(texts, names, addresses)
+        staging = await anyio.to_thread.run_sync(_stage, data, items, MAX_REGIONS)
+    except NerError:
+        logger.warning("NER failed for file %s", file_id, exc_info=True)
+        return _error("Detection failed: the NER service did not answer. Try again.")
+    except Exception:  # e.g. a corrupt PDF; pymupdf raises several types
+        logger.warning("Detection failed for file %s", file_id, exc_info=True)
+        return _error("Detection failed; try again.")
+    # _stage leaves out a term with more than MAX_REGIONS hits. Leave out the rest
+    # of its group too, so a person is never half-staged, and count it as dropped.
+    group_of = {it.text: it.group for it in items}
+    broad = {group_of[t] for t in staging.too_broad}
+    regions = [r for r in staging.regions if r.get("group") not in broad]
+    regions, dropped = _whole_groups(regions, MAX_REGIONS)
+    dropped += len(broad)
+    groups = Counter(r.get("group") for r in regions)
+    text = (
+        f"Detected {len(groups)} group(s), {len(regions)} region(s) staged for "
+        "review in the viewer; nothing was changed."
+    )
+    if dropped:
+        text += (
+            f" {dropped} more group(s) did not fit the {MAX_REGIONS}-region "
+            "limit and were left out whole."
+        )
+    return _result(
+        text,
+        {
+            "file_id": file_id,
+            "etag": etag,
+            "staged_regions": regions,
+            "groups": dict(groups),
+            "dropped_groups": dropped,
+        },
+    )
+
+
+def _whole_groups(
+    regions: list[dict[str, Any]], limit: int
+) -> tuple[list[dict[str, Any]], int]:
+    """At most ``limit`` regions, keeping or dropping each group whole.
+
+    Cutting the list by position could stage half of a person's mentions, which
+    a reviewer would read as all of them. Groups are taken in order of first
+    appearance; one that does not fit is skipped and a smaller later one may
+    still fit. Returns the kept regions and the number of groups dropped.
+    """
+    sizes = Counter(r.get("group") for r in regions)
+    kept_groups: set[str | None] = set()
+    total = 0
+    for group, n in sizes.items():
+        if total + n <= limit:
+            kept_groups.add(group)
+            total += n
+    kept = [r for r in regions if r.get("group") in kept_groups]
+    return kept, len(sizes) - len(kept_groups)
+
+
 def _redact(pdf: bytes, regions: list[Region]) -> bytes:
     with pymupdf_serialized(), _open_pdf(pdf) as doc:
         for r in regions:
@@ -429,42 +634,59 @@ def _redact(pdf: bytes, regions: list[Region]) -> bytes:
         return doc.tobytes(garbage=3, deflate=True)
 
 
-async def _redacted(
-    ctx: Context, file_id: int, regions: list[Region]
-) -> tuple[Any, dict[str, Any], bytes, str | None]:
-    """Download the PDF and apply the redactions in memory; nothing is written."""
-    if not regions:
-        raise ValueError("No regions to redact")
+def _apply(pdf: bytes, changes: list[Change]) -> bytes:
+    """``pdf`` with every change applied, in memory. Dispatches on ``kind``."""
+    if not changes:
+        raise ValueError("No changes to apply")
+    redactions: list[Region] = []
+    for change in changes:
+        match change.kind:
+            case "redact":
+                redactions.append(change)
+            case kind:  # A new kind must be handled here, not silently dropped.
+                raise ValueError(f"Unsupported change kind {kind!r}")
+    return _redact(pdf, redactions)
+
+
+async def _preview(ctx: Context, file_id: int, changes: list[Change]) -> CallToolResult:
     client, row = await _resolve(ctx, file_id)
     data, etag = await _download_pdf(client, row)
-    return client, row, await anyio.to_thread.run_sync(_redact, data, regions), etag
-
-
-@apps.tool(
-    resource_uri=VIEWER_URI,
-    visibility=["app"],
-    title="Preview Redaction",
-    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
-)
-@require_scopes("files.read")
-async def preview_redaction(
-    ctx: Context, file_id: int, regions: Regions
-) -> CallToolResult:
-    """Return the PDF with ``regions`` redacted (base64), without saving it."""
-    _, row, out, etag = await _redacted(ctx, file_id, regions)
+    out = await anyio.to_thread.run_sync(_apply, data, changes)
+    counts = _counts(changes)
     return _result(
-        f"Preview of {row['path']} with {len(regions)} region(s) redacted.",
+        f"Preview of {row['path']} with {_describe(counts)} applied; nothing saved.",
         {
             "mime_type": "application/pdf",
             "size": len(out),
             "data_b64": base64.b64encode(out).decode(),
             "etag": etag,
+            "changes": counts,
         },
     )
 
 
+@viewer_tool(
+    "files.read",
+    visibility=["app"],
+    title="Preview Changes",
+    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+)
+async def preview_changes(
+    ctx: Context, file_id: int, changes: Changes
+) -> CallToolResult:
+    """Return the PDF with ``changes`` applied (base64), without saving it.
+
+    ``changes`` items are ``{"kind": "redact", "page", "bbox"}`` (bbox
+    normalised 0..1 in displayed page space, top-left origin).
+    """
+    return await _preview(ctx, file_id, changes)
+
+
 def _default_name(src: str, n: int = 1) -> str:
-    """``<stem>-redacted.pdf``, then ``-redacted-v2.pdf``… (mirrors SAR's -vN)."""
+    """``<stem>-redacted.pdf``, then ``-redacted-v2.pdf``… (mirrors SAR's -vN).
+
+    "redacted" holds while redact is the only change kind; revisit with the next.
+    """
     stem = PurePosixPath(src).stem
     return f"{stem}-redacted.pdf" if n == 1 else f"{stem}-redacted-v{n}.pdf"
 
@@ -481,7 +703,9 @@ def _target_path(src: str, name: str) -> str:
 
 
 class SaveConfirmation(BaseModel):
-    confirm: bool = Field(description="Save a redacted copy (the original is kept)")
+    confirm: bool = Field(
+        description="Save a copy with the changes (the original is kept)"
+    )
     name: str = Field(default="", description="File name for the copy (empty: default)")
 
 
@@ -495,7 +719,7 @@ async def _confirm_save(
     """
     caps = ctx.client_capabilities
     if caps is None or caps.elicitation is None:
-        logger.info("Saving a redacted copy of file %s without a prompt", file_id)
+        logger.info("Saving a changed copy of file %s without a prompt", file_id)
         return SaveConfirmation(confirm=True, name=name or "")
     _, row = await _resolve(ctx, file_id)
     suggested = name or _default_name(row["path"])
@@ -504,7 +728,7 @@ async def _confirm_save(
         name: str = Field(default=suggested, description="File name for the copy")
 
     return Elicit(
-        f"Save a redacted copy of {PurePosixPath(row['path']).name}? "
+        f"Save a copy of {PurePosixPath(row['path']).name}? "
         "The original is not changed.",
         Ask,
     )
@@ -546,33 +770,82 @@ async def _write_copy(
                 written.get("message") or f"Save failed with HTTP {status}"
             )
         return path
-    raise ValueError(f"No free name for a redacted copy (tried up to {candidates[-1]})")
+    raise ValueError(f"No free name for the copy (tried up to {candidates[-1]})")
 
 
 def _error(text: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True)
 
 
-@apps.tool(
-    resource_uri=VIEWER_URI,
-    visibility=["app"],
-    title="Save Redacted Copy",
-    annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
-)
-@require_scopes("files.read", "files.write")
-async def save_redaction(
+async def _save(
     ctx: Context,
     file_id: int,
-    regions: Regions,
+    changes: list[Change],
+    etag: str,
+    confirmation: ElicitationResult[SaveConfirmation],
+    name: str | None,
+) -> CallToolResult:
+    if not isinstance(confirmation, AcceptedElicitation):
+        return _error(f"Changes not saved: {confirmation.action}.")
+    choice = confirmation.data
+    if not choice.confirm:
+        return _error("Changes not saved: not confirmed.")
+    try:
+        client, row = await _resolve(ctx, file_id)
+        data, current = await _download_pdf(client, row)
+        if current is None or normalize_etag(etag) != current:
+            return _error("conflict: file changed since it was opened")
+        src = row["path"]
+        out = await anyio.to_thread.run_sync(_apply, data, changes)
+        candidates, explicit = _copy_candidates(src, choice.name, name)
+        path = await _write_copy(client, candidates, out, explicit)
+    except ValueError as e:
+        return _error(str(e))
+    except Exception:
+        logger.warning(
+            "Saving a changed copy of file %s failed", file_id, exc_info=True
+        )
+        return _error("Saving the copy failed; try again.")
+
+    try:
+        new_id = await client.webdav.get_fileid(path)
+    except Exception:
+        # The copy exists; erroring here would make a retry write -v2.
+        logger.warning("Saved %s but could not read its file id", path, exc_info=True)
+        new_id = None
+    counts = _counts(changes)
+    return _result(
+        f"Saved a copy with {_describe(counts)} as {path}; the original {src} is unchanged.",
+        {
+            "file_id": int(new_id) if new_id else None,
+            "source_file_id": file_id,
+            "path": path,
+            "changes": counts,
+        },
+    )
+
+
+@viewer_tool(
+    "files.read",
+    "files.write",
+    visibility=["app"],
+    title="Save a Changed Copy",
+    annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+)
+async def apply_changes(
+    ctx: Context,
+    file_id: int,
+    changes: Changes,
     etag: str,
     confirmation: Annotated[
         ElicitationResult[SaveConfirmation], Resolve(_confirm_save)
     ],
     name: str | None = None,
 ) -> CallToolResult:
-    """Save ``regions`` redacted as a NEW PDF. The original is never changed.
+    """Save the file with ``changes`` applied as a NEW PDF. The original is never changed.
 
-    The copy also drops document metadata, XMP and embedded files. Hosts without
+    ``changes`` items are ``{"kind": "redact", "page", "bbox"}``. A redacted
+    copy also drops document metadata, XMP and embedded files. Hosts without
     elicitation are trusted to have confirmed in their own UI (the tool is
     app-only), and the write is create-only either way.
     The source must still be at ``etag`` (the version the user reviewed). With no
@@ -581,58 +854,84 @@ async def save_redaction(
     path) must not exist yet. Accepting the form's suggested name unchanged
     counts as the default, so it steps too.
     """
-    if not isinstance(confirmation, AcceptedElicitation):
-        return _error(f"Redaction not saved: {confirmation.action}.")
-    choice = confirmation.data
-    if not choice.confirm:
-        return _error("Redaction not saved: not confirmed.")
-    try:
-        client, row = await _resolve(ctx, file_id)
-        data, current = await _download_pdf(client, row)
-        if current is None or normalize_etag(etag) != current:
-            return _error("conflict: file changed since it was opened")
-        src = row["path"]
-        out = await anyio.to_thread.run_sync(_redact, data, regions)
-        candidates, explicit = _copy_candidates(src, choice.name, name)
-        path = await _write_copy(client, candidates, out, explicit)
-    except ValueError as e:
-        return _error(str(e))
-    except Exception:
-        logger.warning(
-            "Saving a redacted copy of file %s failed", file_id, exc_info=True
-        )
-        return _error("Saving the redacted copy failed; try again.")
+    return await _save(ctx, file_id, changes, etag, confirmation, name)
 
-    try:
-        new_id = await client.webdav.get_fileid(path)
-    except Exception:
-        # The copy exists; erroring here would make a retry write -v2.
-        logger.warning("Saved %s but could not read its file id", path, exc_info=True)
-        new_id = None
-    return _result(
-        f"Saved a redacted copy ({len(regions)} region(s)) as {path}; "
-        f"the original {src} is unchanged.",
-        {
-            "file_id": int(new_id) if new_id else None,
-            "source_file_id": file_id,
-            "path": path,
-            "redacted_regions": len(regions),
-        },
-    )
+
+_SCRIPT_TAG = re.compile(
+    r'<script\b[^>]*?\bsrc="(?P<url>https://cdnjs\.cloudflare\.com/[^"]*/(?P<name>[\w.-]+\.m?js))"'
+    r'[^>]*?\bintegrity="(?P<sri>(?P<alg>sha256|sha384|sha512)-[A-Za-z0-9+/=]+)"[^>]*></script>'
+)
+
+
+def sri_digest(alg: str, data: bytes) -> str:
+    """The SRI `integrity` value for `data` under `alg` (sha256/sha384/sha512)."""
+    return f"{alg}-" + base64.b64encode(hashlib.new(alg, data).digest()).decode()
+
+
+# "</script" ends an inline script early; "<!--" can make the parser skip the
+# real end tag. sync_pdfjs.py refuses files containing either too.
+_UNINLINABLE = (b"</script", b"<!--")
+
+
+def _inline_vendored_scripts(html: str) -> str:
+    """Swap each pinned cdnjs <script src> for the vendored copy, inline.
+
+    Hosts don't reliably honour `_meta.ui.csp.resourceDomains` (claude.ai
+    serves views with `script-src 'self' 'unsafe-inline' …` and blocks
+    cdnjs), but every host must allow the view's own inline script. The tag's
+    `integrity` hash stays the single pin: a vendored file that doesn't match
+    it is refused and the cdnjs tag is left in place.
+    """
+
+    def inline(m: re.Match[str]) -> str:
+        path = _VENDOR_DIR / m["name"]
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            logger.warning("%s missing; viewer keeps the cdnjs tag", path)
+            return m[0]
+        if sri_digest(m["alg"], data) != m["sri"]:
+            logger.error("%s does not match its pinned %s; not inlined", path, m["sri"])
+            return m[0]
+        if any(s in data.lower() for s in _UNINLINABLE):
+            # They change how the HTML parser ends an inline <script>.
+            logger.error("%s contains '</script' or '<!--'; not inlined", path)
+            return m[0]
+        module = ' type="module"' if 'type="module"' in m[0] else ""
+        return f"<script{module}>/* {m['name']} (vendored, {m['sri']}) */\n{data.decode()}\n</script>"
+
+    return _SCRIPT_TAG.sub(inline, html)
 
 
 def _viewer_html() -> str:
     try:
-        return _VIEWER_FILE.read_text()
+        return _inline_vendored_scripts(_VIEWER_FILE.read_text())
     except FileNotFoundError:
         logger.warning("%s missing; serving a placeholder viewer", _VIEWER_FILE)
         return "<!doctype html><p>Document viewer not installed.</p>"
 
 
-apps.add_html_resource(
-    VIEWER_URI,
-    _viewer_html(),
-    title="Document viewer",
-    # pdf.js 3.11.174 is the viewer's only external load, pinned with SRI hashes.
-    csp=ResourceCsp(resource_domains=["https://cdnjs.cloudflare.com"]),
+# add_resource rather than add_html_resource: only this way can _meta carry the
+# scopes next to the "ui" entry (add_html_resource builds _meta itself).
+# Keep this last in the module: it reads _VIEWER_SCOPES, which each
+# @viewer_tool above adds to (test_the_viewer_resource_publishes_... guards it).
+apps.add_resource(
+    TextResource(
+        uri=VIEWER_URI,
+        name=VIEWER_URI,
+        title="Document viewer",
+        mime_type=APP_MIME_TYPE,
+        text=_viewer_html(),
+        meta={
+            # pdf.js is inlined from vendor/pdfjs (see its README). cdnjs stays
+            # declared for the fallback, a vendored file missing or off its pin,
+            # on hosts that honour it.
+            "ui": {
+                "csp": ResourceCsp(
+                    resource_domains=["https://cdnjs.cloudflare.com"]
+                ).model_dump(by_alias=True, exclude_none=True)
+            },
+            SCOPES_META_KEY: sorted(_VIEWER_SCOPES),
+        },
+    )
 )

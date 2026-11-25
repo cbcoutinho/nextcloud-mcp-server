@@ -446,48 +446,59 @@ class Redactor:
         return f"[{label}_{self._numbers[ident]}]"
 
     def redact(
-        self, text: str | None, seen: set[tuple[str, str]] | None = None
+        self,
+        text: str | None,
+        seen: set[tuple[str, str]] | None = None,
+        found: list[tuple[str, str, str]] | None = None,
     ) -> str | None:
         """``text`` with third parties replaced.
 
         ``seen``, when given, collects the ``(label, key)`` of every entity
         replaced in this call, so a caller can count per document.
+        ``found``, when given, gets ``(label, key, surface)`` for every
+        replacement, in order: ``surface`` is the exact text that was replaced,
+        so a caller can locate it (the document viewer stages it as a region).
         """
         if not text:
             return text
+
+        def replace(label: str, key: str, m: re.Match[str]) -> str:
+            if found is not None:
+                found.append((label, key, m.group(0)))
+            return self._placeholder(label, key, seen)
 
         def email(m: re.Match[str]) -> str:
             key = m.group(0).casefold()
             if key in self._keep_emails:
                 return m.group(0)
-            return self._placeholder(EMAIL, key, seen)
+            return replace(EMAIL, key, m)
 
         def address(m: re.Match[str]) -> str:
-            return self._placeholder(ADDRESS, _address_key(m.group(0)), seen)
+            return replace(ADDRESS, _address_key(m.group(0)), m)
 
         def postcode(m: re.Match[str]) -> str:
             key = _postcode_key(m.group(0))
             if key in self._keep_postcodes:
                 return m.group(0)
-            return self._placeholder(ADDRESS, key, seen)
+            return replace(ADDRESS, key, m)
 
         def ni(m: re.Match[str]) -> str:
             key = _ni_key(m.group(0))
             if key is None or key in self._keep_ni:
                 return m.group(0)
-            return self._placeholder(NI, key, seen)
+            return replace(NI, key, m)
 
         def phone(m: re.Match[str]) -> str:
             key = _phone_key(m.group(0))
             if key is None or key in self._keep_phones:
                 return m.group(0)
-            return self._placeholder(PHONE, key, seen)
+            return replace(PHONE, key, m)
 
         def name(m: re.Match[str]) -> str:
             key = _key(m.group(0))
             if key not in self._redactable:
                 return m.group(0)
-            return self._placeholder(PERSON, self._canonical.get(key, key), seen)
+            return replace(PERSON, self._canonical.get(key, key), m)
 
         text = _EMAIL_RE.sub(email, text)
         # A whole address before its parts: its postcode is then already gone,

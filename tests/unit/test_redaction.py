@@ -256,6 +256,52 @@ def test_seen_counts_per_call():
     assert r.redact("Karen Smith") == "[PERSON_1]"
 
 
+def test_found_lists_each_replaced_surface_with_its_label_and_key():
+    r = Redactor({"Karen Smith"}, addresses={"1 Example Street"})
+    found: list = []
+    r.redact(
+        "Karen Smith (karen@example.org, 07700 900123) of 1 Example Street; Smith",
+        found=found,
+    )
+    assert found == [
+        ("EMAIL", "karen@example.org", "karen@example.org"),
+        ("ADDRESS", "1 example street", "1 Example Street"),
+        ("PHONE", "07700900123", "07700 900123"),
+        ("PERSON", "karen smith", "Karen Smith"),
+        # A bare token is attributed to the full name it belongs to.
+        ("PERSON", "karen smith", "Smith"),
+    ]
+
+
+def test_found_stays_empty_when_nothing_is_replaced():
+    found: list = []
+    assert Redactor({"Karen Smith"}).redact("", found=found) == ""
+    Redactor({"Karen Smith"}).redact("nothing personal here", found=found)
+    assert found == []
+
+
+_NAMES = ["Karen Smith", "Tom Brown"]
+
+
+@given(
+    st.lists(
+        st.one_of(
+            st.sampled_from(
+                [*_NAMES, "karen.smith@example.org", "07700 900123", "SW1A 1AA"]
+            ),
+            st.text(max_size=12),
+        ),
+        max_size=8,
+    ).map(" ".join)
+)
+@example("KAREN_SMITH and tom\nbrown")
+def test_every_found_surface_is_text_from_the_input(text):
+    """The viewer searches the page for each surface, so it must be verbatim."""
+    found: list = []
+    Redactor(_NAMES).redact(text, found=found)
+    assert all(surface and surface in text for _, _, surface in found)
+
+
 def test_ner_endpoint_normalises_v1_suffix():
     assert ner_endpoint(SimpleNamespace(embedding_gateway_url="https://gw/")) == (
         "https://gw/v1/ner"

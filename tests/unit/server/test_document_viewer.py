@@ -9,7 +9,11 @@ unknown field or action is refused at the boundary rather than trusted).
 
 from __future__ import annotations
 
+import base64
+import importlib.util
+import logging
 import re
+from pathlib import Path
 
 import pymupdf
 import pytest
@@ -316,18 +320,207 @@ async def test_open_document_says_when_the_chunk_list_is_truncated(stub, mocker)
     assert "Only the first 1 chunks are listed." in res.content[0].text
 
 
-# --- save_redaction ------------------------------------------------------------
+# --- detect_personal_data ----------------------------------------------------------
+
+
+def test_detected_terms_group_each_person_and_each_identifier_type():
+    texts = ["Name: Jane Doe\nPhone: 07700 900123", "Seen by Doe and Jane\nDoe again"]
+    terms = dv._detected_terms(texts, {"Jane Doe"}, set())
+    # The bare "Doe" joins Jane's group, and "Jane\nDoe" (a name broken over a
+    # PDF line) is the same search phrase as "Jane Doe", so it is not repeated.
+    assert [(t.text, t.group) for t in terms] == [
+        ("07700 900123", "Phone numbers"),
+        ("Jane Doe", "Jane Doe"),
+        ("Doe", "Jane Doe"),
+    ]
+
+
+@pytest.fixture
+def detector(stub, mocker):
+    mocker.patch.object(dv, "redaction_available", return_value=True)
+    mocker.patch.object(dv, "get_ner_client", mocker.AsyncMock())
+    detect = mocker.patch.object(
+        dv,
+        "detect_entities",
+        mocker.AsyncMock(return_value=({"Jane Doe"}, {"1 Example Street"})),
+    )
+    return detect
+
+
+async def test_detect_personal_data_stages_grouped_regions_and_says_only_counts(
+    detector, mocker
+):
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    s = res.structured_content
+    assert not res.is_error and s["etag"] == "e1"
+    # "Jane Doe" and "jane doe" are one term, case-insensitively found twice.
+    assert s["groups"] == {"Jane Doe": 2, "Addresses": 1}
+    assert {r["page"] for r in s["staged_regions"]} == {1}
+    # The NER read the page text, and the result text never echoes what it found.
+    assert "Jane Doe" in detector.await_args.args[1][0]
+    assert "Jane" not in res.content[0].text and "Example" not in res.content[0].text
+
+
+async def test_detect_personal_data_needs_the_gateway(stub, mocker):
+    mocker.patch.object(dv, "redaction_available", return_value=False)
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    assert res.is_error and "EMBEDDING_GATEWAY_URL" in res.content[0].text
+
+
+async def test_detect_personal_data_reports_a_ner_failure_as_a_tool_error(
+    detector, mocker, caplog
+):
+    caplog.set_level(logging.WARNING, logger=dv.logger.name)
+    detector.side_effect = dv.NerError("gateway 503")
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    assert res.is_error and "Try again" in res.content[0].text
+    assert "NER failed for file 7" in caplog.text
+
+
+async def test_detect_personal_data_refuses_a_non_pdf(detector, stub, mocker):
+    stub.webdav.find_files_by_ids.return_value = [
+        {"path": "/Docs/notes.txt", "content_type": "text/plain"}
+    ]
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    assert res.is_error and "not a PDF" in res.content[0].text
+    detector.assert_not_awaited()
+
+
+async def test_detect_personal_data_reports_a_corrupt_pdf_as_a_tool_error(
+    detector, stub, mocker, caplog
+):
+    caplog.set_level(logging.WARNING, logger=dv.logger.name)
+    mocker.patch.object(dv, "_page_texts", side_effect=RuntimeError("bad xref"))
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    assert res.is_error and "Detection failed" in res.content[0].text
+    assert "Detection failed for file 7" in caplog.text
+
+
+async def test_a_term_over_the_limit_drops_its_whole_group(detector, mocker):
+    mocker.patch.object(dv, "MAX_REGIONS", 1)  # "Jane Doe" is found twice
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    s = res.structured_content
+    assert s["groups"] == {"Addresses": 1}
+    assert s["dropped_groups"] == 1 and "1 more group(s)" in res.content[0].text
+
+
+def _r(group: str | None) -> dict:
+    return {"page": 1, "bbox": (0, 0, 1, 1), "term": "t", "group": group}
+
+
+def test_whole_groups_never_splits_a_group_and_lets_a_smaller_one_fit():
+    regions = [_r("A"), _r("B"), _r("A"), _r("B"), _r("B"), _r("C")]
+    kept, dropped = dv._whole_groups(regions, 3)
+    # A (2) fits, B (3) would make 5 and is dropped whole, C (1) still fits.
+    assert [r["group"] for r in kept] == ["A", "A", "C"] and dropped == 1
+
+
+def test_whole_groups_keeps_everything_under_the_limit():
+    regions = [_r("A"), _r(None), _r("A")]
+    assert dv._whole_groups(regions, 3) == (regions, 0)
+
+
+def test_detected_terms_give_a_surname_two_people_share_its_own_group():
+    """A bare surname that could be either person is not filed under one of them."""
+    texts = ["Jane Doe met John Doe. Doe left."]
+    items = dv._detected_terms(texts, {"Jane Doe", "John Doe"}, set())
+    assert [(it.text, it.group) for it in items] == [
+        ("Jane Doe", "Jane Doe"),
+        ("John Doe", "John Doe"),
+        ("Doe", "Doe"),
+    ]
+
+
+@pytest.mark.parametrize("available", [True, False])
+async def test_open_document_says_whether_detection_is_available(
+    stub, mocker, available
+):
+    mocker.patch.object(dv, "redaction_available", return_value=available)
+    res = await dv.open_document(ctx=mocker.MagicMock(), file_id=7)
+    assert res.structured_content["detect_available"] is available
+
+
+# --- preview_changes / apply_changes -------------------------------------------
 
 
 def _accepted(name: str = "") -> AcceptedElicitation:
     return AcceptedElicitation(data=dv.SaveConfirmation(confirm=True, name=name))
 
 
+def _redact(page: int = 1, bbox=(0.1, 0.1, 0.5, 0.15)) -> dv.RedactChange:
+    return dv.RedactChange(kind="redact", page=page, bbox=bbox)
+
+
 async def _save(mocker, **kw):
-    regions = [dv.Region(page=1, bbox=(0.1, 0.1, 0.5, 0.15))]
-    return await dv.save_redaction(
-        ctx=mocker.MagicMock(), file_id=7, regions=regions, etag='"e1"', **kw
+    return await dv.apply_changes(
+        ctx=mocker.MagicMock(), file_id=7, changes=[_redact()], etag='"e1"', **kw
     )
+
+
+def test_a_change_must_name_a_known_kind():
+    with pytest.raises(ValidationError):
+        dv.RedactChange.model_validate({"page": 1, "bbox": [0.1, 0.1, 0.5, 0.2]})
+    with pytest.raises(ValidationError):
+        dv.RedactChange.model_validate(
+            {"kind": "erase", "page": 1, "bbox": [0.1, 0.1, 0.5, 0.2]}
+        )
+
+
+def test_apply_refuses_a_kind_it_does_not_handle():
+    """A kind added to the schema but not to _apply must fail, not be dropped."""
+    change = dv.RedactChange.model_construct(
+        kind="annotate", page=1, bbox=(0.1, 0.1, 0.5, 0.2)
+    )
+    with pytest.raises(ValueError, match="annotate"):
+        dv._apply(b"%PDF", [change])
+
+
+def test_change_counts_read_as_plain_english():
+    assert dv._describe({"redact": 1}) == "1 redaction"
+    assert dv._describe({"redact": 3}) == "3 redactions"
+
+
+def test_every_viewer_tool_publishes_the_scopes_it_enforces():
+    """A host's proxy mints each call's token from _meta; it must match the gate."""
+    from nextcloud_mcp_server.auth import get_required_scopes
+
+    bindings = dv.apps.tools()
+    assert len(bindings) == 5
+    for b in bindings:
+        published = b.meta[dv.SCOPES_META_KEY]
+        assert published == get_required_scopes(b.fn) and published, b.fn.__name__
+    write = {
+        b.fn.__name__ for b in bindings if "files.write" in b.meta[dv.SCOPES_META_KEY]
+    }
+    assert write == {"apply_changes"}
+
+
+def test_the_viewer_resource_publishes_every_scope_its_tools_need():
+    """A host lists the viewer's tools with these; the IdP trims them per user."""
+    (binding,) = dv.apps.resources()
+    meta = binding.resource.meta
+    union = {s for b in dv.apps.tools() for s in b.meta[dv.SCOPES_META_KEY]}
+    assert meta[dv.SCOPES_META_KEY] == sorted(union) == ["files.read", "files.write"]
+    assert meta["ui"]["csp"]["resourceDomains"] == ["https://cdnjs.cloudflare.com"]
+
+
+def test_the_viewer_tools_are_app_only():
+    tools = {b.fn.__name__: b for b in dv.apps.tools()}
+    for name in (
+        "detect_personal_data",
+        "preview_changes",
+        "apply_changes",
+    ):
+        assert tools[name].meta["ui"]["visibility"] == ["app"], name
+
+
+async def test_preview_changes_returns_the_changed_pdf_and_counts_by_kind(stub, mocker):
+    res = await dv.preview_changes(
+        ctx=mocker.MagicMock(), file_id=7, changes=[_redact(bbox=(0, 0, 1, 1))]
+    )
+    s = res.structured_content
+    assert s["changes"] == {"redact": 1} and s["etag"] == "e1"
+    assert "Jane Doe" not in _text(base64.b64decode(s["data_b64"]))
 
 
 async def test_save_steps_past_existing_copies_and_never_overwrites(stub, mocker):
@@ -410,10 +603,10 @@ async def test_read_document_bytes_refuses_a_non_pdf(stub, mocker):
 
 async def test_save_reports_a_region_off_the_document_as_an_error(stub, mocker):
     stub.webdav.write_file = mocker.AsyncMock()
-    res = await dv.save_redaction(
+    res = await dv.apply_changes(
         ctx=mocker.MagicMock(),
         file_id=7,
-        regions=[dv.Region(page=5, bbox=(0.1, 0.1, 0.5, 0.2))],
+        changes=[_redact(page=5, bbox=(0.1, 0.1, 0.5, 0.2))],
         etag='"e1"',
         confirmation=_accepted(),
     )
@@ -470,9 +663,85 @@ async def test_save_does_nothing_when_the_user_declines(stub, mocker):
 
 def test_every_external_script_is_pinned_with_sri():
     """Bumping a pdf.js URL without its hash must fail here, not in a browser."""
-    tags = re.findall(r"<script\b[^>]*\bsrc=[^>]*>", dv._viewer_html())
+    tags = re.findall(r"<script\b[^>]*\bsrc=[^>]*>", dv._VIEWER_FILE.read_text())
     assert len(tags) == 2
     for tag in tags:
         assert 'src="https://cdnjs.cloudflare.com/' in tag
-        assert re.search(r'integrity="sha384-[A-Za-z0-9+/]{64}"', tag), tag
+        # The algorithms _SCRIPT_TAG accepts, each with its base64 digest length.
+        assert re.search(
+            r'integrity="(sha256-[A-Za-z0-9+/]{43}=|sha384-[A-Za-z0-9+/]{64}'
+            r'|sha512-[A-Za-z0-9+/]{86}==)"',
+            tag,
+        ), tag
         assert 'crossorigin="anonymous"' in tag
+
+
+def test_served_viewer_loads_no_external_script():
+    """claude.ai ignores csp.resourceDomains, so pdf.js must arrive inline.
+
+    Also fails when a pinned tag is bumped without replacing the vendored file.
+    """
+    html = dv._viewer_html()
+    assert re.findall(r"<script\b[^>]*\bsrc=", html) == []
+    assert html.count('<script type="module">/* pdf') == 2
+    # an inlined file containing "</script" would end its block early
+    assert html.count("<script") == html.count("</script>")
+
+
+@pytest.mark.parametrize("alg", ["sha256", "sha384", "sha512"])
+def test_a_module_tag_is_inlined_as_a_module_under_any_sri_algorithm(
+    tmp_path, monkeypatch, alg
+):
+    """cdnjs's own SRI for pdf.js is sha512; a Renovate repin may switch algorithms."""
+    (tmp_path / "x.min.mjs").write_bytes(b"globalThis.x = 1;")
+    monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
+    sri = dv.sri_digest(alg, b"globalThis.x = 1;")
+    tag = (
+        '<script type="module" src="https://cdnjs.cloudflare.com/ajax/libs/x/1.0.0/x.min.mjs"'
+        f' integrity="{sri}" crossorigin="anonymous"></script>'
+    )
+    out = dv._inline_vendored_scripts(tag)
+    assert out.startswith('<script type="module">') and "globalThis.x = 1;" in out
+
+
+def test_sync_script_reads_pins_exactly_like_the_server():
+    """scripts/sync_pdfjs.py is stdlib-only, so it carries its own copy of the tag regex."""
+    spec = importlib.util.spec_from_file_location(
+        "sync_pdfjs", Path(__file__).parents[3] / "scripts" / "sync_pdfjs.py"
+    )
+    assert spec and spec.loader
+    sync = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sync)
+    assert sync.SCRIPT_TAG.pattern == dv._SCRIPT_TAG.pattern
+    assert sync.VIEWER_FILE == dv._VIEWER_FILE.resolve()
+    assert sync.VENDOR_DIR == dv._VENDOR_DIR.resolve()
+    for alg in ("sha256", "sha384", "sha512"):
+        assert sync.sri_digest(alg, b"pdf.js") == dv.sri_digest(alg, b"pdf.js")
+
+
+@pytest.mark.parametrize(
+    "data", [b"var s = '</SCRIPT><script>alert(1)';", b"var s = '<!-- <script>';"]
+)
+def test_a_vendored_file_that_would_end_the_script_is_not_inlined(
+    tmp_path, monkeypatch, data
+):
+    (tmp_path / "x.min.js").write_bytes(data)
+    monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
+    tag = (
+        '<script src="https://cdnjs.cloudflare.com/ajax/libs/x/1.0.0/x.min.js"'
+        f' integrity="{dv.sri_digest("sha384", data)}" crossorigin="anonymous"></script>'
+    )
+    assert dv._inline_vendored_scripts(tag) == tag
+
+
+def test_a_vendored_file_that_misses_its_pin_is_not_inlined(tmp_path, monkeypatch):
+    (tmp_path / "pdf.min.js").write_text("tampered")
+    monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
+    tag = (
+        '<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"'
+        ' integrity="sha384-' + "A" * 64 + '" crossorigin="anonymous"></script>'
+    )
+    assert dv._inline_vendored_scripts(tag) == tag
+    assert dv._inline_vendored_scripts(tag.replace("pdf.min", "absent")) == tag.replace(
+        "pdf.min", "absent"
+    )
