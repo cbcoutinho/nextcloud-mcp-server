@@ -5,6 +5,17 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.221.2 (2026-11-25)
+
+### Fix
+
+- **server**: make the viewer's wasm fallback fetch observable (round-1 review)
+- **server**: give the document viewer pdf.js's wasm image decoders
+
+### Refactor
+
+- **server**: address round-2 review of the viewer wasm decoders
+
 ## v0.221.1 (2026-11-25)
 
 ### Fix
