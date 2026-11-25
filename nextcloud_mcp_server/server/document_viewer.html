@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document viewer</title>
+<!--
+  MCP App view (io.modelcontextprotocol/ui, apps spec 2026-01-26) for nextcloud-mcp-server's
+  open_document tool. Self-contained: the postMessage dialect is hand-rolled below, and
+  pdf.js is the only external load, pinned with SRI hashes (declare https://cdnjs.cloudflare.com in the resource's
+  csp.resourceDomains). The worker script is loaded on the main thread on purpose: a
+  sandboxed iframe has an opaque origin and cannot start a cross-origin Worker, and pdf.js 3
+  picks up globalThis.pdfjsWorker as an in-thread "fake worker" instead.
+
+  Tools it calls (via the host's tools/call proxy):
+    read_document_bytes(file_id)                             app-only, PDF bytes for pdf.js
+    preview_redaction(file_id, regions[])                    app-only, redacted bytes, writes nothing
+    save_redaction(file_id, regions[], etag, name?)          app-only, writes a NEW redacted copy
+  Redaction is staged: regions (selected passages, drawn boxes, or staged_regions the model
+  proposed via open_document(redact_text=…)) → Preview → Save redacted copy | Discard.
+  The original is never changed: redacted copies are for sharing externally (like SAR exports).
+  Without `name` the server saves "<stem>-redacted.pdf" beside the original, numbering
+  (-v2, -v3, …) if taken; a name the user typed is never overwritten.
+  Host requests it uses: ui/message (Summarize / Ask), ui/update-model-context (selection),
+  ui/request-display-mode (fullscreen), ui/notifications/size-changed.
+-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js" integrity="sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --panel: var(--color-background-secondary, #f6f7f9);
+    --border: var(--color-border-primary, #dfe3e8);
+    --fg: var(--color-text-primary, #1d2329);
+    --muted: var(--color-text-secondary, #67707b);
+    --accent: #0082c9;      /* Nextcloud blue */
+    --sel: #a679c9;
+    --danger: #d64545;
+    --radius: var(--border-radius-md, 6px);
+    --font: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+    --h: 720px;
+  }
+  :root[data-theme="dark"] {
+    --bg: var(--color-background-primary, #171a1f);
+    --panel: var(--color-background-secondary, #1f242b);
+    --border: var(--color-border-primary, #343b45);
+    --fg: var(--color-text-primary, #e6e9ef);
+    --muted: var(--color-text-secondary, #9aa3b2);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    height: var(--h); display: flex; flex-direction: column; overflow: hidden;
+    background: var(--bg); color: var(--fg); font: 13.5px/1.45 var(--font);
+  }
+  header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header .t { min-width: 0; flex: 1; }
+  header .t b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header .t span { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+  #status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #status.err { color: var(--danger); }
+  button {
+    font: inherit; border-radius: var(--radius); border: 1px solid var(--border);
+    background: var(--bg); color: var(--fg); padding: 5px 10px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button.on { outline: 2px solid var(--danger); }
+  main { flex: 1; display: flex; min-height: 0; }
+  #pages { flex: 1; overflow: auto; padding: 14px; min-width: 0; background: var(--panel); }
+  #side { width: 340px; flex: 0 0 auto; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  @media (max-width: 720px) { #side { width: 46%; } }
+
+  .page { margin: 0 auto 16px; width: calc(100% * var(--zoom, 1)); max-width: calc(900px * var(--zoom, 1)); }
+  .page .ph { color: var(--muted); font-size: 11.5px; margin-bottom: 4px; }
+  .wrap { position: relative; background: #fff; box-shadow: 0 1px 8px rgba(0,0,0,.25); line-height: 0; }
+  .wrap canvas { width: 100%; height: auto; display: block; }
+  .wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  body.drawing .wrap { cursor: crosshair; }
+  rect.chunk { fill: rgba(0,130,201,.06); stroke: var(--accent); stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
+  rect.chunk:hover { fill: rgba(0,130,201,.18); }
+  rect.chunk.sel { fill: rgba(166,121,201,.30); stroke: var(--sel); stroke-width: 2; }
+  rect.chunk.focus { stroke-width: 2.5; }
+  rect.draw { fill: rgba(214,69,69,.25); stroke: var(--danger); stroke-dasharray: 4 3; stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: pointer; }
+  body.drawing rect.chunk { pointer-events: none; }
+  body.previewing .wrap svg, body.previewing .textLayer { display: none; }
+  rect.tsel { fill: rgba(240,180,0,.30); stroke: #d49a00; stroke-width: 1; vector-effect: non-scaling-stroke; }
+  /* pdf.js 3.11 text layer (from pdf_viewer.css): invisible text over the canvas, so text can be drag-selected */
+  .textLayer { position: absolute; inset: 0; overflow: hidden; opacity: .25; line-height: 1; text-align: initial; transform-origin: 0 0; text-size-adjust: none; forced-color-adjust: none; }
+  .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+  .textLayer ::selection { background: #0050ff; }
+  .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; user-select: none; }
+  .textLayer .endOfContent.active { top: 0; }
+  body.drawing .textLayer { pointer-events: none; }
+  .page .ph { user-select: none; }
+  body.previewing .wrap { outline: 3px solid var(--danger); }
+  .note label { display: flex; gap: 6px; align-items: flex-start; margin: 6px 0; }
+  #groups { font-size: 12px; display: grid; gap: 4px; min-width: 0; }
+  #groups details { border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 8px; }
+  #groups summary { cursor: pointer; list-style: none; }
+  #groups label, #groups summary > span { display: flex; gap: 6px; align-items: baseline; cursor: pointer; }
+  #groups .term { margin: 3px 0 0 18px; color: var(--muted); }
+  #groups details, #groups label span { min-width: 0; }
+  #groups input { flex: none; margin: 0; }
+  #groups .rh { font-weight: 600; color: var(--fg); }
+  #groups .rb { display: flex; flex-wrap: wrap; gap: 4px; }
+  #groups .rb button { font-size: 12px; padding: 3px 8px; }
+  #groups .term span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .actions { padding: 10px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; }
+  .actions .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .actions .count { color: var(--muted); font-size: 12px; }
+  .actions input { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
+  .note { font-size: 12px; padding: 7px 9px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); }
+  .note.err { border-color: var(--danger); color: var(--danger); }
+  #list { flex: 1; overflow: auto; list-style: none; margin: 0; padding: 8px 10px; }
+  #list li { padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 6px; cursor: pointer; }
+  #list li:hover { border-color: var(--accent); }
+  #list li.sel { border-color: var(--sel); box-shadow: 0 0 0 1px var(--sel); }
+  #list .m { font-size: 11px; color: var(--muted); }
+  #list .s { font-size: 12px; max-height: 3.9em; overflow: hidden; }
+  .empty { color: var(--muted); text-align: center; margin-top: 15%; }
+</style>
+</head>
+<body>
+<header>
+  <div class="t"><b id="title">Waiting for document…</b><span id="path"></span></div>
+  <span id="status"></span>
+  <button id="zoomOut" title="Zoom out">−</button>
+  <button id="zoomIn" title="Zoom in">+</button>
+  <button id="fullscreen" hidden title="Toggle fullscreen">⤢</button>
+</header>
+<main>
+  <div id="pages"><div class="empty">The document will appear here.</div></div>
+  <aside id="side">
+    <div class="actions">
+      <div class="row"><span class="count" id="count">Click passages, or drag across text, to select.</span></div>
+      <div id="groups" hidden></div>
+      <div class="row">
+        <button class="primary" id="summarize">Summarize</button>
+        <button id="clear">Clear</button>
+        <button id="draw" title="Drag on a page to mark a region for redaction">Draw box</button>
+      </div>
+      <div class="row">
+        <input id="question" placeholder="Ask about the selection…">
+        <button id="ask">Ask</button>
+      </div>
+      <div class="row">
+        <button class="danger" id="redact" disabled>Preview redaction</button>
+      </div>
+      <div id="review" class="note" hidden>
+        <b>Preview — not saved.</b> Redacted text is removed from the copy, not just covered. The original is not changed.
+        <label>Save as <input id="saveName" type="text" spellcheck="false" style="flex:1;min-width:0"></label>
+        <div class="row"><button class="danger" id="accept">Save redacted copy</button><button id="discard">Discard</button></div>
+      </div>
+      <div id="note" class="note" hidden></div>
+    </div>
+    <ul id="list"></ul>
+  </aside>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// ---- JSON-RPC over postMessage (View side) -------------------------------
+let nextId = 1;
+const pending = new Map();
+const post = (msg) => window.parent.postMessage(msg, "*");
+function request(method, params) {
+  const id = nextId++;
+  post({ jsonrpc: "2.0", id, method, params });
+  return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+}
+const notify = (method, params) => post({ jsonrpc: "2.0", method, params });
+
+async function callTool(name, args) {
+  const r = await request("tools/call", { name, arguments: args });
+  if (r && r.isError) {
+    const msg = (r.content || []).filter((c) => c.type === "text").map((c) => c.text).join(" ");
+    throw new Error(msg || name + " failed");
+  }
+  return r;
+}
+
+window.addEventListener("message", (e) => {
+  if (e.source !== window.parent) return;
+  const m = e.data;
+  if (!m || m.jsonrpc !== "2.0") return;
+  if (m.id != null && !m.method) {                      // response to one of ours
+    const p = pending.get(m.id);
+    if (!p) return;
+    pending.delete(m.id);
+    m.error ? p.reject(new Error(m.error.message || "Host error")) : p.resolve(m.result);
+    return;
+  }
+  switch (m.method) {
+    case "ui/notifications/tool-input":
+      setStatus("Opening file " + (m.params?.arguments?.file_id ?? "") + "…");
+      break;
+    case "ui/notifications/tool-result":
+      onToolResult(m.params).catch((err) => setStatus(err.message, true));
+      break;
+    case "ui/notifications/tool-cancelled":
+      setStatus("Cancelled: " + (m.params?.reason || ""), true);
+      break;
+    case "ui/notifications/host-context-changed":
+      applyContext(Object.assign(ctx, m.params || {}));
+      break;
+    case "ui/resource-teardown":
+    case "ping":
+      post({ jsonrpc: "2.0", id: m.id, result: {} });
+      break;
+  }
+});
+
+// ---- host context: theme, sizing, display mode ----------------------------
+let ctx = {};
+function applyContext(c) {
+  const root = document.documentElement;
+  if (c.theme) root.dataset.theme = c.theme;
+  for (const [k, v] of Object.entries(c.styles?.variables || {})) if (v) root.style.setProperty(k, v);
+  const dims = c.containerDimensions || {};
+  const h = c.displayMode === "fullscreen" ? window.innerHeight : (dims.height || Math.min(dims.maxHeight || 720, 720));
+  root.style.setProperty("--h", h + "px");
+  $("fullscreen").hidden = !(c.availableDisplayModes || []).includes("fullscreen");
+}
+new ResizeObserver(() => {
+  notify("ui/notifications/size-changed", { width: document.body.offsetWidth, height: document.body.offsetHeight });
+}).observe(document.body);
+
+// ---- state ----------------------------------------------------------------
+let doc = null;              // structuredContent from open_document
+let selected = new Set();    // chunk indexes
+let drawn = [];              // [{page, bbox}] free-drawn redaction regions
+let zoom = 1;
+
+function setStatus(text, err = false) { const s = $("status"); s.textContent = text; s.className = err ? "err" : ""; }
+function showNote(text, err = false) { const n = $("note"); n.hidden = !text; n.textContent = text || ""; n.className = "note" + (err ? " err" : ""); }
+const chunkById = (i) => doc.chunks.find((c) => c.index === i);
+const pageLabel = (c) => c.page == null ? "" : (c.page_end && c.page_end !== c.page ? "p" + c.page + "–" + c.page_end : "p" + c.page);
+
+async function onToolResult(result) {
+  if (result.isError) throw new Error((result.content || []).map((c) => c.text || "").join(" ") || "Tool failed");
+  const sc = result.structuredContent;
+  if (!sc || !Array.isArray(sc.chunks)) {      // a host replaying a non-viewer result: show the text
+    $("pages").innerHTML = "";
+    const pre = document.createElement("pre");
+    pre.textContent = (result.content || []).map((c) => c.text || "").join("\n");
+    $("pages").append(pre);
+    return;
+  }
+  doc = sc; selected = new Set(); textSel = null; showNote(""); endPreview();
+  // Regions the model proposed (open_document redact_text=…): staged for review, never saved by the model.
+  drawn = (sc.staged_regions || []).map((r) => ({ page: r.page, bbox: r.bbox, term: r.term, group: r.group, on: true }));
+  $("title").textContent = doc.title || doc.path || "Document " + doc.file_id;
+  $("path").textContent = [doc.path, doc.page_count ? doc.page_count + " pages" : "", doc.chunks.length + " passages"].filter(Boolean).join(" · ");
+  renderList();
+  if (drawn.length) showNote("The assistant proposed " + drawn.length + " region(s) to redact (red boxes). Review them, then Preview.");
+  else if (doc.focus_chunk != null && chunkById(doc.focus_chunk)) selected.add(doc.focus_chunk);
+  $("pages").scrollTop = 0;   // a new document starts at the top
+  await renderPages();
+  refreshSelection();
+  if (drawn.length) { const r = document.querySelector("rect.draw"); if (r) scrollPagesTo(r); }
+  else if (doc.focus_chunk != null) scrollToChunk(doc.focus_chunk);
+}
+
+// ---- pages ------------------------------------------------------------------
+const SVG = "http://www.w3.org/2000/svg";
+async function renderPages(dataB64) {
+  const host = $("pages");
+  const keep = [host.scrollLeft, host.scrollTop];   // preview/discard/save re-render: stay on the same spot
+  host.innerHTML = ""; sizer.disconnect();
+  const isPdf = /pdf/i.test(doc.mime_type || "") || /\.pdf$/i.test(doc.path || "");
+  if (!isPdf || !window.pdfjsLib) {
+    host.innerHTML = '<div class="empty"></div>';
+    host.firstChild.textContent = !isPdf ? "No page preview for " + (doc.mime_type || "this file type") + " — use the passage list."
+                                        : "pdf.js could not be loaded (check the resource CSP) — use the passage list.";
+    setStatus("");
+    return;
+  }
+  setStatus("Loading document…");
+  const bin = atob(dataB64 || (await callTool("read_document_bytes", { file_id: doc.file_id })).structuredContent.data_b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+
+  // Lazy: lay out every page at its real aspect ratio, render a canvas only when it scrolls near.
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) { io.unobserve(e.target); drawPage(pdf, e.target); }
+  }, { root: host, rootMargin: "600px" });
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const page = await pdf.getPage(n);
+    const vp = page.getViewport({ scale: 1 });
+    const card = document.createElement("div");
+    card.className = "page"; card.dataset.page = n;
+    card.innerHTML = '<div class="ph">Page ' + n + '</div><div class="wrap"><canvas></canvas><svg viewBox="0 0 1 1" preserveAspectRatio="none"></svg><div class="textLayer"></div></div>';
+    const wrap = card.querySelector(".wrap");
+    wrap.style.aspectRatio = vp.width + " / " + vp.height;
+    wrap.dataset.pw = vp.width; sizer.observe(wrap);
+    host.append(card);
+    buildOverlay(card, n);
+    io.observe(card);
+  }
+  [host.scrollLeft, host.scrollTop] = keep;
+  setStatus(pdf.numPages + " pages");
+}
+
+async function drawPage(pdf, card) {
+  const page = await pdf.getPage(+card.dataset.page);
+  const canvas = card.querySelector("canvas");
+  const scale = Math.min(2.5, (1100 * (window.devicePixelRatio || 1)) / page.getViewport({ scale: 1 }).width);
+  const vp = page.getViewport({ scale });
+  canvas.width = vp.width; canvas.height = vp.height;
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  const tl = card.querySelector(".textLayer");
+  // pdf.js wants viewport.scale == --scale-factor at render time; the sizer keeps the variable current on zoom/resize.
+  const wrap = card.querySelector(".wrap"), sf = wrap.clientWidth / +wrap.dataset.pw;
+  wrap.style.setProperty("--scale-factor", sf);
+  await pdfjsLib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: page.getViewport({ scale: sf }), textDivs: [] }).promise;
+  const end = document.createElement("div"); end.className = "endOfContent"; tl.append(end);
+  // pdf.js's trick so a drag that leaves the text doesn't select the whole page
+  tl.addEventListener("mousedown", () => end.classList.add("active"));
+  document.addEventListener("mouseup", () => end.classList.remove("active"));
+}
+const sizer = new ResizeObserver((es) => { for (const e of es) e.target.style.setProperty("--scale-factor", e.contentRect.width / +e.target.dataset.pw); });
+
+function rectEl(cls, [x0, y0, x1, y1]) {
+  const r = document.createElementNS(SVG, "rect");
+  r.setAttribute("class", cls);
+  r.setAttribute("x", x0); r.setAttribute("y", y0);
+  r.setAttribute("width", Math.max(0, x1 - x0)); r.setAttribute("height", Math.max(0, y1 - y0));
+  return r;
+}
+
+function buildOverlay(card, n) {
+  const svg = card.querySelector("svg");
+  svg.replaceChildren();
+  for (const c of doc.chunks) {
+    if (c.page !== n) continue;
+    for (const b of c.bboxes || []) {
+      const r = rectEl("chunk", b);
+      r.dataset.chunk = c.index;
+      const t = document.createElementNS(SVG, "title");
+      t.textContent = "c" + c.index + ": " + (c.text || "").slice(0, 160);
+      r.append(t);
+      r.addEventListener("click", (e) => { e.stopPropagation(); toggle(c.index); });
+      svg.append(r);
+    }
+  }
+  drawn.forEach((d, i) => {
+    if (d.page !== n || d.on === false) return;
+    const r = rectEl("draw", d.bbox);
+    r.addEventListener("click", (e) => { if (drawing) return; e.stopPropagation(); drawn.splice(i, 1); redrawOverlays(); refreshSelection(); });
+    svg.append(r);
+  });
+  for (const t of textSel?.regions || []) {
+    if (t.page !== n) continue;
+    const r = rectEl("tsel", t.bbox);
+    r.addEventListener("click", (e) => { e.stopPropagation(); textSel = null; redrawOverlays(); refreshSelection(); });
+    svg.append(r);
+  }
+}
+const redrawOverlays = () => document.querySelectorAll(".page").forEach((c) => buildOverlay(c, +c.dataset.page));
+
+// ---- free-drawn redaction regions ------------------------------------------
+let drawing = false;
+$("draw").onclick = () => { drawing = !drawing; document.body.classList.toggle("drawing", drawing); $("draw").classList.toggle("on", drawing); };
+$("pages").addEventListener("pointerdown", (e) => {
+  if (!drawing) return;
+  const wrap = e.target.closest(".wrap");
+  if (!wrap) return;
+  e.preventDefault();
+  const box = wrap.getBoundingClientRect();
+  const pt = (ev) => [Math.min(1, Math.max(0, (ev.clientX - box.left) / box.width)), Math.min(1, Math.max(0, (ev.clientY - box.top) / box.height))];
+  const start = pt(e);
+  const svg = wrap.querySelector("svg");
+  const ghost = rectEl("draw", [...start, ...start]);
+  svg.append(ghost);
+  const norm = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+  const move = (ev) => { const [x0, y0, x1, y1] = norm(start, pt(ev)); ghost.setAttribute("x", x0); ghost.setAttribute("y", y0); ghost.setAttribute("width", x1 - x0); ghost.setAttribute("height", y1 - y0); };
+  const up = (ev) => {
+    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+    const bbox = norm(start, pt(ev));
+    if (bbox[2] - bbox[0] > 0.005 && bbox[3] - bbox[1] > 0.005) drawn.push({ page: +wrap.closest(".page").dataset.page, bbox });
+    redrawOverlays(); refreshSelection();
+  };
+  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+});
+
+// ---- text selection (drag across the text layer) ---------------------------
+let textSel = null, selTimer = null;   // {text, regions: [{page, bbox}]}
+function selectionRegions(s) {
+  const text = s.toString().trim();
+  if (!text) return null;
+  const wraps = [...document.querySelectorAll(".wrap")].map((w) => [w, w.getBoundingClientRect()]);
+  const regions = [];
+  for (const r of s.getRangeAt(0).getClientRects()) {
+    if (r.width < 1 || r.height < 1) continue;
+    const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    const hit = wraps.find(([, b]) => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom);
+    if (!hit) continue;
+    const [w, b] = hit, page = +w.closest(".page").dataset.page;
+    const bbox = [(r.left - b.left) / b.width, (r.top - b.top) / b.height, (r.right - b.left) / b.width, (r.bottom - b.top) / b.height].map((v) => Math.min(1, Math.max(0, v)));
+    const last = regions[regions.length - 1];
+    // fragments of one line (and duplicate span boxes) merge into one box
+    if (last && last.page === page && Math.abs(last.bbox[1] - bbox[1]) < (bbox[3] - bbox[1]) / 2 && bbox[0] - last.bbox[2] < 0.02)
+      last.bbox = [Math.min(last.bbox[0], bbox[0]), Math.min(last.bbox[1], bbox[1]), Math.max(last.bbox[2], bbox[2]), Math.max(last.bbox[3], bbox[3])];
+    else regions.push({ page, bbox });
+  }
+  return regions.length ? { text, regions } : null;
+}
+document.addEventListener("selectionchange", () => {
+  const s = getSelection();
+  // only selections in the pages count; typing in the side panel keeps the last one
+  if (!s.rangeCount || s.isCollapsed || !$("pages").contains(s.anchorNode)) return;
+  clearTimeout(selTimer);
+  selTimer = setTimeout(() => { const t = selectionRegions(s); if (t) { textSel = t; redrawOverlays(); refreshSelection(); } }, 250);
+});
+$("pages").addEventListener("click", (e) => {
+  if (drawing || !e.target.closest(".textLayer") || !getSelection().isCollapsed) return;
+  const r = document.elementsFromPoint(e.clientX, e.clientY).find((el) => el.matches("rect.tsel, rect.draw, rect.chunk"));
+  if (r) r.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+});
+const pagesOf = (t) => [...new Set(t.regions.map((r) => r.page))].join(", ");
+
+// ---- passage list + selection ----------------------------------------------
+function renderList() {
+  const ul = $("list");
+  ul.replaceChildren();
+  for (const c of doc.chunks) {
+    const li = document.createElement("li");
+    li.dataset.chunk = c.index;
+    const m = document.createElement("div"); m.className = "m";
+    m.textContent = ["c" + c.index, pageLabel(c), (c.bboxes || []).length ? "" : "no geometry"].filter(Boolean).join(" · ");
+    const s = document.createElement("div"); s.className = "s"; s.textContent = c.text || "";
+    li.append(m, s);
+    li.onclick = () => { toggle(c.index); scrollToChunk(c.index); };
+    ul.append(li);
+  }
+}
+function toggle(i) { selected.has(i) ? selected.delete(i) : selected.add(i); refreshSelection(); }
+// Centre `el` in the page pane only. (scrollIntoView would also scroll the host page around the iframe.)
+function scrollPagesTo(el, center = true) {
+  const host = $("pages"), r = el.getBoundingClientRect(), h = host.getBoundingClientRect();
+  host.scrollTo({
+    top: host.scrollTop + r.top - h.top - (center ? (h.height - r.height) / 2 : 0),
+    left: host.scrollLeft + r.left - h.left - (center ? (h.width - r.width) / 2 : 0),
+    behavior: "smooth",
+  });
+}
+function scrollToChunk(i) {
+  const r = document.querySelector('rect.chunk[data-chunk="' + i + '"]');
+  if (r) scrollPagesTo(r);
+  else { const c = chunkById(i); const card = c && document.querySelector('.page[data-page="' + c.page + '"]'); if (card) scrollPagesTo(card, false); }
+}
+
+let ctxTimer = null;
+function refreshSelection() {
+  document.querySelectorAll("[data-chunk]").forEach((el) => el.classList.toggle("sel", selected.has(+el.dataset.chunk)));
+  document.querySelectorAll("rect.chunk").forEach((el) => el.classList.toggle("focus", +el.dataset.chunk === doc.focus_chunk));
+  const regions = redactionRegions();
+  const nOn = drawn.filter((d) => d.on !== false).length;
+  const parts = [selected.size && selected.size + " passage(s)", textSel && "text (" + textSel.text.length + " chars)", nOn && nOn + " box(es)"].filter(Boolean);
+  renderGroups();
+  $("count").textContent = parts.length ? parts.join(" + ") + " selected" : "Click passages, or drag across text, to select.";
+  $("redact").disabled = regions.length === 0 || previewing;
+  $("redact").textContent = regions.length ? "Preview redaction (" + regions.length + " region(s))" : "Preview redaction";
+  // Keep the model aware of what the user is pointing at; each call overwrites the last.
+  clearTimeout(ctxTimer);
+  ctxTimer = setTimeout(() => request("ui/update-model-context", {
+    content: [{ type: "text", text: (selected.size || textSel
+      ? "In the document viewer the user has selected this from \"" + (doc.title || doc.path) + "\" (file id " + doc.file_id + "):\n" + selectionText()
+      : "The user is viewing \"" + (doc.title || doc.path) + "\" (file id " + doc.file_id + ") with nothing selected.") + stagedSummary() }],
+    structuredContent: { file_id: doc.file_id, selected_chunks: [...selected], selected_text: textSel?.text ?? null, drawn_regions: drawn.filter((d) => d.on !== false),
+      proposals: stagedTerms().map(([group, terms]) => ({ group, terms: terms.map(([term, ds]) => ({ term, regions: ds.length, on: ds.every((d) => d.on !== false) })) })) },
+  }).catch(() => {}), 400);
+}
+function selectionText() {
+  return [textSel && "[selected text, p. " + pagesOf(textSel) + "] " + textSel.text, selected.size && passagesText()].filter(Boolean).join("\n\n");
+}
+function stagedTerms() {
+  const groups = new Map();
+  for (const d of drawn) {
+    if (!d.term && !d.group) continue;
+    const g = d.group || d.term, terms = groups.get(g) || groups.set(g, new Map()).get(g);
+    (terms.get(d.term || g) || terms.set(d.term || g, []).get(d.term || g)).push(d);
+  }
+  return [...groups].map(([g, terms]) => [g, [...terms]]);
+}
+function stagedSummary() {
+  const on = [], off = [];
+  for (const [g, terms] of stagedTerms()) for (const [t, ds] of terms) (ds.every((d) => d.on !== false) ? on : off).push((g === t ? "" : g + ": ") + "\"" + t + "\"");
+  return on.length || off.length ? "\n\nProposed redactions the reviewer has enabled: " + (on.join("; ") || "none")
+    + (off.length ? ". Turned off by the reviewer (do not redact): " + off.join("; ") : "") + "." : "";
+}
+function reviewButton({ label, set, groups: names }) {
+  const want = new Set((names || []).map((n) => String(n).toLowerCase()));
+  const b = document.createElement("button");
+  b.textContent = String(label || "").slice(0, 40);
+  b.onclick = () => {
+    for (const d of drawn) {
+      if (!d.term && !d.group) continue;
+      const hit = want.has(String(d.group || d.term).toLowerCase());
+      if (set === "only") d.on = hit;
+      else if (hit) d.on = set === "on";
+    }
+    redrawOverlays(); refreshSelection();
+  };
+  return b;
+}
+function renderGroups() {
+  const box = $("groups"), groups = stagedTerms();
+  box.hidden = !groups.length || !!previewing;
+  const open = new Set([...box.querySelectorAll("details[open]")].map((e) => e.dataset.g));
+  box.replaceChildren();
+  const review = (groups.length && doc.review) || {};
+  if (review.heading) { const h = document.createElement("div"); h.className = "rh"; h.textContent = String(review.heading).slice(0, 60); box.append(h); }
+  const buttons = (Array.isArray(review.buttons) ? review.buttons : []).filter((b) => ["on", "off", "only"].includes(b?.set) && b.label).slice(0, 6);
+  if (buttons.length) { const row = document.createElement("div"); row.className = "rb"; row.append(...buttons.map(reviewButton)); box.append(row); }
+  const toggle = (ds) => (e) => { for (const d of ds) d.on = e.target.checked; redrawOverlays(); refreshSelection(); };
+  const check = (ds, label, cls) => {
+    const l = document.createElement(cls ? "label" : "span"); if (cls) l.className = cls;   // group rows: name click expands, only the box toggles
+    const c = document.createElement("input"); c.type = "checkbox";
+    const n = ds.filter((d) => d.on !== false).length;
+    c.checked = n === ds.length; c.indeterminate = n > 0 && n < ds.length;
+    c.onchange = toggle(ds); c.onclick = (e) => e.stopPropagation();
+    const t = document.createElement("span"); t.textContent = label + " (" + ds.length + ")"; t.title = label;
+    l.append(c, t);
+    return l;
+  };
+  for (const [g, terms] of groups) {
+    const det = document.createElement("details"); det.dataset.g = g; det.open = open.has(g);
+    const sum = document.createElement("summary");
+    sum.append(check(terms.flatMap(([, ds]) => ds), g));
+    det.append(sum);
+    if (!(terms.length === 1 && terms[0][0] === g)) for (const [t, ds] of terms) det.append(check(ds, t, "term"));
+    box.append(det);
+  }
+}
+function passagesText() {
+  return [...selected].sort((a, b) => a - b).map((i) => { const c = chunkById(i); return "[c" + i + " " + pageLabel(c) + "] " + (c.text || ""); }).join("\n\n");
+}
+$("clear").onclick = () => { selected.clear(); drawn = []; textSel = null; getSelection().removeAllRanges(); redrawOverlays(); refreshSelection(); };
+
+// ---- Summarize / Ask → ui/message (the host's model answers) -----------------
+async function sendMessage(text) {
+  try {
+    await request("ui/message", { role: "user", content: [{ type: "text", text }] });
+    showNote("Sent to the assistant.");
+  } catch (err) { showNote("Could not send: " + err.message, true); }
+}
+const docRef = () => "\"" + (doc.title || doc.path) + "\" (" + doc.path + ", file id " + doc.file_id + ")";
+$("summarize").onclick = () => {
+  if (!doc) return;
+  sendMessage(selected.size || textSel
+    ? "Summarize this selection from " + docRef() + ":\n\n" + selectionText()
+    : "Summarize the document " + docRef() + ".");
+};
+$("ask").onclick = () => {
+  const q = $("question").value.trim();
+  if (!doc || !q) return;
+  sendMessage(q + (selected.size || textSel ? "\n\nAbout this selection from " + docRef() + ":\n\n" + selectionText() : "\n\n(About the document " + docRef() + ".)"));
+  $("question").value = "";
+};
+$("question").addEventListener("keydown", (e) => { if (e.key === "Enter") $("ask").click(); });
+
+// ---- Redaction: stage → preview (nothing written) → Accept & save | Discard ---------------
+function redactionRegions() {
+  if (!doc) return [];
+  const out = [];
+  for (const i of selected) { const c = chunkById(i); for (const b of c.bboxes || []) out.push({ page: c.page, bbox: b }); }
+  return out.concat(textSel?.regions || [], drawn.filter((d) => d.on !== false).map(({ page, bbox }) => ({ page, bbox })));
+}
+let previewing = null;       // the regions shown in the current preview, or null
+function endPreview() { previewing = null; document.body.classList.remove("previewing"); $("review").hidden = true; }
+$("redact").onclick = async () => {
+  const regions = redactionRegions();
+  if (!regions.length) return;
+  $("redact").disabled = true; setStatus("Preparing preview…"); showNote("");
+  try {
+    const r = await callTool("preview_redaction", { file_id: doc.file_id, regions });
+    previewing = regions;
+    document.body.classList.add("previewing");
+    $("saveName").value = defaultCopyName(); nameEdited = false;
+    $("review").hidden = false;
+    await renderPages(r.structuredContent.data_b64);
+    setStatus("Preview");
+  } catch (err) { endPreview(); setStatus(""); showNote("Preview failed: " + err.message, true); refreshSelection(); }
+};
+$("discard").onclick = async () => { endPreview(); await renderPages(); refreshSelection(); showNote("Preview discarded; nothing was saved."); };
+// "<stem>-redacted.pdf"; the server numbers it (-v2, …) if taken, unless the user typed a name.
+let nameEdited = false;
+const defaultCopyName = () => (doc.path || doc.title || "document.pdf").split("/").pop().replace(/(\.pdf)?$/i, "-redacted.pdf");
+$("saveName").addEventListener("input", () => { nameEdited = true; });
+$("accept").onclick = async () => {
+  const regions = previewing, name = $("saveName").value.trim();
+  if (nameEdited && !name) { showNote("Enter a name for the redacted copy.", true); return; }
+  $("accept").disabled = $("discard").disabled = true; setStatus("Saving…");
+  try {
+    const args = { file_id: doc.file_id, regions, etag: doc.etag };
+    if (nameEdited) args.name = name;
+    const r = await callTool("save_redaction", args);
+    const out = r.structuredContent || {};
+    selected.clear(); drawn = []; textSel = null;
+    endPreview(); await renderPages(); refreshSelection();
+    showNote("Saved a redacted copy as " + (out.path || name) + " (" + (out.redacted_regions ?? regions.length)
+      + " region(s) redacted). The original " + (doc.path || "document") + " is unchanged.");
+    request("ui/update-model-context", { content: [{ type: "text", text: "The user saved a redacted copy of " + docRef() + " as "
+      + (out.path || name) + " (file id " + out.file_id + ", " + regions.length + " region(s) redacted) for external sharing. The original is unchanged." }] }).catch(() => {});
+  } catch (err) { setStatus(""); showNote("Save failed: " + err.message, true); }
+  finally { $("accept").disabled = $("discard").disabled = false; }
+};
+
+// ---- zoom / fullscreen -------------------------------------------------------
+function setZoom(z) { zoom = Math.min(3, Math.max(0.5, z)); document.documentElement.style.setProperty("--zoom", zoom); }
+$("zoomIn").onclick = () => setZoom(zoom + 0.25);
+$("zoomOut").onclick = () => setZoom(zoom - 0.25);
+$("fullscreen").onclick = async () => {
+  try {
+    const r = await request("ui/request-display-mode", { mode: ctx.displayMode === "fullscreen" ? "inline" : "fullscreen" });
+    applyContext(Object.assign(ctx, { displayMode: r.mode }));
+  } catch (err) { setStatus(err.message, true); }
+};
+window.addEventListener("resize", () => { if (ctx.displayMode === "fullscreen") applyContext(ctx); });
+
+// ---- handshake -------------------------------------------------------------
+(async () => {
+  const init = await request("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "nextcloud-document-viewer", version: "0.1.0" },
+    appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+  });
+  ctx = init?.hostContext || {};
+  applyContext(ctx);
+  notify("ui/notifications/initialized", {});
+})().catch((err) => setStatus("Host handshake failed: " + err.message, true));
+</script>
+</body>
+</html>
