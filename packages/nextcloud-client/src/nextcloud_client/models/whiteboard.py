@@ -169,6 +169,7 @@ def _summarize(element: dict[str, Any], labels: list[str]) -> WhiteboardElement:
 
     groups = element.get("groupIds")
     groups = groups[:MAX_GROUPS] if isinstance(groups, list) else []
+    group_ids = [_identifier(group) for group in groups]
     text = "\n".join(text for text in texts if text)
     link = _string(element.get("link"))
     return WhiteboardElement(
@@ -183,7 +184,7 @@ def _summarize(element: dict[str, Any], labels: list[str]) -> WhiteboardElement:
         start=_bound_id(element.get("startBinding")),
         end=_bound_id(element.get("endBinding")),
         frame=_identifier(element.get("frameId")),
-        groups=[g for group in groups if (g := _identifier(group))] or None,
+        groups=[group_id for group_id in group_ids if group_id] or None,
         link=link if link and len(link) <= MAX_LINK_LENGTH else None,
     )
 

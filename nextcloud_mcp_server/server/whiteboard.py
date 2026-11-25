@@ -12,7 +12,7 @@ file tools.
 """
 
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from anyio.to_thread import run_sync
 from httpx2 import HTTPStatusError
@@ -41,6 +41,9 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     is_path_excluded,
 )
 from nextcloud_mcp_server.utils.text_edit import normalize_content_type
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard, as in server/webdav.py
+    from nextcloud_client import NextcloudClient
 
 #: Cap on the board file. Images are embedded in it as base64, so a real board
 #: can be many megabytes; parsing needs several times that in memory.
@@ -80,6 +83,50 @@ def _refuse_traversal(path: str) -> None:
         raise ToolError(f"Path may not contain '..' segments: {path!r}")
 
 
+def _refuse_excluded(path: str, excluded: set[str]) -> None:
+    if is_path_excluded(path, excluded):
+        raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+
+def _http_error(e: HTTPStatusError, *, missing: str, action: str) -> ToolError:
+    """The message the model should act on for a failed request."""
+    status = e.response.status_code
+    return ToolError(missing if status == 404 else f"Failed to {action}: HTTP {status}")
+
+
+async def _read_board(
+    client: "NextcloudClient", path: str
+) -> tuple[list[WhiteboardElement], str | None]:
+    """Download a board and summarize it. Returns its elements and etag."""
+    # Lazily, like nc_webdav_read_file: the spool helpers live in the ingest
+    # layer, which server startup must not load.
+    from nextcloud_mcp_server.vector.spool import spooled_document  # noqa: PLC0415
+
+    try:
+        async with spooled_document(
+            client,
+            path,
+            spool_dir=get_settings().document_spool_dir,
+            max_bytes=MAX_BOARD_BYTES,
+        ) as source:
+            # Before anything is parsed: this is what keeps whiteboard.read
+            # from reading any other file.
+            if normalize_content_type(source.content_type) != WHITEBOARD_MIME_TYPE:
+                raise ToolError(f"{path!r} is not a whiteboard")
+            elements = await run_sync(_read_elements, source.spool_path)
+            return elements, source.etag
+    except OversizeDownload as e:
+        raise ToolError(
+            f"{path!r} is larger than {MAX_BOARD_BYTES // (1024 * 1024)} MB."
+        ) from e
+    except InvalidBoardError as e:
+        raise ToolError(f"{path!r} is not a readable whiteboard: {e}") from e
+    except HTTPStatusError as e:
+        raise _http_error(
+            e, missing=f"Whiteboard not found: {path!r}", action=f"read {path!r}"
+        ) from e
+
+
 def configure_whiteboard_tools(mcp: MCPServer) -> None:
     """Configure Whiteboard app MCP tools."""
 
@@ -104,17 +151,15 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
         _refuse_traversal(path)
         client = await get_client(ctx)
         excluded = await get_excluded_file_paths(client.webdav)
-        if path and is_path_excluded(path, excluded):
-            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+        if path:
+            _refuse_excluded(path, excluded)
         try:
             found = await client.webdav.find_all_by_type(
                 WHITEBOARD_MIME_TYPE, scope=path
             )
         except HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ToolError(f"Folder not found: {path!r}") from e
-            raise ToolError(
-                f"Failed to list whiteboards: HTTP {e.response.status_code}"
+            raise _http_error(
+                e, missing=f"Folder not found: {path!r}", action="list whiteboards"
             ) from e
         boards = [
             FileInfo(**item)
@@ -164,41 +209,8 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
         """
         client = await get_client(ctx)
         excluded = await get_excluded_file_paths(client.webdav)
-        if is_path_excluded(path, excluded):
-            raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
-
-        # Lazily, like nc_webdav_read_file: the spool helpers live in the ingest
-        # layer, which server startup must not load.
-        from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
-            spooled_document,
-        )
-
-        try:
-            async with spooled_document(
-                client,
-                path,
-                spool_dir=get_settings().document_spool_dir,
-                max_bytes=MAX_BOARD_BYTES,
-            ) as source:
-                # Before anything is parsed: this is what keeps whiteboard.read
-                # from reading any other file.
-                if normalize_content_type(source.content_type) != WHITEBOARD_MIME_TYPE:
-                    raise ToolError(f"{path!r} is not a whiteboard")
-                etag = source.etag
-                elements = await run_sync(_read_elements, source.spool_path)
-        except OversizeDownload as e:
-            raise ToolError(
-                f"{path!r} is larger than {MAX_BOARD_BYTES // (1024 * 1024)} MB."
-            ) from e
-        except InvalidBoardError as e:
-            raise ToolError(f"{path!r} is not a readable whiteboard: {e}") from e
-        except HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ToolError(f"Whiteboard not found: {path!r}") from e
-            raise ToolError(
-                f"Failed to read {path!r}: HTTP {e.response.status_code}"
-            ) from e
-
+        _refuse_excluded(path, excluded)
+        elements, etag = await _read_board(client, path)
         page = _page(elements, offset, limit)
         end = offset + len(page)
         return WhiteboardResponse(
