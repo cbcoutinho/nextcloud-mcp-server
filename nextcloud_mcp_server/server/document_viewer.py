@@ -13,13 +13,14 @@ import hashlib
 import logging
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 import anyio
 import pymupdf
-from mcp.server.apps import Apps, ResourceCsp
+from mcp.server.apps import APP_MIME_TYPE, Apps, ResourceCsp, TextResource
 from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.resolve import Elicit, Resolve
@@ -75,6 +76,33 @@ REDACT_LINE_ART_IF_TOUCHED = 2
 REDACT_TEXT_REMOVE = 0
 
 apps = Apps()
+
+# Each viewer tool's scopes, published in its _meta so a host's tools/call proxy
+# can mint a token for exactly that call. Astrolabe's McpAppController reads them
+# from tools/list instead of keeping its own list of tools and scopes.
+SCOPES_META_KEY = "nextcloud-mcp/scopes"
+
+
+# Every scope the viewer's tools need, published on the viewer resource too.
+# tools/list hides a tool whose scopes the token lacks, so a host's proxy lists
+# with a token requesting these; the IdP narrows that to what the user may have,
+# so the proxy sees exactly the viewer tools this user can call.
+_VIEWER_SCOPES: set[str] = set()
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def viewer_tool(*scopes: str, **tool_kwargs: Any) -> Callable[[_F], _F]:
+    """``apps.tool`` bound to the viewer, enforcing and publishing ``scopes``."""
+
+    _VIEWER_SCOPES.update(scopes)
+
+    def decorator(fn: _F) -> _F:
+        return apps.tool(
+            resource_uri=VIEWER_URI, meta={SCOPES_META_KEY: list(scopes)}, **tool_kwargs
+        )(require_scopes(*scopes)(fn))
+
+    return decorator
 
 
 class RedactTerm(BaseModel):
@@ -175,12 +203,11 @@ def _result(text: str, structured: dict[str, Any]) -> CallToolResult:
     )
 
 
-@apps.tool(
-    resource_uri=VIEWER_URI,
+@viewer_tool(
+    "files.read",
     title="Open Document",
     annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
 )
-@require_scopes("files.read")
 async def open_document(
     ctx: Context,
     file_id: int,
@@ -392,13 +419,12 @@ async def _indexed_chunks(file_id: int) -> tuple[dict[str, Any], list[dict[str, 
     return next(iter(by_index.values()), {}), chunks
 
 
-@apps.tool(
-    resource_uri=VIEWER_URI,
+@viewer_tool(
+    "files.read",
     visibility=["app"],
     title="Read Document Bytes",
     annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
 )
-@require_scopes("files.read")
 async def read_document_bytes(ctx: Context, file_id: int) -> CallToolResult:
     """Return a file's raw bytes (base64) for the viewer to render."""
     client, row = await _resolve(ctx, file_id)
@@ -491,13 +517,12 @@ def _detected_terms(
     return list(terms.values())
 
 
-@apps.tool(
-    resource_uri=VIEWER_URI,
+@viewer_tool(
+    "files.read",
     visibility=["app"],
     title="Detect Personal Data",
     annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
 )
-@require_scopes("files.read")
 async def detect_personal_data(ctx: Context, file_id: int) -> CallToolResult:
     """Propose every personal identifier in the PDF for redaction. Nothing is written.
 
@@ -640,13 +665,12 @@ async def _preview(ctx: Context, file_id: int, changes: list[Change]) -> CallToo
     )
 
 
-@apps.tool(
-    resource_uri=VIEWER_URI,
+@viewer_tool(
+    "files.read",
     visibility=["app"],
     title="Preview Changes",
     annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
 )
-@require_scopes("files.read")
 async def preview_changes(
     ctx: Context, file_id: int, changes: Changes
 ) -> CallToolResult:
@@ -801,13 +825,13 @@ async def _save(
     )
 
 
-@apps.tool(
-    resource_uri=VIEWER_URI,
+@viewer_tool(
+    "files.read",
+    "files.write",
     visibility=["app"],
     title="Save a Changed Copy",
     annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
 )
-@require_scopes("files.read", "files.write")
 async def apply_changes(
     ctx: Context,
     file_id: int,
@@ -887,11 +911,25 @@ def _viewer_html() -> str:
         return "<!doctype html><p>Document viewer not installed.</p>"
 
 
-apps.add_html_resource(
-    VIEWER_URI,
-    _viewer_html(),
-    title="Document viewer",
-    # pdf.js is inlined from vendor/pdfjs (see its README). cdnjs stays declared for
-    # the fallback, a vendored file missing or off its pin, on hosts that honour it.
-    csp=ResourceCsp(resource_domains=["https://cdnjs.cloudflare.com"]),
+# add_resource rather than add_html_resource: only this way can _meta carry the
+# scopes next to the "ui" entry (add_html_resource builds _meta itself).
+apps.add_resource(
+    TextResource(
+        uri=VIEWER_URI,
+        name=VIEWER_URI,
+        title="Document viewer",
+        mime_type=APP_MIME_TYPE,
+        text=_viewer_html(),
+        meta={
+            # pdf.js is inlined from vendor/pdfjs (see its README). cdnjs stays
+            # declared for the fallback, a vendored file missing or off its pin,
+            # on hosts that honour it.
+            "ui": {
+                "csp": ResourceCsp(
+                    resource_domains=["https://cdnjs.cloudflare.com"]
+                ).model_dump(by_alias=True, exclude_none=True)
+            },
+            SCOPES_META_KEY: sorted(_VIEWER_SCOPES),
+        },
+    )
 )

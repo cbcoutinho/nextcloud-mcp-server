@@ -480,6 +480,30 @@ def test_change_counts_read_as_plain_english():
     assert dv._describe({"redact": 3}) == "3 redactions"
 
 
+def test_every_viewer_tool_publishes_the_scopes_it_enforces():
+    """A host's proxy mints each call's token from _meta; it must match the gate."""
+    from nextcloud_mcp_server.auth import get_required_scopes
+
+    bindings = dv.apps.tools()
+    assert len(bindings) == 5
+    for b in bindings:
+        published = b.meta[dv.SCOPES_META_KEY]
+        assert published == get_required_scopes(b.fn) and published, b.fn.__name__
+    write = {
+        b.fn.__name__ for b in bindings if "files.write" in b.meta[dv.SCOPES_META_KEY]
+    }
+    assert write == {"apply_changes"}
+
+
+def test_the_viewer_resource_publishes_every_scope_its_tools_need():
+    """A host lists the viewer's tools with these; the IdP trims them per user."""
+    (binding,) = dv.apps.resources()
+    meta = binding.resource.meta
+    union = {s for b in dv.apps.tools() for s in b.meta[dv.SCOPES_META_KEY]}
+    assert meta[dv.SCOPES_META_KEY] == sorted(union) == ["files.read", "files.write"]
+    assert meta["ui"]["csp"]["resourceDomains"] == ["https://cdnjs.cloudflare.com"]
+
+
 def test_the_viewer_tools_are_app_only():
     tools = {b.fn.__name__: b for b in dv.apps.tools()}
     for name in (
