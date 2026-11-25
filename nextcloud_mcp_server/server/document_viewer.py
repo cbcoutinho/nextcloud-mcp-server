@@ -517,19 +517,26 @@ async def detect_personal_data(ctx: Context, file_id: int) -> CallToolResult:
     try:
         client, row = await _resolve(ctx, file_id)
         data, etag = await _download_pdf(client, row)
+    except ValueError as e:  # not found, not a PDF, too large: written for the user
+        return _error(str(e))
+    try:
         texts = await anyio.to_thread.run_sync(_page_texts, data)
         names, addresses = await detect_entities(await get_ner_client(settings), texts)
         items = _detected_terms(texts, names, addresses)
         staging = await anyio.to_thread.run_sync(_stage, data, items, MAX_REGIONS)
-    except ValueError as e:
-        return _error(str(e))
     except NerError:
         logger.warning("NER failed for file %s", file_id, exc_info=True)
         return _error("Detection failed: the NER service did not answer. Try again.")
     except Exception:  # e.g. a corrupt PDF; pymupdf raises several types
         logger.warning("Detection failed for file %s", file_id, exc_info=True)
         return _error("Detection failed; try again.")
-    regions, dropped = _whole_groups(staging.regions, MAX_REGIONS)
+    # _stage leaves out a term with more than MAX_REGIONS hits. Leave out the rest
+    # of its group too, so a person is never half-staged, and count it as dropped.
+    group_of = {it.text: it.group for it in items}
+    broad = {group_of[t] for t in staging.too_broad}
+    regions = [r for r in staging.regions if r.get("group") not in broad]
+    regions, dropped = _whole_groups(regions, MAX_REGIONS)
+    dropped += len(broad)
     groups = Counter(r.get("group") for r in regions)
     text = (
         f"Detected {len(groups)} group(s), {len(regions)} region(s) staged for "

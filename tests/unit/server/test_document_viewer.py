@@ -396,6 +396,14 @@ async def test_detect_personal_data_reports_a_corrupt_pdf_as_a_tool_error(
     assert "Detection failed for file 7" in caplog.text
 
 
+async def test_a_term_over_the_limit_drops_its_whole_group(detector, mocker):
+    mocker.patch.object(dv, "MAX_REGIONS", 1)  # "Jane Doe" is found twice
+    res = await dv.detect_personal_data(ctx=mocker.MagicMock(), file_id=7)
+    s = res.structured_content
+    assert s["groups"] == {"Addresses": 1}
+    assert s["dropped_groups"] == 1 and "1 more group(s)" in res.content[0].text
+
+
 def _r(group: str | None) -> dict:
     return {"page": 1, "bbox": (0, 0, 1, 1), "term": "t", "group": group}
 
