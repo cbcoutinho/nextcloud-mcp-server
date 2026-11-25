@@ -32,7 +32,10 @@ from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.document_processors._native_locks import (
     pymupdf_serialized,
 )
-from nextcloud_mcp_server.vector.placeholder import get_placeholder_filter
+from nextcloud_mcp_server.vector.placeholder import (
+    exclude_image_points,
+    get_placeholder_filter,
+)
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger(__name__)
@@ -306,6 +309,7 @@ async def _indexed_chunks(file_id: int) -> tuple[dict[str, Any], list[dict[str, 
         scroll_filter=Filter(
             must=[
                 get_placeholder_filter(),
+                exclude_image_points(),
                 FieldCondition(key="doc_type", match=MatchValue(value="file")),
                 FieldCondition(key="doc_id", match=MatchValue(value=str(file_id))),
             ]
