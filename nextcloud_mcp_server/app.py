@@ -19,6 +19,7 @@ import click
 import httpx2
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from mcp.server.apps import Apps
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -1683,6 +1684,15 @@ def _lazy_endpoint(module: str, name: str) -> Callable[[Request], Awaitable[Resp
     return endpoint
 
 
+def _app_extensions(settings: Settings) -> list[Apps]:
+    """MCP Apps (document viewer POC); needs Qdrant, so only with vector sync."""
+    if not settings.vector_sync_enabled:
+        return []
+    from nextcloud_mcp_server.server.document_viewer import apps  # noqa: PLC0415
+
+    return [apps]
+
+
 def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None = None):
     # Initialize observability (logging will be configured by uvicorn)
     settings = get_settings()
@@ -1952,6 +1962,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
             lifespan=oauth_lifespan,
             token_verifier=token_verifier,
             auth=auth_settings,
+            extensions=_app_extensions(settings),
         )
     else:
         # BasicAuth modes (single-user or multi-user)
@@ -1959,6 +1970,7 @@ def get_app(transport: str = "streamable-http", enabled_apps: list[str] | None =
         mcp = NextcloudMCPServer(
             "Nextcloud MCP",
             lifespan=app_lifespan_basic,
+            extensions=_app_extensions(settings),
         )
 
     configure_capabilities_resource(mcp)
