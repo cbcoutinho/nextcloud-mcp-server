@@ -21,8 +21,7 @@ from mcp.server.apps import Apps, ResourceCsp
 from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.resolve import Elicit, Resolve
-from mcp.types import ToolAnnotations
-from mcp_types import CallToolResult, TextContent
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from nextcloud_client.webdav import normalize_etag
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from qdrant_client.models import FieldCondition, Filter, MatchValue
