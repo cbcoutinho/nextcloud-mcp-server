@@ -215,7 +215,7 @@ nextcloud-mcp-server = "nextcloud_mcp_server.cli:cli"
 semantic = [
     "nextcloud-mcp-server[documents]", # ingest parses every indexed document
     "qdrant-client>=1.18.0",
-    "fastembed>=0.9.0", # BM25 sparse vector embeddings for hybrid search
+    "fastembed>=0.9.0,<0.10", # BM25 sparse vectors; capped: providers/bm25.py reads Bm25.stopwords
     "py-rust-stemmers>=0.1.0", # providers/bm25.py per-script stemmer (BM25_LANGUAGES)
     "numpy>=1.26", # vector/pca.py, vector/visualization.py
     "openai>=2.8.1",

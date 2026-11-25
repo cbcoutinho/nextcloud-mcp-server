@@ -508,7 +508,9 @@ were indexed with, and queries would no longer match them. With an
 auto-generated collection name, a non-default `BM25_LANGUAGES` is part of the
 name (e.g. `my-deployment-nomic-embed-text-bm25-english-russian`), so a change
 starts a fresh collection that background sync fills from scratch, the same as
-an embedding-model change. With an explicit `QDRANT_COLLECTION`, change the
+an embedding-model change. The previous collection is not deleted: once the
+new one is filled, remove it (e.g. `DELETE /collections/<old-name>` on Qdrant)
+to reclaim its storage. With an explicit `QDRANT_COLLECTION`, change the
 name or delete the collection and restart, or old documents stay matched by the
 old stems. Every process that writes or searches the index (server and ingest
 workers) must use the same value.

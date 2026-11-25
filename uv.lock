@@ -2416,7 +2416,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.8" },
     { name = "cryptography", specifier = ">=42.0" },
     { name = "dynaconf", specifier = ">=3.2.13,<4.0" },
-    { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.9.0" },
+    { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.9.0,<0.10" },
     { name = "httpx2", specifier = ">=2.5.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "langchain-text-splitters", specifier = ">=1.0.0" },
