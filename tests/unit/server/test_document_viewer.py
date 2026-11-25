@@ -58,6 +58,42 @@ def test_redact_removes_the_text_not_just_covers_it():
     assert "Jane Doe" in _text(out)  # only the region is removed
 
 
+def _rotated_pdf(rotation: int) -> bytes:
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "Name: Jane Doe", fontsize=11)
+        page.insert_text((72, 700), "Keep this line", fontsize=11)
+        page.set_rotation(rotation)
+        return doc.tobytes()
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_redaction_lands_on_the_text_of_a_rotated_page(rotation):
+    src = _rotated_pdf(rotation)
+    hits = dv._find_text(src, ["Jane Doe"])
+    out = dv._redact(src, [dv.Region(page=1, bbox=h["bbox"]) for h in hits])
+    assert "Jane Doe" not in _text(out)
+    assert "Keep this line" in _text(out)
+
+
+def test_staged_boxes_are_in_displayed_page_space():
+    """At 180 degrees the line near the top is drawn near the bottom right."""
+    (upright,) = dv._find_text(_rotated_pdf(0), ["Jane Doe"])
+    (flipped,) = dv._find_text(_rotated_pdf(180), ["Jane Doe"])
+    x0, y0, x1, y1 = upright["bbox"]
+    assert flipped["bbox"] == pytest.approx([1 - x1, 1 - y1, 1 - x0, 1 - y0], abs=1e-6)
+
+
+def test_a_box_drawn_on_a_rotated_page_redacts_what_the_user_saw():
+    """A box the user draws arrives in displayed space, with no search behind it."""
+    (upright,) = dv._find_text(_rotated_pdf(0), ["Jane Doe"])
+    x0, y0, x1, y1 = upright["bbox"]
+    drawn = dv.Region(page=1, bbox=(1 - x1, 1 - y1, 1 - x0, 1 - y0))
+    out = dv._redact(_rotated_pdf(180), [drawn])
+    assert "Jane Doe" not in _text(out)
+    assert "Keep this line" in _text(out)
+
+
 def test_redact_rejects_a_page_out_of_range():
     with pytest.raises(ValueError, match="out of range"):
         dv._redact(PDF, [dv.Region(page=2, bbox=(0, 0, 1, 1))])

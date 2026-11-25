@@ -378,7 +378,10 @@ def _find_text(pdf: bytes, needles: list[str]) -> list[dict[str, Any]]:
         for page in doc:
             w, h = page.rect.width, page.rect.height
             for needle in needles:
-                for r in page.search_for(needle):
+                for hit in page.search_for(needle):
+                    # Hits are in unrotated page space; the viewer draws the
+                    # page as displayed, so normalise in displayed space.
+                    r = hit * page.rotation_matrix
                     found.append(
                         {
                             "page": page.number + 1,
@@ -397,11 +400,10 @@ def _redact(pdf: bytes, regions: list[Region]) -> bytes:
             page = doc[r.page - 1]
             w, h = page.rect.width, page.rect.height
             x0, y0, x1, y1 = r.bbox
-            # shortcut: ignores /Rotate; derotate via page.derotation_matrix if
-            # rotated scans show misplaced boxes.
-            page.add_redact_annot(
-                pymupdf.Rect(x0 * w, y0 * h, x1 * w, y1 * h), fill=(0, 0, 0)
-            )
+            # Regions are in displayed (rotated) space, as the viewer shows the
+            # page; redaction annotations take unrotated page coordinates.
+            shown = pymupdf.Rect(x0 * w, y0 * h, x1 * w, y1 * h)
+            page.add_redact_annot(shown * page.derotation_matrix, fill=(0, 0, 0))
         for page in doc:
             page.apply_redactions()
         # Metadata, XMP and attachments can repeat what was redacted; drop them.
