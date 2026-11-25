@@ -903,9 +903,45 @@ def _inline_vendored_scripts(html: str) -> str:
     return _SCRIPT_TAG.sub(inline, html)
 
 
+# pdf.js's wasm image decoders, pinned by data blocks the viewer reads itself.
+_WASM_TAG = re.compile(
+    r'<script type="application/wasm" data-src="(?P<url>https://cdn\.jsdelivr\.net/npm/'
+    r'pdfjs-dist@(?P<ver>[\w.-]+)/wasm/(?P<name>[\w.-]+\.wasm))"'
+    r' integrity="(?P<sri>(?P<alg>sha256|sha384|sha512)-[A-Za-z0-9+/=]+)"></script>'
+)
+
+
+def _embed_vendored_wasm(html: str) -> str:
+    """Fill each pinned wasm data block with the vendored file, base64.
+
+    pdf.js 4+ decodes JPEG 2000 and JBIG2 images (most scans) with these and
+    asks the viewer for them; a sandboxed view can't count on fetching them.
+    An empty block (file missing or off its pin) leaves the viewer fetching
+    `data-src`, which fails on claude.ai: scanned pages then render blank.
+    """
+
+    def embed(m: re.Match[str]) -> str:
+        path = _VENDOR_DIR / m["name"]
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            logger.warning("%s missing; scanned pages may render blank", path)
+            return m[0]
+        if sri_digest(m["alg"], data) != m["sri"]:
+            logger.error(
+                "%s does not match its pinned %s; not embedded", path, m["sri"]
+            )
+            return m[0]
+        return m[0].replace(
+            "></script>", f">{base64.b64encode(data).decode()}</script>"
+        )
+
+    return _WASM_TAG.sub(embed, html)
+
+
 def _viewer_html() -> str:
     try:
-        return _inline_vendored_scripts(_VIEWER_FILE.read_text())
+        return _embed_vendored_wasm(_inline_vendored_scripts(_VIEWER_FILE.read_text()))
     except FileNotFoundError:
         logger.warning("%s missing; serving a placeholder viewer", _VIEWER_FILE)
         return "<!doctype html><p>Document viewer not installed.</p>"

@@ -663,7 +663,9 @@ async def test_save_does_nothing_when_the_user_declines(stub, mocker):
 
 def test_every_external_script_is_pinned_with_sri():
     """Bumping a pdf.js URL without its hash must fail here, not in a browser."""
-    tags = re.findall(r"<script\b[^>]*\bsrc=[^>]*>", dv._VIEWER_FILE.read_text())
+    tags = re.findall(
+        r"<script\b[^>]*(?<![\w-])src=[^>]*>", dv._VIEWER_FILE.read_text()
+    )
     assert len(tags) == 2
     for tag in tags:
         assert 'src="https://cdnjs.cloudflare.com/' in tag
@@ -682,10 +684,52 @@ def test_served_viewer_loads_no_external_script():
     Also fails when a pinned tag is bumped without replacing the vendored file.
     """
     html = dv._viewer_html()
-    assert re.findall(r"<script\b[^>]*\bsrc=", html) == []
+    assert re.findall(r"<script\b[^>]*(?<![\w-])src=", html) == []
     assert html.count('<script type="module">/* pdf') == 2
     # an inlined file containing "</script" would end its block early
     assert html.count("<script") == html.count("</script>")
+
+
+def test_served_viewer_embeds_the_wasm_image_decoders():
+    """pdf.js 4+ decodes JPEG 2000/JBIG2 (scans) only with these; without them
+    claude.ai rendered every page of a scanned PDF blank."""
+    html = dv._viewer_html()
+    blocks = dict(
+        re.findall(r'data-src="[^"]*/([\w.-]+\.wasm)"[^>]*>([^<]*)</script>', html)
+    )
+    assert set(blocks) == {"openjpeg.wasm", "jbig2.wasm"}
+    for name, b64 in blocks.items():
+        assert base64.b64decode(b64) == (dv._VENDOR_DIR / name).read_bytes()
+
+
+def test_wasm_pins_follow_the_pdfjs_version():
+    """Renovate bumps only the cdnjs tags; a decoder from another pdf.js
+    version may not match the worker's expectations."""
+    html = dv._VIEWER_FILE.read_text()
+    script_versions = set(re.findall(r"/pdf\.js/([\w.-]+)/", html))
+    wasm_versions = {m["ver"] for m in dv._WASM_TAG.finditer(html)}
+    assert len(script_versions) == 1
+    assert wasm_versions == script_versions
+
+
+def test_a_wasm_file_is_embedded_only_when_it_matches_its_pin(tmp_path, monkeypatch):
+    data = b"\0asm fake"
+    (tmp_path / "openjpeg.wasm").write_bytes(data)
+    monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
+    tag = (
+        '<script type="application/wasm" data-src="https://cdn.jsdelivr.net/npm/'
+        'pdfjs-dist@6.5.438/wasm/openjpeg.wasm" integrity="sha384-'
+        + "A" * 64
+        + '"></script>'
+    )
+    assert dv._embed_vendored_wasm(tag) == tag
+    absent = tag.replace("openjpeg", "absent")
+    assert dv._embed_vendored_wasm(absent) == absent
+    good = tag.replace("sha384-" + "A" * 64, dv.sri_digest("sha384", data))
+    embedded = base64.b64encode(data).decode()
+    assert dv._embed_vendored_wasm(good) == good.replace(
+        "></script>", f">{embedded}</script>"
+    )
 
 
 @pytest.mark.parametrize("alg", ["sha256", "sha384", "sha512"])
@@ -713,6 +757,11 @@ def test_sync_script_reads_pins_exactly_like_the_server():
     sync = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sync)
     assert sync.SCRIPT_TAG.pattern == dv._SCRIPT_TAG.pattern
+    assert sync.WASM_TAG.pattern == dv._WASM_TAG.pattern
+    stale = dv._VIEWER_FILE.read_text().replace(
+        "pdfjs-dist@6.5.438/", "pdfjs-dist@1.0.0/"
+    )
+    assert sync.follow_pdfjs_version(stale) == dv._VIEWER_FILE.read_text()
     assert sync.VIEWER_FILE == dv._VIEWER_FILE.resolve()
     assert sync.VENDOR_DIR == dv._VENDOR_DIR.resolve()
     for alg in ("sha256", "sha384", "sha512"):
@@ -758,7 +807,11 @@ def test_vendored_pdfjs_reaches_the_docker_image():
         for line in (root / ".dockerignore").read_text().splitlines()
         if line.startswith("!")
     ]
-    vendored = [p.relative_to(root).as_posix() for p in dv._VENDOR_DIR.glob("*.mjs")]
-    assert vendored
+    vendored = [
+        p.relative_to(root).as_posix()
+        for pattern in ("*.mjs", "*.wasm", "LICENSE_*")
+        for p in dv._VENDOR_DIR.glob(pattern)
+    ]
+    assert len(vendored) >= 4
     # shortcut: fnmatch approximates Docker's pattern matching; fine for these globs.
     assert [p for p in vendored if not any(fnmatch(p, k) for k in keep)] == []
