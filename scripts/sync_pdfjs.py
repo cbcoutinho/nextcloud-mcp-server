@@ -72,6 +72,29 @@ def follow_pdfjs_version(html: str) -> str:
     )
 
 
+def fetch_pinned(m: re.Match[str], repin: bool) -> tuple[bytes, str]:
+    """Download one pinned file and check it; return it with its digest.
+
+    Exits on a hash mismatch (unless `repin`) or a script that can't be inlined.
+    """
+    with urllib.request.urlopen(m["url"], timeout=60) as resp:  # noqa: S310 (pinned https CDN URL)
+        data = resp.read()
+    digest = sri_digest(m["alg"], data)
+    if digest != m["sri"] and not repin:
+        raise SystemExit(
+            f"{m['url']}: got {digest}, pinned {m['sri']} (pass --repin after a version bump)"
+        )
+    # The server inlines scripts into a <script> body, which "</script" would
+    # end. wasm is embedded as base64, which can contain neither.
+    is_script = m["name"].endswith((".js", ".mjs"))
+    if is_script and (b"</script" in data.lower() or b"<!--" in data):
+        raise SystemExit(
+            f"{m['url']}: contains '</script' or '<!--', cannot be inlined"
+        )
+    print(f"{m['name']}: {len(data)} bytes, {digest}")
+    return data, digest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -98,31 +121,12 @@ def main() -> int:
     # a mismatch leaves the vendored files and the HTML pins consistent.
     fetched: list[tuple[str, bytes]] = []
     for m in pins:
-        with urllib.request.urlopen(m["url"], timeout=60) as resp:  # noqa: S310 (pinned https CDN URL)
-            data = resp.read()
-        digest = sri_digest(m["alg"], data)
+        data, digest = fetch_pinned(m, args.repin)
         if digest != m["sri"]:
-            if not args.repin:
-                print(
-                    f"{m['url']}: got {digest}, pinned {m['sri']} (pass --repin after a version bump)",
-                    file=sys.stderr,
-                )
-                return 1
             # Replacing by hash string is safe: a pin's hash occurs only in its own tag.
             html = html.replace(m["sri"], digest)
             print(f"{m['name']}: repinned {m['sri']} -> {digest}")
-        # The server inlines scripts into a <script> body, which "</script" would
-        # end. wasm is embedded as base64, which can contain neither.
-        if m["name"].endswith("js") and (
-            b"</script" in data.lower() or b"<!--" in data
-        ):
-            print(
-                f"{m['url']}: contains '</script' or '<!--', cannot be inlined",
-                file=sys.stderr,
-            )
-            return 1
         fetched.append((m["name"], data))
-        print(f"{m['name']}: {len(data)} bytes, {digest}")
     VENDOR_DIR.mkdir(parents=True, exist_ok=True)
     for name, data in fetched:
         (VENDOR_DIR / name).write_bytes(data)

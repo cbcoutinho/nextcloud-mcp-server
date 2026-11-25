@@ -924,8 +924,10 @@ def _embed_vendored_wasm(html: str) -> str:
         path = _VENDOR_DIR / m["name"]
         try:
             data = path.read_bytes()
-        except FileNotFoundError:
-            logger.warning("%s missing; scanned pages may render blank", path)
+        except OSError:
+            logger.warning(
+                "%s unreadable; scanned pages may render blank", path, exc_info=True
+            )
             return m[0]
         if sri_digest(m["alg"], data) != m["sri"]:
             logger.error(

@@ -16,7 +16,10 @@ Unmodified copies of the pdf.js files pinned in `../../document_viewer.html`
   server embeds each file in its block as base64, and the viewer hands the bytes
   to pdf.js through a custom `BinaryDataFactory`. cdnjs does not carry them, so
   they come from the `pdfjs-dist` npm package on jsDelivr. Their licenses are the
-  `LICENSE_*` files here.
+  `LICENSE_*` files here. Compiling them needs `'wasm-unsafe-eval'` (or
+  `'unsafe-eval'`) in the host's `script-src`. claude.ai allows it; on a host
+  that doesn't, pdf.js logs `#getWasmInstance` / `JpxError` warnings and scanned
+  pages render blank, while text PDFs are unaffected.
 
 Do not edit these files. Renovate's `html` manager bumps the cdnjs URLs in
 `document_viewer.html`, and the `pdf.js repin` workflow
