@@ -258,17 +258,6 @@ jobs:
         with:
           node-version: 26
 
-      # TEMPORARY: oidc is mounted from its submodule (group scope limits are
-      # unreleased). The post-installation hook only uses the mount once it is
-      # built; lanes that skip this step fall back to the app store.
-      - name: Build OIDC app
-        if: matrix.mode != 'single-user'
-        run: |
-          cd third_party/oidc
-          composer install --no-dev --optimize-autoloader
-          npm ci --ignore-scripts
-          npm run build
-
       - name: Build Astrolabe app
         if: matrix.mode != 'single-user'
         run: |
