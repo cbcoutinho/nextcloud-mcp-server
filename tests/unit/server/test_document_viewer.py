@@ -9,6 +9,7 @@ unknown field or action is refused at the boundary rather than trusted).
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import re
 from pathlib import Path
@@ -318,18 +319,48 @@ async def test_open_document_says_when_the_chunk_list_is_truncated(stub, mocker)
     assert "Only the first 1 chunks are listed." in res.content[0].text
 
 
-# --- save_redaction ------------------------------------------------------------
+# --- preview_changes / apply_changes -------------------------------------------
 
 
 def _accepted(name: str = "") -> AcceptedElicitation:
     return AcceptedElicitation(data=dv.SaveConfirmation(confirm=True, name=name))
 
 
+def _redact(page: int = 1, bbox=(0.1, 0.1, 0.5, 0.15)) -> dv.RedactChange:
+    return dv.RedactChange(kind="redact", page=page, bbox=bbox)
+
+
 async def _save(mocker, **kw):
-    regions = [dv.Region(page=1, bbox=(0.1, 0.1, 0.5, 0.15))]
-    return await dv.save_redaction(
-        ctx=mocker.MagicMock(), file_id=7, regions=regions, etag='"e1"', **kw
+    return await dv.apply_changes(
+        ctx=mocker.MagicMock(), file_id=7, changes=[_redact()], etag='"e1"', **kw
     )
+
+
+def test_a_change_must_name_a_known_kind():
+    with pytest.raises(ValidationError):
+        dv.RedactChange.model_validate({"page": 1, "bbox": [0.1, 0.1, 0.5, 0.2]})
+    with pytest.raises(ValidationError):
+        dv.RedactChange.model_validate(
+            {"kind": "erase", "page": 1, "bbox": [0.1, 0.1, 0.5, 0.2]}
+        )
+
+
+def test_the_viewer_tools_are_app_only():
+    tools = {b.fn.__name__: b for b in dv.apps.tools()}
+    for name in (
+        "preview_changes",
+        "apply_changes",
+    ):
+        assert tools[name].meta["ui"]["visibility"] == ["app"], name
+
+
+async def test_preview_changes_returns_the_changed_pdf_and_counts_by_kind(stub, mocker):
+    res = await dv.preview_changes(
+        ctx=mocker.MagicMock(), file_id=7, changes=[_redact(bbox=(0, 0, 1, 1))]
+    )
+    s = res.structured_content
+    assert s["changes"] == {"redact": 1} and s["etag"] == "e1"
+    assert "Jane Doe" not in _text(base64.b64decode(s["data_b64"]))
 
 
 async def test_save_steps_past_existing_copies_and_never_overwrites(stub, mocker):
@@ -412,10 +443,10 @@ async def test_read_document_bytes_refuses_a_non_pdf(stub, mocker):
 
 async def test_save_reports_a_region_off_the_document_as_an_error(stub, mocker):
     stub.webdav.write_file = mocker.AsyncMock()
-    res = await dv.save_redaction(
+    res = await dv.apply_changes(
         ctx=mocker.MagicMock(),
         file_id=7,
-        regions=[dv.Region(page=5, bbox=(0.1, 0.1, 0.5, 0.2))],
+        changes=[_redact(page=5, bbox=(0.1, 0.1, 0.5, 0.2))],
         etag='"e1"',
         confirmation=_accepted(),
     )

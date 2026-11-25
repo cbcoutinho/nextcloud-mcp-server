@@ -10,24 +10,32 @@
   pdf.js is the only external script, pinned with SRI hashes. The server serves it INLINE: it
   swaps each cdnjs tag below for the matching file in vendor/pdfjs/ after checking the hash,
   because hosts don't reliably honour csp.resourceDomains (claude.ai blocks cdnjs). The tags
-  stay here as the version/hash pin (Renovate's html manager bumps them; then run
-  scripts/sync_pdfjs.py --repin) and so the file still works opened on its own. Both are ES
-  modules that also set globals (pdfjsLib, pdfjsWorker); module scripts run deferred, so code
-  here awaits `pdfjsReady` before touching pdfjsLib. The worker runs on the main thread on
-  purpose: pdf.js picks up globalThis.pdfjsWorker as an in-thread "fake worker", which avoids
-  starting a Worker from a sandboxed, opaque-origin iframe.
+  stay here as the version/hash pin (Renovate's html manager bumps them; the pdfjs-repin
+  workflow then runs scripts/sync_pdfjs.py --repin) and so the file still works opened on its
+  own. Both are ES modules that also set globals (pdfjsLib, pdfjsWorker); module scripts run
+  deferred, so code here awaits `pdfjsReady` before touching pdfjsLib. The worker runs on the
+  main thread on purpose: pdf.js picks up globalThis.pdfjsWorker as an in-thread "fake worker",
+  which avoids starting a Worker from a sandboxed, opaque-origin iframe.
+
+  Layout: document first. One toolbar row (title, tools, zoom, fullscreen, drawer toggle), the
+  pages at full width, a selection bar that floats next to what the user selected, a drawer
+  (Changes / Passages / Info) that overlays the page when narrow and docks beside it when wide,
+  and a tray that appears only while changes are staged.
+
+  Changes: anything that alters the document is a staged change {kind, page, bbox, ...}. Only
+  kind "redact" exists today; a new kind is a TOOLS entry plus a server-side union member.
+  Sources: the model's proposals (open_document(redact_text=…) → staged_regions), a box drawn
+  with a tool, or a selection staged from the selection bar. Staged → Preview → Save copy | Back.
 
   Tools it calls (via the host's tools/call proxy):
-    read_document_bytes(file_id)                             app-only, PDF bytes for pdf.js
-    preview_redaction(file_id, regions[])                    app-only, redacted bytes, writes nothing
-    save_redaction(file_id, regions[], etag, name?)          app-only, writes a NEW redacted copy
-  Redaction is staged: regions (selected passages, drawn boxes, or staged_regions the model
-  proposed via open_document(redact_text=…)) → Preview → Save redacted copy | Discard.
-  The original is never changed: redacted copies are for sharing externally (like SAR exports).
-  Without `name` the server saves "<stem>-redacted.pdf" beside the original, numbering
-  (-v2, -v3, …) if taken; a name the user typed is never overwritten.
-  Host requests it uses: ui/message (Summarize / Ask), ui/update-model-context (selection),
-  ui/request-display-mode (fullscreen), ui/notifications/size-changed.
+    read_document_bytes(file_id)                         app-only, PDF bytes for pdf.js
+    preview_changes(file_id, changes[])                  app-only, changed bytes, writes nothing
+    apply_changes(file_id, changes[], etag, name?)       app-only, writes a NEW copy
+  The original is never changed: copies are for sharing externally (like SAR exports). Without
+  `name` the server saves "<stem>-redacted.pdf" beside the original, numbering (-v2, -v3, …) if
+  taken; a name the user typed is never overwritten.
+  Host requests it uses: ui/message (Summarize / Ask), ui/update-model-context (selection and
+  staged changes), ui/request-display-mode (fullscreen), ui/notifications/size-changed.
 -->
 <script type="module" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.5.438/pdf.min.mjs" integrity="sha384-6MTG6VynDVMfHzijur0VKc9BdrA6HaXHZd+pK6iGWh2acDj3CibR0CRwHizMoy1N" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script type="module" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.5.438/pdf.worker.min.mjs" integrity="sha384-/+r9qqXFj/8aZJ0d2yiuf6sqAR9T1UyN6NdZoI8cMvzccicdUNx62wDS8JsPedce" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
@@ -44,7 +52,9 @@
     --danger: #d64545;
     --radius: var(--border-radius-md, 6px);
     --font: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+    --shadow: 0 4px 18px rgba(0,0,0,.18);
     --h: 720px;
+    --drawer-w: 340px;
   }
   :root[data-theme="dark"] {
     --bg: var(--color-background-primary, #171a1f);
@@ -52,50 +62,70 @@
     --border: var(--color-border-primary, #343b45);
     --fg: var(--color-text-primary, #e6e9ef);
     --muted: var(--color-text-secondary, #9aa3b2);
+    --shadow: 0 4px 18px rgba(0,0,0,.5);
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* beats inline display:contents */
   html, body { margin: 0; }
   body {
     height: var(--h); display: flex; flex-direction: column; overflow: hidden;
     background: var(--bg); color: var(--fg); font: 13.5px/1.45 var(--font);
   }
-  header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
-  header .t { min-width: 0; flex: 1; }
-  header .t b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  header .t span { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
-  #status { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  #status.err { color: var(--danger); }
   button {
     font: inherit; border-radius: var(--radius); border: 1px solid var(--border);
-    background: var(--bg); color: var(--fg); padding: 5px 10px; cursor: pointer;
+    background: var(--bg); color: var(--fg); padding: 4px 10px; cursor: pointer; white-space: nowrap;
   }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: not-allowed; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
-  button.on { outline: 2px solid var(--danger); }
-  main { flex: 1; display: flex; min-height: 0; }
-  #pages { flex: 1; overflow: auto; padding: 14px; min-width: 0; background: var(--panel); }
-  #side { width: 340px; flex: 0 0 auto; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
-  @media (max-width: 720px) { #side { width: 46%; } }
+  button.ghost { border-color: transparent; background: transparent; }
+  button.ghost:hover:not(:disabled) { border-color: var(--border); }
+  input[type=text] { font: inherit; padding: 4px 8px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--fg); min-width: 0; }
 
+  /* ---- toolbar: one row, never wraps; the title gives way first ---- */
+  #bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--panel); min-height: 42px; }
+  #bar .t { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 8px; }
+  #title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status.err { color: var(--danger); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; flex: none; }
+  .seg button { border: 0; border-radius: 0; padding: 4px 9px; background: var(--bg); }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .seg button.redact[aria-pressed="true"] { background: var(--danger); }
+  .zoom { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+  .zoom span { min-width: 3.2em; text-align: center; font-size: 12px; color: var(--muted); }
+  .zoom button { padding: 4px 8px; }
+  #drawerBtn { position: relative; flex: none; }
+  #drawerBtn .badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--danger); color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+  @media (max-width: 520px) { #status, .zoom span { display: none; } }
+
+  /* ---- stage: pages, with the drawer docked beside them when wide ---- */
+  main { flex: 1; display: flex; min-height: 0; position: relative; }
+  #pages { flex: 1; overflow: auto; padding: 14px; min-width: 0; background: var(--panel); }
   .page { margin: 0 auto 16px; width: calc(100% * var(--zoom, 1)); max-width: calc(900px * var(--zoom, 1)); }
   .page .ph { color: var(--muted); font-size: 11.5px; margin-bottom: 4px; user-select: none; }
-  .wrap { position: relative; background: #fff; box-shadow: 0 1px 8px rgba(0,0,0,.25); line-height: 0; }
+  .wrap { position: relative; background: #fff; box-shadow: 0 1px 8px rgba(0,0,0,.25); line-height: 0; --scale-round-x: 1px; --scale-round-y: 1px; }
   .wrap canvas { width: 100%; height: auto; display: block; }
   .wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; }
   body.drawing .wrap { cursor: crosshair; }
-  rect.chunk { fill: rgba(0,130,201,.06); stroke: var(--accent); stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
-  rect.chunk:hover { fill: rgba(0,130,201,.18); }
-  rect.chunk.sel { fill: rgba(166,121,201,.30); stroke: var(--sel); stroke-width: 2; }
-  rect.chunk.focus { stroke-width: 2.5; }
-  rect.draw { fill: rgba(214,69,69,.25); stroke: var(--danger); stroke-dasharray: 4 3; stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: pointer; }
+  /* Passage outlines stay out of the way: shown on hover, when selected, or for the focus chunk. */
+  rect.chunk { fill: transparent; stroke: transparent; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
+  .wrap:hover rect.chunk { stroke: rgba(0,130,201,.35); }
+  rect.chunk:hover { fill: rgba(0,130,201,.12); stroke: var(--accent); }
+  rect.chunk.sel { fill: rgba(166,121,201,.28); stroke: var(--sel); stroke-width: 2; }
+  rect.chunk.focus { stroke: var(--accent); stroke-width: 2.5; }
+  rect.change { stroke-dasharray: 4 3; stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: pointer; }
+  rect.change.redact { fill: rgba(214,69,69,.25); stroke: var(--danger); }
+  rect.change.hl { stroke-width: 3; }
   body.drawing rect.chunk { pointer-events: none; }
-  body.previewing .wrap svg, body.previewing .textLayer { display: none; }
   rect.tsel { fill: rgba(240,180,0,.30); stroke: #d49a00; stroke-width: 1; vector-effect: non-scaling-stroke; }
+  body.previewing .wrap svg, body.previewing .textLayer { display: none; }
+  body.previewing .wrap { outline: 3px solid var(--danger); }
   /* pdf.js 6 text layer (from pdf_viewer.css): invisible text over the canvas, so text can be drag-selected.
      The sizer keeps --total-scale-factor (CSS px per PDF unit) current on .wrap. */
-  .wrap { --scale-round-x: 1px; --scale-round-y: 1px; }
   .textLayer { position: absolute; inset: 0; overflow: clip; opacity: .25; line-height: 1; letter-spacing: normal; word-spacing: normal; text-align: initial; transform-origin: 0 0; text-size-adjust: none; forced-color-adjust: none; z-index: 0;
     --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
   .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; user-select: text; }
@@ -108,9 +138,29 @@
   .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; user-select: none; }
   .textLayer .endOfContent.active { top: 0; }
   body.drawing .textLayer { pointer-events: none; }
-  body.previewing .wrap { outline: 3px solid var(--danger); }
-  .note label { display: flex; gap: 6px; align-items: flex-start; margin: 6px 0; }
-  #groups { font-size: 12px; display: grid; gap: 4px; min-width: 0; }
+  .empty { color: var(--muted); text-align: center; margin-top: 15%; padding: 0 16px; }
+
+  /* ---- floating selection bar ---- */
+  #selbar { position: fixed; z-index: 30; display: flex; gap: 4px; align-items: center; padding: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: calc(var(--radius) + 2px); box-shadow: var(--shadow); max-width: calc(100vw - 16px); }
+  #selbar[hidden] { display: none; }
+  #selbar .what { font-size: 12px; color: var(--muted); padding: 0 4px; white-space: nowrap; }
+  #selbar input { width: 220px; flex: 1; }
+
+  /* ---- drawer: overlay when narrow, docked when wide ---- */
+  #drawer { width: var(--drawer-w); max-width: 92%; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-left: 1px solid var(--border); }
+  #drawer[hidden] { display: none; }
+  body:not(.wide) #drawer { position: absolute; top: 0; right: 0; bottom: 0; z-index: 20; box-shadow: var(--shadow); }
+  #scrim { position: absolute; inset: 0; z-index: 19; background: rgba(0,0,0,.18); }
+  #scrim[hidden], body.wide #scrim { display: none; }
+  .tabs { display: flex; align-items: center; gap: 2px; padding: 6px 6px 0; border-bottom: 1px solid var(--border); }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 6px 10px; color: var(--muted); }
+  .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+  .tabs .x { margin-left: auto; }
+  .pane { flex: 1; overflow: auto; padding: 10px 12px; min-height: 0; }
+  .pane[hidden] { display: none; }
+  .pane h4 { margin: 4px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .hint { color: var(--muted); font-size: 12px; }
+  #groups { font-size: 12px; display: grid; gap: 4px; min-width: 0; margin-bottom: 10px; }
   #groups details { border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 8px; }
   #groups summary { cursor: pointer; list-style: none; }
   #groups label, #groups summary > span { display: flex; gap: 6px; align-items: baseline; cursor: pointer; }
@@ -121,58 +171,87 @@
   #groups .rb { display: flex; flex-wrap: wrap; gap: 4px; }
   #groups .rb button { font-size: 12px; padding: 3px 8px; }
   #groups .term span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .actions { padding: 10px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; }
-  .actions .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-  .actions .count { color: var(--muted); font-size: 12px; }
-  .actions input { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
-  .note { font-size: 12px; padding: 7px 9px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); }
-  .note.err { border-color: var(--danger); color: var(--danger); }
-  #list { flex: 1; overflow: auto; list-style: none; margin: 0; padding: 8px 10px; }
+  ul.items { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  ul.items li { display: flex; gap: 6px; align-items: center; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-size: 12px; min-width: 0; }
+  ul.items li:hover { border-color: var(--accent); }
+  ul.items li .k { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--danger); }
+  ul.items li .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ul.items li button { padding: 0 6px; line-height: 1.4; }
+  #list { list-style: none; margin: 0; padding: 0; }
   #list li { padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 6px; cursor: pointer; }
   #list li:hover { border-color: var(--accent); }
   #list li.sel { border-color: var(--sel); box-shadow: 0 0 0 1px var(--sel); }
   #list .m { font-size: 11px; color: var(--muted); }
   #list .s { font-size: 12px; max-height: 3.9em; overflow: hidden; }
-  .empty { color: var(--muted); text-align: center; margin-top: 15%; }
+  dl.info { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0 0 10px; font-size: 12px; }
+  dl.info dt { color: var(--muted); }
+  dl.info dd { margin: 0; overflow-wrap: anywhere; }
+
+  /* ---- tray: only while something is staged or previewed ---- */
+  #tray { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 7px 10px; border-top: 1px solid var(--border); background: var(--panel); }
+  #tray[hidden] { display: none; }
+  #tray .msg { flex: 1; min-width: 160px; font-size: 12.5px; }
+  #tray.previewing { border-top: 2px solid var(--danger); }
+  #tray label { display: flex; gap: 6px; align-items: center; flex: 1 1 220px; min-width: 0; font-size: 12px; }
+  #tray label input { flex: 1; }
+  #toast { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 25; max-width: min(560px, calc(100% - 24px)); display: flex; gap: 8px; align-items: center; padding: 7px 10px; font-size: 12.5px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+  #toast[hidden] { display: none; }
+  #toast.err { border-color: var(--danger); color: var(--danger); }
+  #toast button { padding: 2px 8px; }
 </style>
 </head>
 <body>
-<header>
-  <div class="t"><b id="title">Waiting for document…</b><span id="path"></span></div>
-  <span id="status"></span>
-  <button id="zoomOut" title="Zoom out">−</button>
-  <button id="zoomIn" title="Zoom in">+</button>
-  <button id="fullscreen" hidden title="Toggle fullscreen">⤢</button>
+<header id="bar">
+  <div class="t"><span id="title" title="">Waiting for document…</span><span id="status"></span></div>
+  <div class="seg" id="tools" role="group" aria-label="Tool"></div>
+  <div class="zoom">
+    <button class="ghost" id="zoomOut" title="Zoom out" aria-label="Zoom out">−</button>
+    <span id="zoomLevel">100%</span>
+    <button class="ghost" id="zoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+  </div>
+  <button class="ghost" id="fullscreen" hidden title="Toggle fullscreen" aria-label="Toggle fullscreen">⤢</button>
+  <button id="drawerBtn" title="Changes, passages and file info" aria-label="Open the side drawer" aria-expanded="false">☰<span class="badge" id="badge" hidden></span></button>
 </header>
 <main>
   <div id="pages"><div class="empty">The document will appear here.</div></div>
-  <aside id="side">
-    <div class="actions">
-      <div class="row"><span class="count" id="count">Click passages, or drag across text, to select.</span></div>
-      <div id="groups" hidden></div>
-      <div class="row">
-        <button class="primary" id="summarize">Summarize</button>
-        <button id="clear">Clear</button>
-        <button id="draw" title="Drag on a page to mark a region for redaction">Draw box</button>
-      </div>
-      <div class="row">
-        <input id="question" aria-label="Question about the selection" placeholder="Ask about the selection…">
-        <button id="ask">Ask</button>
-      </div>
-      <div class="row">
-        <button class="danger" id="redact" disabled>Preview redaction</button>
-      </div>
-      <div id="review" class="note" hidden>
-        <b>Preview — not saved.</b> Redacted text is removed from the copy, not just covered. The original is not changed.
-        <label>Save as <input id="saveName" type="text" spellcheck="false" style="flex:1;min-width:0"></label>
-        <div class="row"><button class="danger" id="accept">Save redacted copy</button><button id="discard">Discard</button></div>
-      </div>
-      <div id="note" class="note" hidden></div>
+  <div id="scrim" hidden></div>
+  <aside id="drawer" hidden>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="changes" aria-selected="true">Changes</button>
+      <button role="tab" data-tab="passages" aria-selected="false">Passages</button>
+      <button role="tab" data-tab="info" aria-selected="false">Info</button>
+      <button class="ghost x" id="drawerClose" title="Close" aria-label="Close the drawer">✕</button>
     </div>
-    <ul id="list"></ul>
+    <section class="pane" data-pane="changes">
+      <div id="groups" hidden></div>
+      <div id="mine"></div>
+      <p class="hint" id="changesEmpty">Nothing staged yet. Pick <b>Redact</b> in the toolbar and drag a box, or select text and choose <b>Redact</b>.</p>
+    </section>
+    <section class="pane" data-pane="passages" hidden>
+      <p class="hint">The indexed passages of this file. Click one to select it on the page.</p>
+      <ul id="list"></ul>
+    </section>
+    <section class="pane" data-pane="info" hidden>
+      <dl class="info" id="info"></dl>
+      <p class="hint">Saving writes a <b>new copy</b> beside the original; the original file is never changed. Redacted text is removed from the copy, not just covered.</p>
+    </section>
   </aside>
+  <div id="toast" role="status" hidden><span id="toastText"></span><button id="toastAction" hidden></button><button class="ghost" id="toastClose" aria-label="Dismiss">✕</button></div>
 </main>
+<div id="selbar" hidden role="toolbar" aria-label="Selection actions">
+  <span class="what" id="selWhat"></span>
+  <span id="selActions" style="display:contents">
+    <button class="primary" id="summarize">Summarize</button>
+    <button id="askOpen">Ask…</button>
+    <button id="stageSel" class="redact" title="Stage the selection for redaction">Redact</button>
+  </span>
+  <span id="askRow" hidden style="display:contents">
+    <input type="text" id="question" aria-label="Question about the selection" placeholder="Ask about the selection…">
+    <button class="primary" id="ask">Ask</button>
+  </span>
+  <button class="ghost" id="selClear" title="Clear the selection" aria-label="Clear the selection">✕</button>
+</div>
+<footer id="tray" hidden></footer>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -234,6 +313,7 @@ window.addEventListener("message", (e) => {
 
 // ---- host context: theme, sizing, display mode ----------------------------
 let ctx = {};
+const WIDE = 900;   // px of view width at which the drawer docks beside the page
 function applyContext(c) {
   const root = document.documentElement;
   if (c.theme) root.dataset.theme = c.theme;
@@ -242,19 +322,52 @@ function applyContext(c) {
   const h = c.displayMode === "fullscreen" ? window.innerHeight : (dims.height || Math.min(dims.maxHeight || 720, 720));
   root.style.setProperty("--h", h + "px");
   $("fullscreen").hidden = !(c.availableDisplayModes || []).includes("fullscreen");
+  layout();
 }
+function layout() {
+  const wide = window.innerWidth >= WIDE;
+  const was = document.body.classList.contains("wide");
+  document.body.classList.toggle("wide", wide);
+  if (wide !== was) syncDrawer();
+  placeSelbar();
+}
+window.addEventListener("resize", () => { if (ctx.displayMode === "fullscreen") applyContext(ctx); else layout(); });
 new ResizeObserver(() => {
   notify("ui/notifications/size-changed", { width: document.body.offsetWidth, height: document.body.offsetHeight });
 }).observe(document.body);
 
 // ---- state ----------------------------------------------------------------
+// A tool either selects (passages, text) or draws a change of its `kind`. Adding an annotation
+// tool means: an entry here, a KINDS entry, and the matching server-side change kind.
+const TOOLS = [
+  { id: "select", label: "Select", title: "Select passages or text to ask about or stage" },
+  { id: "redact", label: "Redact", title: "Drag a box over anything to redact it", kind: "redact" },
+];
+const KINDS = { redact: { one: "redaction", many: "redactions", verb: "Redact" } };
 let doc = null;              // structuredContent from open_document
-let selected = new Set();    // chunk indexes
-let drawn = [];              // [{page, bbox}] free-drawn redaction regions
+let selected = new Set();    // chunk indexes (a selection, not a change)
+let textSel = null;          // {text, regions: [{page, bbox}]} dragged across the text layer
+let staged = [];             // changes: {kind, page, bbox, on, source: model|box|text|passage, term?, group?, label?}
+let tool = "select";
 let zoom = 1;
+let previewing = null;       // the changes shown in the current preview, or null
+let drawerOpen = false, drawerTab = "changes";
 
-function setStatus(text, err = false) { const s = $("status"); s.textContent = text; s.className = err ? "err" : ""; }
-function showNote(text, err = false) { const n = $("note"); n.hidden = !text; n.textContent = text || ""; n.className = "note" + (err ? " err" : ""); }
+const kindName = (k, n) => (KINDS[k] || { one: k, many: k + "s" })[n === 1 ? "one" : "many"];
+const activeChanges = () => staged.filter((c) => c.on !== false);
+function setStatus(text, err = false) { const s = $("status"); s.textContent = text; s.title = text; s.className = err ? "err" : ""; }
+let toastTimer = null;
+function toast(text, { err = false, action = null } = {}) {
+  clearTimeout(toastTimer);
+  $("toast").hidden = !text;
+  $("toast").className = err ? "err" : "";
+  $("toastText").textContent = text || "";
+  const a = $("toastAction");
+  a.hidden = !action;
+  if (action) { a.textContent = action.label; a.onclick = () => { action.run(); toast(""); }; }
+  if (text && !err) toastTimer = setTimeout(() => toast(""), action ? 12000 : 6000);
+}
+$("toastClose").onclick = () => toast("");
 const chunkById = (i) => doc.chunks.find((c) => c.index === i);
 function pageLabel(c) {
   if (c.page == null) {
@@ -262,6 +375,37 @@ function pageLabel(c) {
   }
   return c.page_end && c.page_end !== c.page ? "p" + c.page + "–" + c.page_end : "p" + c.page;
 }
+
+// ---- toolbar ------------------------------------------------------------------
+for (const t of TOOLS) {
+  const b = document.createElement("button");
+  b.textContent = t.label; b.title = t.title; b.dataset.tool = t.id;
+  if (t.kind) b.classList.add(t.kind);
+  b.onclick = () => setTool(t.id);
+  $("tools").append(b);
+}
+function setTool(id) {
+  tool = id;
+  for (const b of $("tools").children) b.setAttribute("aria-pressed", String(b.dataset.tool === id));
+  document.body.classList.toggle("drawing", !!currentTool().kind);
+}
+const currentTool = () => TOOLS.find((t) => t.id === tool) || TOOLS[0];
+setTool("select");
+
+// ---- drawer -------------------------------------------------------------------
+function openDrawer(tab) { if (tab) drawerTab = tab; drawerOpen = true; syncDrawer(); }
+function closeDrawer() { drawerOpen = false; syncDrawer(); }
+function syncDrawer() {
+  $("drawer").hidden = !drawerOpen;
+  $("scrim").hidden = !drawerOpen;
+  $("drawerBtn").setAttribute("aria-expanded", String(drawerOpen));
+  for (const b of document.querySelectorAll(".tabs [data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === drawerTab));
+  for (const p of document.querySelectorAll(".pane")) p.hidden = p.dataset.pane !== drawerTab;
+}
+for (const b of document.querySelectorAll(".tabs [data-tab]")) b.onclick = () => openDrawer(b.dataset.tab);
+$("drawerBtn").onclick = () => (drawerOpen ? closeDrawer() : openDrawer());
+$("drawerClose").onclick = closeDrawer;
+$("scrim").onclick = closeDrawer;
 
 async function onToolResult(result) {
   if (result.isError) throw new Error((result.content || []).map((c) => c.text || "").join(" ") || "Tool failed");
@@ -273,18 +417,21 @@ async function onToolResult(result) {
     $("pages").append(pre);
     return;
   }
-  doc = sc; selected = new Set(); textSel = null; showNote(""); endPreview();
+  doc = sc; selected = new Set(); textSel = null; toast(""); endPreview(); setTool("select");
   // Regions the model proposed (open_document redact_text=…): staged for review, never saved by the model.
-  drawn = (sc.staged_regions || []).map((r) => ({ page: r.page, bbox: r.bbox, term: r.term, group: r.group, on: true }));
+  staged = (sc.staged_regions || []).map((r) => ({ kind: "redact", page: r.page, bbox: r.bbox, term: r.term, group: r.group, on: true, source: "model" }));
   $("title").textContent = doc.title || doc.path || "Document " + doc.file_id;
-  $("path").textContent = [doc.path, doc.page_count ? doc.page_count + " pages" : "", doc.chunks.length + " passages"].filter(Boolean).join(" · ");
-  renderList();
-  if (drawn.length) showNote("The assistant proposed " + drawn.length + " region(s) to redact (red boxes). Review them, then Preview.");
-  else if (doc.focus_chunk != null && chunkById(doc.focus_chunk)) selected.add(doc.focus_chunk);
+  $("title").title = doc.path || "";
+  renderList(); renderInfo();
+  if (staged.length) {
+    toast("The assistant proposed " + staged.length + " " + kindName("redact", staged.length) + " (red boxes).",
+      { action: { label: "Review", run: () => openDrawer("changes") } });
+    if (document.body.classList.contains("wide")) openDrawer("changes");
+  } else if (doc.focus_chunk != null && chunkById(doc.focus_chunk)) selected.add(doc.focus_chunk);
   $("pages").scrollTop = 0;   // a new document starts at the top
   await renderPages();
-  refreshSelection();
-  if (drawn.length) { const r = document.querySelector("rect.draw"); if (r) scrollPagesTo(r); }
+  refresh();
+  if (staged.length) { const r = document.querySelector("rect.change"); if (r) scrollPagesTo(r); }
   else if (doc.focus_chunk != null) scrollToChunk(doc.focus_chunk);
 }
 
@@ -292,18 +439,19 @@ async function onToolResult(result) {
 const SVG = "http://www.w3.org/2000/svg";
 async function renderPages(dataB64) {
   const host = $("pages");
-  const keep = [host.scrollLeft, host.scrollTop];   // preview/discard/save re-render: stay on the same spot
+  const keep = [host.scrollLeft, host.scrollTop];   // preview/back/save re-render: stay on the same spot
   host.innerHTML = ""; sizer.disconnect();
   const isPdf = /pdf/i.test(doc.mime_type || "") || /\.pdf$/i.test(doc.path || "");
   if (isPdf) await pdfjsReady;
   if (!isPdf || !window.pdfjsLib) {
     host.innerHTML = '<div class="empty"></div>';
-    host.firstChild.textContent = !isPdf ? "No page preview for " + (doc.mime_type || "this file type") + " — use the passage list."
-                                        : "pdf.js could not be loaded (check the resource CSP) — use the passage list.";
+    host.firstChild.textContent = !isPdf ? "No page preview for " + (doc.mime_type || "this file type") + " — the passages are in the drawer."
+                                        : "pdf.js could not be loaded (check the resource CSP) — the passages are in the drawer.";
     setStatus("");
+    openDrawer("passages");
     return;
   }
-  setStatus("Loading document…");
+  setStatus("Loading…");
   const bin = atob(dataB64 || (await callTool("read_document_bytes", { file_id: doc.file_id })).structuredContent.data_b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -327,7 +475,7 @@ async function renderPages(dataB64) {
     io.observe(card);
   }
   [host.scrollLeft, host.scrollTop] = keep;
-  setStatus(pdf.numPages + " pages");
+  setStatus(pdf.numPages + (pdf.numPages === 1 ? " page" : " pages"));
 }
 
 async function drawPage(pdf, card) {
@@ -356,6 +504,7 @@ function rectEl(cls, [x0, y0, x1, y1]) {
   r.setAttribute("width", Math.max(0, x1 - x0)); r.setAttribute("height", Math.max(0, y1 - y0));
   return r;
 }
+function titled(el, text) { const t = document.createElementNS(SVG, "title"); t.textContent = text; el.append(t); return el; }
 
 function buildOverlay(card, n) {
   const svg = card.querySelector("svg");
@@ -363,65 +512,82 @@ function buildOverlay(card, n) {
   for (const c of doc.chunks) {
     if (c.page !== n) continue;
     for (const b of c.bboxes || []) {
-      const r = rectEl("chunk", b);
+      const r = titled(rectEl("chunk", b), "c" + c.index + ": " + (c.text || "").slice(0, 160));
       r.dataset.chunk = c.index;
-      const t = document.createElementNS(SVG, "title");
-      t.textContent = "c" + c.index + ": " + (c.text || "").slice(0, 160);
-      r.append(t);
       r.addEventListener("click", (e) => { e.stopPropagation(); toggle(c.index); });
       svg.append(r);
     }
   }
-  drawn.forEach((d, i) => {
-    if (d.page !== n || d.on === false) return;
-    const r = rectEl("draw", d.bbox);
+  staged.forEach((ch, i) => {
+    if (ch.page !== n || ch.on === false) return;
+    const r = titled(rectEl("change " + ch.kind, ch.bbox), changeLabel(ch) + " — click to remove");
+    r.dataset.change = i;
     r.addEventListener("click", (e) => {
       if (drawing) {
         return;
       }
       e.stopPropagation();
-      drawn.splice(i, 1);
-      redrawOverlays();
-      refreshSelection();
+      removeChange(i);
     });
     svg.append(r);
   });
   for (const t of textSel?.regions || []) {
     if (t.page !== n) continue;
     const r = rectEl("tsel", t.bbox);
-    r.addEventListener("click", (e) => { e.stopPropagation(); textSel = null; redrawOverlays(); refreshSelection(); });
+    r.addEventListener("click", (e) => { e.stopPropagation(); clearSelection(); });
     svg.append(r);
   }
 }
 const redrawOverlays = () => document.querySelectorAll(".page").forEach((c) => buildOverlay(c, +c.dataset.page));
 
-// ---- free-drawn redaction regions ------------------------------------------
+// ---- changes ------------------------------------------------------------------
+function changeLabel(ch) {
+  const what = ch.source === "model" ? "“" + (ch.term || ch.group || "proposal") + "”"
+    : ch.source === "box" ? "Box"
+    : "“" + (ch.label || "selection") + "”";
+  return (KINDS[ch.kind]?.verb || ch.kind) + " " + what + " · p" + ch.page;
+}
+// Model proposals are switched off (they stay listed under their group); the user's own go.
+function removeChange(i) {
+  const ch = staged[i];
+  if (!ch) return;
+  if (ch.source === "model") ch.on = false; else staged.splice(i, 1);
+  redrawOverlays(); refresh();
+}
+function stage(kind, regions, source, label) {
+  for (const { page, bbox } of regions) staged.push({ kind, page, bbox, on: true, source, label });
+  redrawOverlays(); refresh();
+}
+
+// ---- free-drawn changes (any tool with a kind) ----------------------------------
 let drawing = false;
-$("draw").onclick = () => { drawing = !drawing; document.body.classList.toggle("drawing", drawing); $("draw").classList.toggle("on", drawing); };
 $("pages").addEventListener("pointerdown", (e) => {
-  if (!drawing) return;
+  const kind = currentTool().kind;
+  if (!kind || previewing) return;
   const wrap = e.target.closest(".wrap");
   if (!wrap) return;
   e.preventDefault();
+  drawing = true;
   const box = wrap.getBoundingClientRect();
   const pt = (ev) => [Math.min(1, Math.max(0, (ev.clientX - box.left) / box.width)), Math.min(1, Math.max(0, (ev.clientY - box.top) / box.height))];
   const start = pt(e);
   const svg = wrap.querySelector("svg");
-  const ghost = rectEl("draw", [...start, ...start]);
+  const ghost = rectEl("change " + kind, [...start, ...start]);
   svg.append(ghost);
   const norm = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
   const move = (ev) => { const [x0, y0, x1, y1] = norm(start, pt(ev)); ghost.setAttribute("x", x0); ghost.setAttribute("y", y0); ghost.setAttribute("width", x1 - x0); ghost.setAttribute("height", y1 - y0); };
   const up = (ev) => {
     window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+    drawing = false;
     const bbox = norm(start, pt(ev));
-    if (bbox[2] - bbox[0] > 0.005 && bbox[3] - bbox[1] > 0.005) drawn.push({ page: +wrap.closest(".page").dataset.page, bbox });
-    redrawOverlays(); refreshSelection();
+    ghost.remove();
+    if (bbox[2] - bbox[0] > 0.005 && bbox[3] - bbox[1] > 0.005) stage(kind, [{ page: +wrap.closest(".page").dataset.page, bbox }], "box");
   };
   window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
 });
 
 // ---- text selection (drag across the text layer) ---------------------------
-let textSel = null, selTimer = null;   // {text, regions: [{page, bbox}]}
+let selTimer = null;
 function selectionRegions(s) {
   const text = s.toString().trim();
   if (!text) return null;
@@ -444,19 +610,68 @@ function selectionRegions(s) {
 }
 document.addEventListener("selectionchange", () => {
   const s = getSelection();
-  // only selections in the pages count; typing in the side panel keeps the last one
+  // only selections in the pages count; typing in the drawer or the bar keeps the last one
   if (!s.rangeCount || s.isCollapsed || !$("pages").contains(s.anchorNode)) return;
   clearTimeout(selTimer);
-  selTimer = setTimeout(() => { const t = selectionRegions(s); if (t) { textSel = t; redrawOverlays(); refreshSelection(); } }, 250);
+  selTimer = setTimeout(() => { const t = selectionRegions(s); if (t) { textSel = t; redrawOverlays(); refresh(); } }, 250);
 });
 $("pages").addEventListener("click", (e) => {
   if (drawing || !e.target.closest(".textLayer") || !getSelection().isCollapsed) return;
-  const r = document.elementsFromPoint(e.clientX, e.clientY).find((el) => el.matches("rect.tsel, rect.draw, rect.chunk"));
+  const r = document.elementsFromPoint(e.clientX, e.clientY).find((el) => el.matches("rect.tsel, rect.change, rect.chunk"));
   if (r) r.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 });
+$("pages").addEventListener("scroll", () => placeSelbar(), { passive: true });
 const pagesOf = (t) => [...new Set(t.regions.map((r) => r.page))].join(", ");
 
-// ---- passage list + selection ----------------------------------------------
+// ---- selection bar --------------------------------------------------------------
+function clearSelection() {
+  selected.clear(); textSel = null; getSelection().removeAllRanges();
+  redrawOverlays(); refresh();
+}
+function selectionAnchor() {
+  if (textSel) {
+    const last = textSel.regions[textSel.regions.length - 1];
+    const wrap = document.querySelector('.page[data-page="' + last.page + '"] .wrap');
+    if (wrap) { const b = wrap.getBoundingClientRect(); return { left: b.left + last.bbox[0] * b.width, top: b.top + last.bbox[1] * b.height, bottom: b.top + last.bbox[3] * b.height }; }
+  }
+  const rects = [...document.querySelectorAll("rect.chunk.sel")];
+  if (rects.length) { const b = rects[rects.length - 1].getBoundingClientRect(); return { left: b.left, top: b.top, bottom: b.bottom }; }
+  return null;
+}
+function placeSelbar() {
+  const bar = $("selbar");
+  const has = !!doc && !previewing && (selected.size > 0 || !!textSel);
+  bar.hidden = !has;
+  if (!has) { $("askRow").hidden = true; $("selActions").hidden = false; return; }
+  const a = selectionAnchor(), pages = $("pages").getBoundingClientRect();
+  const w = bar.offsetWidth, h = bar.offsetHeight;
+  let top = a ? a.bottom + 6 : pages.top + 8;
+  if (a && top + h > pages.bottom - 4) top = a.top - h - 6;            // no room below: go above
+  top = Math.min(Math.max(top, pages.top + 4), pages.bottom - h - 4);   // keep it over the pages
+  const left = Math.min(Math.max((a ? a.left : pages.left + 8), 8), window.innerWidth - w - 8);
+  bar.style.top = top + "px"; bar.style.left = left + "px";
+}
+function selectionSummary() {
+  const parts = [selected.size && selected.size + (selected.size === 1 ? " passage" : " passages"), textSel && textSel.text.length + " chars"].filter(Boolean);
+  return parts.join(" + ");
+}
+function selectionRegionsForStaging() {
+  const out = [];
+  for (const i of selected) { const c = chunkById(i); for (const b of c.bboxes || []) out.push({ page: c.page, bbox: b }); }
+  return out.concat(textSel?.regions || []);
+}
+$("selClear").onclick = clearSelection;
+$("stageSel").onclick = () => {
+  const regions = selectionRegionsForStaging();
+  if (!regions.length) { toast("This passage has no page geometry to redact.", { err: true }); return; }
+  const label = (textSel?.text || [...selected].map((i) => chunkById(i).text || "").join(" ")).replace(/\s+/g, " ").slice(0, 60);
+  stage("redact", regions, textSel ? "text" : "passage", label);
+  clearSelection();
+  toast(regions.length + " " + kindName("redact", regions.length) + " staged.", { action: { label: "Review", run: () => openDrawer("changes") } });
+};
+$("askOpen").onclick = () => { $("selActions").hidden = true; $("askRow").hidden = false; placeSelbar(); $("question").focus(); };
+
+// ---- passage list ---------------------------------------------------------------
 function renderList() {
   const ul = $("list");
   ul.replaceChildren();
@@ -467,11 +682,18 @@ function renderList() {
     m.textContent = ["c" + c.index, pageLabel(c), (c.bboxes || []).length ? "" : "no geometry"].filter(Boolean).join(" · ");
     const s = document.createElement("div"); s.className = "s"; s.textContent = c.text || "";
     li.append(m, s);
-    li.onclick = () => { toggle(c.index); scrollToChunk(c.index); };
+    li.onclick = () => { toggle(c.index); scrollToChunk(c.index); if (!document.body.classList.contains("wide")) closeDrawer(); };
     ul.append(li);
   }
 }
-function toggle(i) { selected.has(i) ? selected.delete(i) : selected.add(i); refreshSelection(); }
+function renderInfo() {
+  const dl = $("info");
+  dl.replaceChildren();
+  const rows = [["File", doc.title || ""], ["Path", doc.path || ""], ["Pages", doc.page_count ?? "unknown"],
+    ["Passages", doc.chunks.length + (doc.chunks.length ? "" : " (not indexed yet)")], ["File id", doc.file_id]];
+  for (const [k, v] of rows) { const dt = document.createElement("dt"); dt.textContent = k; const dd = document.createElement("dd"); dd.textContent = String(v); dl.append(dt, dd); }
+}
+function toggle(i) { selected.has(i) ? selected.delete(i) : selected.add(i); refresh(); }
 // Centre `el` in the page pane only. (scrollIntoView would also scroll the host page around the iframe.)
 function scrollPagesTo(el, center = true) {
   const host = $("pages"), r = el.getBoundingClientRect(), h = host.getBoundingClientRect();
@@ -486,25 +708,33 @@ function scrollToChunk(i) {
   if (r) scrollPagesTo(r);
   else { const c = chunkById(i); const card = c && document.querySelector('.page[data-page="' + c.page + '"]'); if (card) scrollPagesTo(card, false); }
 }
+function scrollToChange(ch) {
+  const i = staged.indexOf(ch);
+  const r = document.querySelector('rect.change[data-change="' + i + '"]');
+  if (r) { scrollPagesTo(r); r.classList.add("hl"); setTimeout(() => r.classList.remove("hl"), 1200); }
+  else { const card = document.querySelector('.page[data-page="' + ch.page + '"]'); if (card) scrollPagesTo(card, false); }
+}
 
+// ---- one refresh for everything that reflects state ---------------------------------
 let ctxTimer = null;
-function refreshSelection() {
+function refresh() {
+  if (!doc) return;
   document.querySelectorAll("[data-chunk]").forEach((el) => el.classList.toggle("sel", selected.has(+el.dataset.chunk)));
   document.querySelectorAll("rect.chunk").forEach((el) => el.classList.toggle("focus", +el.dataset.chunk === doc.focus_chunk));
-  const regions = redactionRegions();
-  const nOn = drawn.filter((d) => d.on !== false).length;
-  const parts = [selected.size && selected.size + " passage(s)", textSel && "text (" + textSel.text.length + " chars)", nOn && nOn + " box(es)"].filter(Boolean);
-  renderGroups();
-  $("count").textContent = parts.length ? parts.join(" + ") + " selected" : "Click passages, or drag across text, to select.";
-  $("redact").disabled = regions.length === 0 || previewing;
-  $("redact").textContent = regions.length ? "Preview redaction (" + regions.length + " region(s))" : "Preview redaction";
+  const n = activeChanges().length;
+  $("badge").hidden = n === 0; $("badge").textContent = String(n);
+  $("selWhat").textContent = selectionSummary();
+  placeSelbar();
+  renderChanges();
+  renderTray();
   // Keep the model aware of what the user is pointing at; each call overwrites the last.
   clearTimeout(ctxTimer);
   ctxTimer = setTimeout(() => request("ui/update-model-context", {
     content: [{ type: "text", text: (selected.size || textSel
       ? "In the document viewer the user has selected this from \"" + (doc.title || doc.path) + "\" (file id " + doc.file_id + "):\n" + selectionText()
       : "The user is viewing \"" + (doc.title || doc.path) + "\" (file id " + doc.file_id + ") with nothing selected.") + stagedSummary() }],
-    structuredContent: { file_id: doc.file_id, selected_chunks: [...selected], selected_text: textSel?.text ?? null, drawn_regions: drawn.filter((d) => d.on !== false),
+    structuredContent: { file_id: doc.file_id, selected_chunks: [...selected], selected_text: textSel?.text ?? null,
+      staged_changes: activeChanges().map(({ kind, page, bbox, source }) => ({ kind, page, bbox, source })),
       proposals: stagedTerms().map(([group, terms]) => ({ group, terms: terms.map(([term, ds]) => ({ term, regions: ds.length, on: ds.every((d) => d.on !== false) })) })) },
   }).catch(() => {}), 400);
 }
@@ -513,8 +743,8 @@ function selectionText() {
 }
 function stagedTerms() {
   const groups = new Map();
-  for (const d of drawn) {
-    if (!d.term && !d.group) continue;
+  for (const d of staged) {
+    if (d.source !== "model") continue;
     const g = d.group || d.term, terms = groups.get(g) || groups.set(g, new Map()).get(g);
     (terms.get(d.term || g) || terms.set(d.term || g, []).get(d.term || g)).push(d);
   }
@@ -523,49 +753,53 @@ function stagedTerms() {
 function stagedSummary() {
   const on = [], off = [];
   for (const [g, terms] of stagedTerms()) for (const [t, ds] of terms) (ds.every((d) => d.on !== false) ? on : off).push((g === t ? "" : g + ": ") + "\"" + t + "\"");
-  if (!on.length && !off.length) {
+  const mine = staged.filter((c) => c.source !== "model");
+  if (!on.length && !off.length && !mine.length) {
     return "";
   }
   const offPart = off.length ? ". Turned off by the reviewer (do not redact): " + off.join("; ") : "";
-  return "\n\nProposed redactions the reviewer has enabled: " + (on.join("; ") || "none") + offPart + ".";
+  const minePart = mine.length ? ". The reviewer also staged " + mine.length + " change(s) of their own" : "";
+  return "\n\nProposed redactions the reviewer has enabled: " + (on.join("; ") || "none") + offPart + minePart + ".";
 }
 function reviewButton({ label, set, groups: names }) {
   const want = new Set((names || []).map((n) => String(n).toLowerCase()));
   const b = document.createElement("button");
   b.textContent = String(label || "").slice(0, 40);
   b.onclick = () => {
-    for (const d of drawn) {
-      if (!d.term && !d.group) continue;
+    for (const d of staged) {
+      if (d.source !== "model") continue;
       const hit = want.has(String(d.group || d.term).toLowerCase());
       if (set === "only") d.on = hit;
       else if (hit) d.on = set === "on";
     }
-    redrawOverlays(); refreshSelection();
+    redrawOverlays(); refresh();
   };
   return b;
 }
-function renderGroups() {
+function renderChanges() {
   const box = $("groups"), groups = stagedTerms();
-  box.hidden = !groups.length || !!previewing;
+  box.hidden = !groups.length;
   const open = new Set([...box.querySelectorAll("details[open]")].map((e) => e.dataset.g));
   box.replaceChildren();
-  const review = (groups.length && doc.review) || {};
-  if (review.heading) { const h = document.createElement("div"); h.className = "rh"; h.textContent = String(review.heading).slice(0, 60); box.append(h); }
-  const buttons = (Array.isArray(review.buttons) ? review.buttons : []).filter((b) => ["on", "off", "only"].includes(b?.set) && b.label).slice(0, 6);
-  if (buttons.length) { const row = document.createElement("div"); row.className = "rb"; row.append(...buttons.map(reviewButton)); box.append(row); }
-  const toggle = (ds) => (e) => {
+  if (groups.length) {
+    const review = doc.review || {};
+    const h = document.createElement("h4"); h.textContent = String(review.heading || "Proposed by the assistant").slice(0, 60); box.append(h);
+    const buttons = (Array.isArray(review.buttons) ? review.buttons : []).filter((b) => ["on", "off", "only"].includes(b?.set) && b.label).slice(0, 6);
+    if (buttons.length) { const row = document.createElement("div"); row.className = "rb"; row.append(...buttons.map(reviewButton)); box.append(row); }
+  }
+  const toggleAll = (ds) => (e) => {
     for (const d of ds) {
       d.on = e.target.checked;
     }
     redrawOverlays();
-    refreshSelection();
+    refresh();
   };
   const check = (ds, label, cls) => {
     const l = document.createElement(cls ? "label" : "span"); if (cls) l.className = cls;   // group rows: name click expands, only the box toggles
     const c = document.createElement("input"); c.type = "checkbox";
     const n = ds.filter((d) => d.on !== false).length;
     c.checked = n === ds.length; c.indeterminate = n > 0 && n < ds.length;
-    c.onchange = toggle(ds); c.onclick = (e) => e.stopPropagation();
+    c.onchange = toggleAll(ds); c.onclick = (e) => e.stopPropagation();
     const t = document.createElement("span"); t.textContent = label + " (" + ds.length + ")"; t.title = label;
     l.append(c, t);
     return l;
@@ -578,18 +812,35 @@ function renderGroups() {
     if (!(terms.length === 1 && terms[0][0] === g)) for (const [t, ds] of terms) det.append(check(ds, t, "term"));
     box.append(det);
   }
+  const mine = staged.filter((c) => c.source !== "model");
+  const wrap = $("mine");
+  wrap.replaceChildren();
+  if (mine.length) {
+    const h = document.createElement("h4"); h.textContent = "Added by you"; wrap.append(h);
+    const ul = document.createElement("ul"); ul.className = "items";
+    for (const ch of mine) {
+      const li = document.createElement("li");
+      const k = document.createElement("span"); k.className = "k";
+      const l = document.createElement("span"); l.className = "l"; l.textContent = changeLabel(ch); l.title = l.textContent;
+      const x = document.createElement("button"); x.className = "ghost"; x.textContent = "✕"; x.title = "Remove"; x.setAttribute("aria-label", "Remove");
+      x.onclick = (e) => { e.stopPropagation(); removeChange(staged.indexOf(ch)); };
+      li.onclick = () => { scrollToChange(ch); if (!document.body.classList.contains("wide")) closeDrawer(); };
+      li.append(k, l, x); ul.append(li);
+    }
+    wrap.append(ul);
+  }
+  $("changesEmpty").hidden = groups.length > 0 || mine.length > 0;
 }
 function passagesText() {
   return [...selected].sort((a, b) => a - b).map((i) => { const c = chunkById(i); return "[c" + i + " " + pageLabel(c) + "] " + (c.text || ""); }).join("\n\n");
 }
-$("clear").onclick = () => { selected.clear(); drawn = []; textSel = null; getSelection().removeAllRanges(); redrawOverlays(); refreshSelection(); };
 
 // ---- Summarize / Ask → ui/message (the host's model answers) -----------------
 async function sendMessage(text) {
   try {
     await request("ui/message", { role: "user", content: [{ type: "text", text }] });
-    showNote("Sent to the assistant.");
-  } catch (err) { showNote("Could not send: " + err.message, true); }
+    toast("Sent to the assistant.");
+  } catch (err) { toast("Could not send: " + err.message, { err: true }); }
 }
 const docRef = () => "\"" + (doc.title || doc.path) + "\" (" + doc.path + ", file id " + doc.file_id + ")";
 $("summarize").onclick = () => {
@@ -603,58 +854,96 @@ $("ask").onclick = () => {
   if (!doc || !q) return;
   sendMessage(q + (selected.size || textSel ? "\n\nAbout this selection from " + docRef() + ":\n\n" + selectionText() : "\n\n(About the document " + docRef() + ".)"));
   $("question").value = "";
+  $("askRow").hidden = true; $("selActions").hidden = false; placeSelbar();
 };
 $("question").addEventListener("keydown", (e) => { if (e.key === "Enter") $("ask").click(); });
 
-// ---- Redaction: stage → preview (nothing written) → Accept & save | Discard ---------------
-function redactionRegions() {
-  if (!doc) return [];
-  const out = [];
-  for (const i of selected) { const c = chunkById(i); for (const b of c.bboxes || []) out.push({ page: c.page, bbox: b }); }
-  return out.concat(textSel?.regions || [], drawn.filter((d) => d.on !== false).map(({ page, bbox }) => ({ page, bbox })));
+// ---- tray: staged → Preview (nothing written) → Save copy | Back ----------------------
+function countsText(changes) {
+  const counts = {};
+  for (const c of changes) counts[c.kind] = (counts[c.kind] || 0) + 1;
+  return Object.entries(counts).map(([k, n]) => n + " " + kindName(k, n)).join(", ");
 }
-let previewing = null;       // the regions shown in the current preview, or null
-function endPreview() { previewing = null; document.body.classList.remove("previewing"); $("review").hidden = true; }
-$("redact").onclick = async () => {
-  const regions = redactionRegions();
-  if (!regions.length) return;
-  $("redact").disabled = true; setStatus("Preparing preview…"); showNote("");
+function renderTray() {
+  const tray = $("tray"), n = activeChanges().length;
+  tray.classList.toggle("previewing", !!previewing);
+  tray.hidden = !previewing && n === 0;
+  if (tray.hidden) { tray.dataset.mode = ""; return; }
+  if (previewing && tray.dataset.mode === "preview") return;   // keep the name being typed
+  tray.replaceChildren();
+  tray.dataset.mode = previewing ? "preview" : "staged";
+  const msg = document.createElement("span"); msg.className = "msg"; msg.id = "trayMsg";
+  if (!previewing) {
+    msg.textContent = countsText(activeChanges()) + " staged";
+    const review = button("Review", () => openDrawer("changes"));
+    const discard = button("Discard", discardAll);
+    const preview = button("Preview", startPreview, "danger");
+    tray.append(msg, review, discard, preview);
+    return;
+  }
+  const b = document.createElement("b"); b.textContent = "Preview — not saved. ";
+  msg.append(b, countsText(previewing) + ". The original is not changed.");
+  const label = document.createElement("label"); label.textContent = "Save as ";
+  const name = document.createElement("input"); name.type = "text"; name.id = "saveName"; name.spellcheck = false;
+  name.value = defaultCopyName(); name.addEventListener("input", () => { nameEdited = true; });
+  label.append(name);
+  tray.append(msg, label, button("Back", backFromPreview), button("Save copy", save, "danger"));
+}
+function button(text, onclick, cls) { const b = document.createElement("button"); b.textContent = text; b.onclick = onclick; if (cls) b.className = cls; return b; }
+function discardAll() {
+  const n = activeChanges().length;
+  staged = [];
+  redrawOverlays(); refresh();
+  toast("Discarded " + n + " staged change(s).");
+}
+function endPreview() { previewing = null; document.body.classList.remove("previewing"); renderTray(); }
+
+const wireChanges = (list) => list.map(({ kind, page, bbox }) => ({ kind, page, bbox }));
+async function startPreview() {
+  const changes = wireChanges(activeChanges());
+  if (!changes.length) return;
+  clearSelection(); setStatus("Preparing preview…"); toast("");
   try {
-    const r = await callTool("preview_redaction", { file_id: doc.file_id, regions });
-    previewing = regions;
+    const r = await callTool("preview_changes", { file_id: doc.file_id, changes });
+    previewing = changes; nameEdited = false;
     document.body.classList.add("previewing");
-    $("saveName").value = defaultCopyName(); nameEdited = false;
-    $("review").hidden = false;
+    renderTray();
     await renderPages(r.structuredContent.data_b64);
     setStatus("Preview");
-  } catch (err) { endPreview(); setStatus(""); showNote("Preview failed: " + err.message, true); refreshSelection(); }
-};
-$("discard").onclick = async () => { endPreview(); await renderPages(); refreshSelection(); showNote("Preview discarded; nothing was saved."); };
+  } catch (err) { endPreview(); setStatus(""); toast("Preview failed: " + err.message, { err: true }); refresh(); }
+}
+async function backFromPreview() { endPreview(); await renderPages(); refresh(); toast("Preview closed; nothing was saved."); }
 // "<stem>-redacted.pdf"; the server numbers it (-v2, …) if taken, unless the user typed a name.
 let nameEdited = false;
 const defaultCopyName = () => (doc.path || doc.title || "document.pdf").split("/").pop().replace(/(\.pdf)?$/i, "-redacted.pdf");
-$("saveName").addEventListener("input", () => { nameEdited = true; });
-$("accept").onclick = async () => {
-  const regions = previewing, name = $("saveName").value.trim();
-  if (nameEdited && !name) { showNote("Enter a name for the redacted copy.", true); return; }
-  $("accept").disabled = $("discard").disabled = true; setStatus("Saving…");
+async function save() {
+  const changes = previewing, name = ($("saveName")?.value || "").trim();
+  if (nameEdited && !name) { toast("Enter a name for the copy.", { err: true }); return; }
+  for (const b of $("tray").querySelectorAll("button")) b.disabled = true;
+  setStatus("Saving…");
   try {
-    const args = { file_id: doc.file_id, regions, etag: doc.etag };
+    const args = { file_id: doc.file_id, changes, etag: doc.etag };
     if (nameEdited) args.name = name;
-    const r = await callTool("save_redaction", args);
+    const r = await callTool("apply_changes", args);
     const out = r.structuredContent || {};
-    selected.clear(); drawn = []; textSel = null;
-    endPreview(); await renderPages(); refreshSelection();
-    showNote("Saved a redacted copy as " + (out.path || name) + " (" + (out.redacted_regions ?? regions.length)
-      + " region(s) redacted). The original " + (doc.path || "document") + " is unchanged.");
-    request("ui/update-model-context", { content: [{ type: "text", text: "The user saved a redacted copy of " + docRef() + " as "
-      + (out.path || name) + " (file id " + out.file_id + ", " + regions.length + " region(s) redacted) for external sharing. The original is unchanged." }] }).catch(() => {});
-  } catch (err) { setStatus(""); showNote("Save failed: " + err.message, true); }
-  finally { $("accept").disabled = $("discard").disabled = false; }
-};
+    selected.clear(); staged = []; textSel = null;
+    endPreview(); await renderPages(); refresh();
+    toast("Saved a copy as " + (out.path || name) + " (" + countsText(changes) + "). The original " + (doc.path || "document") + " is unchanged.");
+    request("ui/update-model-context", { content: [{ type: "text", text: "The user saved a copy of " + docRef() + " as "
+      + (out.path || name) + " (file id " + out.file_id + ", " + countsText(changes) + ") for external sharing. The original is unchanged." }] }).catch(() => {});
+  } catch (err) {
+    setStatus(""); toast("Save failed: " + err.message, { err: true });
+    for (const b of $("tray").querySelectorAll("button")) b.disabled = false;
+  }
+}
 
-// ---- zoom / fullscreen -------------------------------------------------------
-function setZoom(z) { zoom = Math.min(3, Math.max(0.5, z)); document.documentElement.style.setProperty("--zoom", zoom); }
+// ---- zoom / fullscreen / keys ---------------------------------------------------------
+function setZoom(z) {
+  zoom = Math.min(3, Math.max(0.5, z));
+  document.documentElement.style.setProperty("--zoom", zoom);
+  $("zoomLevel").textContent = Math.round(zoom * 100) + "%";
+  requestAnimationFrame(placeSelbar);
+}
 $("zoomIn").onclick = () => setZoom(zoom + 0.25);
 $("zoomOut").onclick = () => setZoom(zoom - 0.25);
 $("fullscreen").onclick = async () => {
@@ -663,13 +952,20 @@ $("fullscreen").onclick = async () => {
     applyContext(Object.assign(ctx, { displayMode: r.mode }));
   } catch (err) { setStatus(err.message, true); }
 };
-window.addEventListener("resize", () => { if (ctx.displayMode === "fullscreen") applyContext(ctx); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("askRow").hidden) { $("askRow").hidden = true; $("selActions").hidden = false; placeSelbar(); }
+  else if (selected.size || textSel) clearSelection();
+  else if (drawerOpen && !document.body.classList.contains("wide")) closeDrawer();
+  else if (tool !== "select") setTool("select");
+});
 
 // ---- handshake -------------------------------------------------------------
+layout();
 (async () => {
   const init = await request("ui/initialize", {
     protocolVersion: "2026-01-26",
-    appInfo: { name: "nextcloud-document-viewer", version: "0.1.0" },
+    appInfo: { name: "nextcloud-document-viewer", version: "0.2.0" },
     appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
   });
   ctx = init?.hostContext || {};

@@ -2,9 +2,9 @@
 
 Tools bound to ``ui://nextcloud-mcp/document-viewer.html``: open a file with its
 indexed chunk geometry (optionally staging proposed redactions), and, app-only,
-read its bytes, preview a redaction in memory, and save it as a NEW copy
-(etag-guarded, create-only; the original is never changed). Geometry comes from the
-Qdrant payload (``chunk_bbox``, ``page_number``), never from server-side
+read its bytes, preview a typed list of changes (redactions today) in memory,
+and save them as a NEW copy (etag-guarded, create-only; the original is never
+changed). Geometry comes from the Qdrant payload (``chunk_bbox``, ``page_number``), never from server-side
 rasterising.
 """
 
@@ -123,7 +123,20 @@ class Region(BaseModel):
         return x0, y0, x1, y1
 
 
-Regions = Annotated[list[Region], Field(min_length=1, max_length=MAX_REGIONS)]
+class RedactChange(Region):
+    """Remove everything under ``bbox`` (text, image pixels, touched line art)."""
+
+    kind: Literal["redact"]
+
+
+# One kind today. A new kind (highlight, comment, ...) becomes a member of a
+# union discriminated on ``kind``: an additive schema change, no new tools.
+Change = RedactChange
+Changes = Annotated[list[Change], Field(min_length=1, max_length=MAX_REGIONS)]
+
+
+def _counts(changes: list[Change]) -> dict[str, int]:
+    return dict(Counter(c.kind for c in changes))
 
 
 async def _resolve(ctx: Context, file_id: int) -> tuple[Any, dict[str, Any]]:
@@ -432,38 +445,47 @@ def _redact(pdf: bytes, regions: list[Region]) -> bytes:
         return doc.tobytes(garbage=3, deflate=True)
 
 
-async def _redacted(
-    ctx: Context, file_id: int, regions: list[Region]
-) -> tuple[Any, dict[str, Any], bytes, str | None]:
-    """Download the PDF and apply the redactions in memory; nothing is written."""
-    if not regions:
-        raise ValueError("No regions to redact")
+def _apply(pdf: bytes, changes: list[Change]) -> bytes:
+    """``pdf`` with every change applied, in memory. Dispatches on ``kind``."""
+    if not changes:
+        raise ValueError("No changes to apply")
+    return _redact(pdf, [c for c in changes if c.kind == "redact"])
+
+
+async def _preview(ctx: Context, file_id: int, changes: list[Change]) -> CallToolResult:
     client, row = await _resolve(ctx, file_id)
     data, etag = await _download_pdf(client, row)
-    return client, row, await anyio.to_thread.run_sync(_redact, data, regions), etag
-
-
-@apps.tool(
-    resource_uri=VIEWER_URI,
-    visibility=["app"],
-    title="Preview Redaction",
-    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
-)
-@require_scopes("files.read")
-async def preview_redaction(
-    ctx: Context, file_id: int, regions: Regions
-) -> CallToolResult:
-    """Return the PDF with ``regions`` redacted (base64), without saving it."""
-    _, row, out, etag = await _redacted(ctx, file_id, regions)
+    out = await anyio.to_thread.run_sync(_apply, data, changes)
+    counts = _counts(changes)
+    summary = ", ".join(f"{n} {kind}" for kind, n in counts.items())
     return _result(
-        f"Preview of {row['path']} with {len(regions)} region(s) redacted.",
+        f"Preview of {row['path']} with {summary} change(s) applied; nothing saved.",
         {
             "mime_type": "application/pdf",
             "size": len(out),
             "data_b64": base64.b64encode(out).decode(),
             "etag": etag,
+            "changes": counts,
         },
     )
+
+
+@apps.tool(
+    resource_uri=VIEWER_URI,
+    visibility=["app"],
+    title="Preview Changes",
+    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+)
+@require_scopes("files.read")
+async def preview_changes(
+    ctx: Context, file_id: int, changes: Changes
+) -> CallToolResult:
+    """Return the PDF with ``changes`` applied (base64), without saving it.
+
+    ``changes`` items are ``{"kind": "redact", "page", "bbox"}`` (bbox
+    normalised 0..1 in displayed page space, top-left origin).
+    """
+    return await _preview(ctx, file_id, changes)
 
 
 def _default_name(src: str, n: int = 1) -> str:
@@ -484,7 +506,9 @@ def _target_path(src: str, name: str) -> str:
 
 
 class SaveConfirmation(BaseModel):
-    confirm: bool = Field(description="Save a redacted copy (the original is kept)")
+    confirm: bool = Field(
+        description="Save a copy with the changes (the original is kept)"
+    )
     name: str = Field(default="", description="File name for the copy (empty: default)")
 
 
@@ -498,7 +522,7 @@ async def _confirm_save(
     """
     caps = ctx.client_capabilities
     if caps is None or caps.elicitation is None:
-        logger.info("Saving a redacted copy of file %s without a prompt", file_id)
+        logger.info("Saving a changed copy of file %s without a prompt", file_id)
         return SaveConfirmation(confirm=True, name=name or "")
     _, row = await _resolve(ctx, file_id)
     suggested = name or _default_name(row["path"])
@@ -507,7 +531,7 @@ async def _confirm_save(
         name: str = Field(default=suggested, description="File name for the copy")
 
     return Elicit(
-        f"Save a redacted copy of {PurePosixPath(row['path']).name}? "
+        f"Save a copy of {PurePosixPath(row['path']).name}? "
         "The original is not changed.",
         Ask,
     )
@@ -549,33 +573,83 @@ async def _write_copy(
                 written.get("message") or f"Save failed with HTTP {status}"
             )
         return path
-    raise ValueError(f"No free name for a redacted copy (tried up to {candidates[-1]})")
+    raise ValueError(f"No free name for the copy (tried up to {candidates[-1]})")
 
 
 def _error(text: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True)
 
 
+async def _save(
+    ctx: Context,
+    file_id: int,
+    changes: list[Change],
+    etag: str,
+    confirmation: ElicitationResult[SaveConfirmation],
+    name: str | None,
+) -> CallToolResult:
+    if not isinstance(confirmation, AcceptedElicitation):
+        return _error(f"Changes not saved: {confirmation.action}.")
+    choice = confirmation.data
+    if not choice.confirm:
+        return _error("Changes not saved: not confirmed.")
+    try:
+        client, row = await _resolve(ctx, file_id)
+        data, current = await _download_pdf(client, row)
+        if current is None or normalize_etag(etag) != current:
+            return _error("conflict: file changed since it was opened")
+        src = row["path"]
+        out = await anyio.to_thread.run_sync(_apply, data, changes)
+        candidates, explicit = _copy_candidates(src, choice.name, name)
+        path = await _write_copy(client, candidates, out, explicit)
+    except ValueError as e:
+        return _error(str(e))
+    except Exception:
+        logger.warning(
+            "Saving a changed copy of file %s failed", file_id, exc_info=True
+        )
+        return _error("Saving the copy failed; try again.")
+
+    try:
+        new_id = await client.webdav.get_fileid(path)
+    except Exception:
+        # The copy exists; erroring here would make a retry write -v2.
+        logger.warning("Saved %s but could not read its file id", path, exc_info=True)
+        new_id = None
+    counts = _counts(changes)
+    summary = ", ".join(f"{n} {kind}" for kind, n in counts.items())
+    return _result(
+        f"Saved a copy with {summary} change(s) as {path}; the original {src} is unchanged.",
+        {
+            "file_id": int(new_id) if new_id else None,
+            "source_file_id": file_id,
+            "path": path,
+            "changes": counts,
+        },
+    )
+
+
 @apps.tool(
     resource_uri=VIEWER_URI,
     visibility=["app"],
-    title="Save Redacted Copy",
+    title="Save a Changed Copy",
     annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
 )
 @require_scopes("files.read", "files.write")
-async def save_redaction(
+async def apply_changes(
     ctx: Context,
     file_id: int,
-    regions: Regions,
+    changes: Changes,
     etag: str,
     confirmation: Annotated[
         ElicitationResult[SaveConfirmation], Resolve(_confirm_save)
     ],
     name: str | None = None,
 ) -> CallToolResult:
-    """Save ``regions`` redacted as a NEW PDF. The original is never changed.
+    """Save the file with ``changes`` applied as a NEW PDF. The original is never changed.
 
-    The copy also drops document metadata, XMP and embedded files. Hosts without
+    ``changes`` items are ``{"kind": "redact", "page", "bbox"}``. A redacted
+    copy also drops document metadata, XMP and embedded files. Hosts without
     elicitation are trusted to have confirmed in their own UI (the tool is
     app-only), and the write is create-only either way.
     The source must still be at ``etag`` (the version the user reviewed). With no
@@ -584,44 +658,7 @@ async def save_redaction(
     path) must not exist yet. Accepting the form's suggested name unchanged
     counts as the default, so it steps too.
     """
-    if not isinstance(confirmation, AcceptedElicitation):
-        return _error(f"Redaction not saved: {confirmation.action}.")
-    choice = confirmation.data
-    if not choice.confirm:
-        return _error("Redaction not saved: not confirmed.")
-    try:
-        client, row = await _resolve(ctx, file_id)
-        data, current = await _download_pdf(client, row)
-        if current is None or normalize_etag(etag) != current:
-            return _error("conflict: file changed since it was opened")
-        src = row["path"]
-        out = await anyio.to_thread.run_sync(_redact, data, regions)
-        candidates, explicit = _copy_candidates(src, choice.name, name)
-        path = await _write_copy(client, candidates, out, explicit)
-    except ValueError as e:
-        return _error(str(e))
-    except Exception:
-        logger.warning(
-            "Saving a redacted copy of file %s failed", file_id, exc_info=True
-        )
-        return _error("Saving the redacted copy failed; try again.")
-
-    try:
-        new_id = await client.webdav.get_fileid(path)
-    except Exception:
-        # The copy exists; erroring here would make a retry write -v2.
-        logger.warning("Saved %s but could not read its file id", path, exc_info=True)
-        new_id = None
-    return _result(
-        f"Saved a redacted copy ({len(regions)} region(s)) as {path}; "
-        f"the original {src} is unchanged.",
-        {
-            "file_id": int(new_id) if new_id else None,
-            "source_file_id": file_id,
-            "path": path,
-            "redacted_regions": len(regions),
-        },
-    )
+    return await _save(ctx, file_id, changes, etag, confirmation, name)
 
 
 _SCRIPT_TAG = re.compile(
