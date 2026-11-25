@@ -199,6 +199,40 @@ async def test_read_file_raises_when_path_excluded(
     fake_client.webdav.stream_to_file.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("tool", "client_method", "path", "extra"),
+    [
+        ("nc_webdav_read_file", "stream_to_file", "./Private/x.txt", {}),
+        ("nc_webdav_read_file", "stream_to_file", "Public//secret.txt", {}),
+        ("nc_webdav_read_file", "stream_to_file", "\\Private\\x.txt", {}),
+        ("nc_webdav_list_directory", "list_directory", "./Private", {}),
+        ("nc_webdav_write_file", "write_file", "./Private/w.txt", {"content": "x"}),
+        ("nc_webdav_delete_resource", "delete_resource", "./Private/del.txt", {}),
+    ],
+)
+async def test_non_canonical_path_spelling_is_still_refused(
+    webdav_tools,
+    fake_client,
+    patch_get_client,
+    patch_excluded,
+    tool,
+    client_method,
+    path,
+    extra,
+):
+    """GHSA-xg6j-v24f-jv8q: a `./`, `//` or backslash spelling of an excluded
+    path resolves to the same file, so the guard must refuse it before any
+    request reaches Nextcloud."""
+    patch_get_client(fake_client)
+    patch_excluded({"Private", "Public/secret.txt"})
+
+    fn = webdav_tools[tool].fn
+    with pytest.raises(ToolError, match="excluded tag"):
+        await fn(path=path, ctx=_mock_ctx(fake_client), **extra)
+
+    getattr(fake_client.webdav, client_method).assert_not_called()
+
+
 async def test_read_file_passes_through_when_not_excluded(
     webdav_tools, fake_client, patch_get_client, patch_excluded, parsing
 ):
