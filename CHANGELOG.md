@@ -5,6 +5,28 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.219.0 (2026-11-25)
+
+### Feat
+
+- **server**: open_document MCP App viewer for reviewing redactions
+
+### Fix
+
+- **server**: keep image points out of the viewer's chunk list
+- **server**: choose redaction modes for images and line art explicitly
+- **server**: map redaction regions through the page rotation
+- **server**: report unreadable PDFs and failed saves as tool errors
+- **server**: import CallToolResult from mcp.types
+- **server**: make every save_redaction failure a tool error
+- **server**: check viewer file size and type before downloading
+- **server**: harden the redaction save path from review
+- **auth**: register public loopback DCR clients as native
+
+### Refactor
+
+- **server**: split open_document/save_redaction, guard non-PDF files
+
 ## v0.218.1 (2026-11-24)
 
 ### Fix
