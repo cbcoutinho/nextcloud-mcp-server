@@ -252,6 +252,30 @@ class TestReordering:
         assert len(sent) == 2, "the blank excerpt is not worth a model slot"
         assert len(out) == 3, "but the row is still returned"
 
+    async def test_image_hits_keep_their_retrieval_slot(self, monkeypatch):
+        """Deck #1614: an image hit has no text to score. At the tail, the
+        callers' trim back to the verification budget always dropped it."""
+        _stub_client(
+            monkeypatch,
+            ranking=[
+                RerankedIndex(index=2, score=0.9),  # positions in the SENT list
+                RerankedIndex(index=0, score=0.5),
+                RerankedIndex(index=1, score=0.1),
+            ],
+        )
+        results = _results(4)
+        results[1].excerpt = ""
+        results[1].metadata = {"match": "image"}
+
+        out, reranked = await rerank_mod.rerank_results(
+            results, "q", settings=_settings(), surface="mcp"
+        )
+
+        assert reranked == RERANK_APPLIED
+        # Sent rows 0, 2, 3 reranked as 3, 0, 2 around the image in slot 1.
+        assert [r.id for r in out] == ["3", "1", "0", "2"]
+        assert out[1].rerank_score is None
+
 
 class TestDegradation:
     async def test_disabled_is_a_noop(self, monkeypatch):

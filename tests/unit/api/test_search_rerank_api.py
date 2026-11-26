@@ -15,6 +15,7 @@ from starlette.testclient import TestClient
 
 from nextcloud_mcp_server.api.visualization import unified_search
 from nextcloud_mcp_server.search.algorithms import SearchResult
+from nextcloud_mcp_server.search.rerank import RERANK_APPLIED
 from nextcloud_mcp_server.vector.oauth_sync import NotProvisionedError
 
 pytestmark = pytest.mark.unit
@@ -272,8 +273,8 @@ def test_unscored_rows_stay_behind_reranked_ones_regardless_of_scale():
     (~2/k for RRF) or an unbounded raw BM25 value. Ranking the two against each
     other lets an unscored row beat a genuinely reranked one purely by scale — a BM25
     score of 8.5 outranks every possible rerank score. `rerank_results` appends
-    unscored rows in retrieval order precisely so they sit at the TAIL, and this
-    handler's post-verification re-sort has to preserve that.
+    unscored rows in retrieval order precisely so they sit at the TAIL, so the
+    handler must keep a reranked pool's order rather than re-sort it.
 
     Driven through the real handler on purpose: the other rerank tests use a
     uniformly scored pool, and the integration test asserts against
@@ -284,7 +285,7 @@ def test_unscored_rows_stay_behind_reranked_ones_regardless_of_scale():
         # Genuinely reranked but weakly relevant; the rest stay unscored with
         # deliberately large retrieval scores.
         results[0].rerank_score = 0.01
-        return results, True
+        return results, RERANK_APPLIED
 
     resp, _, _ = _post(
         {"query": "q", "rerank": True},
@@ -324,3 +325,54 @@ def test_total_found_is_not_halved_for_doc_types_plus_rerank():
 
     assert plain.status_code == 200 and reranked.status_code == 200
     assert reranked.json()["total_found"] == plain.json()["total_found"]
+
+
+def test_an_image_hit_survives_reranking_to_the_page(monkeypatch):
+    """Deck #1614: through the real handler and the real rerank_results.
+
+    The cross-encoder cannot score an image hit (no excerpt). It used to be
+    appended to the tail of the deep rerank pool, which the handler then cut
+    back to the unreranked budget, so with rerank on no image ever reached
+    Astrolabe.
+    """
+    from nextcloud_mcp_server.providers.rerank import RerankedIndex
+    from nextcloud_mcp_server.search import rerank as rerank_mod
+
+    class _Client:
+        model = "vendor/model"
+
+        async def rerank(self, query, documents):
+            # Keeps the text rows' order; only the image's placement is under test.
+            return [
+                RerankedIndex(index=i, score=1.0 - i / 1000)
+                for i in range(len(documents))
+            ]
+
+    async def _get(_settings):
+        return _Client()
+
+    monkeypatch.setattr(rerank_mod, "_get_client", _get)
+    monkeypatch.setattr(rerank_mod, "_cooldown_until", 0.0)
+    rows = _rows(60)
+    rows[1] = SearchResult(
+        id="img",
+        doc_type="file",
+        title="Hummingbird.jpg",
+        excerpt="",
+        score=rows[1].score,
+        metadata={"match": "image"},
+    )
+
+    resp, _, _ = _post(
+        {"query": "hummingbird", "limit": 5, "doc_types": ["file"], "rerank": True},
+        search_spy=AsyncMock(return_value=rows),
+        rerank_impl=rerank_mod.rerank_results,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reranked"] is True
+    image = body["results"][1]
+    assert image["id"] == "img"
+    assert image["metadata"]["match"] == "image"
+    assert "rerank_score" not in image
