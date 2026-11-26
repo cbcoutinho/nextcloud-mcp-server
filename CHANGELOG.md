@@ -5,6 +5,18 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.226.0 (2026-11-26)
+
+### Feat
+
+- **activity**: read the activity stream for incremental change discovery
+
+### Fix
+
+- **activity**: drop semicolons from tool docs, scan message_rich for exclusion
+- **activity**: only blame the cursor for a 403 when one was sent
+- **activity**: check objects for exclusion regardless of object_type
+
 ## v0.225.0 (2026-11-26)
 
 ### Feat
