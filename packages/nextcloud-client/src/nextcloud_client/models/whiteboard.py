@@ -98,24 +98,39 @@ def parse_board(content: bytes) -> dict[str, Any]:
     Raises:
         InvalidBoardError: The content is not a board.
     """
+    return parse_board_document(content)[1]
+
+
+def parse_board_document(content: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The whole board document, and the scene inside it.
+
+    The two are the same object unless the scene is wrapped in ``data``. An
+    edit changes the scene and saves the document, so that the wrapper and
+    every other key survive.
+
+    Raises:
+        InvalidBoardError: The content is not a board.
+    """
     if not content.strip():
-        return {"elements": []}
+        scene: dict[str, Any] = {"elements": []}
+        return scene, scene
     try:
-        scene = json.loads(content)
+        document = json.loads(content)
     # RecursionError: json.loads recurses per nesting level, and a few thousand
     # brackets are enough. ValueError covers bad JSON, bad UTF-8 and integers
     # over Python's digit limit.
     except (ValueError, RecursionError) as e:
         raise InvalidBoardError("not valid JSON") from e
 
-    if isinstance(scene, dict) and isinstance(scene.get("data"), dict):
-        scene = scene["data"]
+    scene = document
+    if isinstance(document, dict) and isinstance(document.get("data"), dict):
+        scene = document["data"]
     # An element list is what makes a JSON object a board. Requiring it keeps
     # other JSON from reading as an empty one. Such files do exist under this
     # MIME type: Nextcloud's older stock templates are in the Spacedeck format.
     if not isinstance(scene, dict) or not isinstance(scene.get("elements"), list):
         raise InvalidBoardError("not in the Excalidraw format (no element list)")
-    return scene
+    return document, scene
 
 
 def summarize_board(scene: dict[str, Any]) -> list[WhiteboardElement]:

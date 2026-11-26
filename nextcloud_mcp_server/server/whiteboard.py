@@ -11,8 +11,9 @@ by what the caller asks for, and ``EXCLUDED_TAGS`` applies as it does to the
 file tools.
 """
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar
 
 from anyio.to_thread import run_sync
 from httpx2 import HTTPStatusError
@@ -24,9 +25,25 @@ from nextcloud_client.models.whiteboard import (
     InvalidBoardError,
     WhiteboardElement,
     parse_board,
+    parse_board_document,
     summarize_board,
 )
-from nextcloud_client.webdav import OversizeDownload, UnexpectedContentType
+from nextcloud_client.models.whiteboard_edit import (
+    MAX_ELEMENTS_PER_EDIT,
+    BoardEditError,
+    ElementChange,
+    ElementId,
+    NewElement,
+    add_elements,
+    delete_elements,
+    serialize_board,
+    update_elements,
+)
+from nextcloud_client.webdav import (
+    OversizeDownload,
+    UnexpectedContentType,
+    normalize_etag,
+)
 from pydantic import Field
 
 from nextcloud_mcp_server.auth import require_scopes
@@ -35,7 +52,10 @@ from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.document_source import spool_target
 from nextcloud_mcp_server.links import with_links
 from nextcloud_mcp_server.models.webdav import FileInfo, SearchFilesResponse
-from nextcloud_mcp_server.models.whiteboard import WhiteboardResponse
+from nextcloud_mcp_server.models.whiteboard import (
+    WhiteboardEditResponse,
+    WhiteboardResponse,
+)
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.server.tag_exclusion import (
     get_excluded_file_paths,
@@ -56,6 +76,11 @@ DEFAULT_ELEMENTS = 300
 #: Characters of serialized elements per response. A page ends early rather than
 #: exceed it, but always holds one element, whose size the model bounds.
 MAX_PAGE_CHARS = 100_000
+
+#: What a board saved by the app holds before anything is drawn on it.
+NEW_BOARD: dict[str, Any] = {"elements": [], "scrollToContent": True}
+
+T = TypeVar("T")
 
 
 def _read_elements(path: Path) -> list[WhiteboardElement]:
@@ -89,9 +114,10 @@ def _refuse_excluded(path: str, excluded: set[str]) -> None:
 
 
 async def _read_board(
-    client: "NextcloudClient", path: str
-) -> tuple[list[WhiteboardElement], str | None]:
-    """Download a board and summarize it. Returns its elements and etag.
+    client: "NextcloudClient", path: str, parse: Callable[[Path], T]
+) -> tuple[T, str | None]:
+    """Download a board and parse it in a worker thread. Returns what ``parse``
+    returns, and the etag.
 
     A token may hold ``whiteboard.read`` without ``files.read``, so this must say
     nothing about other files. The content type is checked before the body is
@@ -106,7 +132,7 @@ async def _read_board(
                 max_bytes=MAX_BOARD_BYTES,
                 expected_type=WHITEBOARD_MIME_TYPE,
             )
-            return await run_sync(_read_elements, target), etag
+            return await run_sync(parse, target), etag
     except (OversizeDownload, UnexpectedContentType) as e:
         raise _no_board(path) from e
     except InvalidBoardError as e:
@@ -124,6 +150,84 @@ def _no_board(path: str) -> ToolError:
         f"No whiteboard to read at {path!r}: it is missing, not accessible, not a "
         f"whiteboard, or over {MAX_BOARD_BYTES // (1024 * 1024)} MB."
     )
+
+
+def _read_document(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    return parse_board_document(path.read_bytes())
+
+
+async def _edit_board(
+    client: "NextcloudClient",
+    path: str,
+    etag: str,
+    edit: Callable[[dict[str, Any]], list[str]],
+) -> WhiteboardEditResponse:
+    """Read a board, apply ``edit`` to its scene, and save it, if and only if
+    the board is still at ``etag``.
+
+    The etag is checked twice: against the board as read, so that an edit is
+    never computed on a newer board than the caller saw, and by the server on
+    the write, so that a save between the read and the write is not lost.
+    """
+    expected = normalize_etag(etag)
+    (document, scene), current = await _read_board(client, path, _read_document)
+    if current is None or current != expected:
+        raise _changed(path)
+
+    def apply() -> tuple[list[str], bytes]:
+        return edit(scene), serialize_board(document)
+
+    try:
+        ids, content = await run_sync(apply)
+    except BoardEditError as e:
+        raise ToolError(f"Nothing was changed: {e}.") from e
+    _check_size(path, content)
+    try:
+        result = await client.webdav.write_file(
+            path, content, WHITEBOARD_MIME_TYPE, if_match=current
+        )
+    except HTTPStatusError as e:
+        raise _write_error(path, e) from e
+    if result.get("status_code") == 412:
+        raise _changed(path)
+    if result.get("status_code") == 423:
+        raise ToolError(f"{path!r} is locked by another client. Nothing was changed.")
+    return WhiteboardEditResponse(path=path, etag=result.get("etag"), element_ids=ids)
+
+
+def _check_size(path: str, content: bytes) -> None:
+    """Refuse to save a board the tools could not read back, or larger than
+    the operator allows for a write."""
+    limits = [
+        (
+            MAX_BOARD_BYTES,
+            f"{MAX_BOARD_BYTES // (1024 * 1024)} MB, the most these tools read",
+        )
+    ]
+    max_mb = get_settings().webdav_write_max_mb
+    if max_mb:
+        limits.append((int(max_mb * 1024 * 1024), f"WEBDAV_WRITE_MAX_MB ({max_mb} MB)"))
+    for limit, name in limits:
+        if len(content) > limit:
+            raise ToolError(
+                f"{path!r} would grow to {len(content) / (1024 * 1024):.1f} MB, over "
+                f"{name}. Nothing was changed."
+            )
+
+
+def _changed(path: str) -> ToolError:
+    return ToolError(
+        f"{path!r} has changed since that etag was read. Nothing was changed. "
+        "Read it again with nc_whiteboard_get and redo the change on what it "
+        "holds now."
+    )
+
+
+def _write_error(path: str, e: HTTPStatusError) -> ToolError:
+    status = e.response.status_code
+    if status == 403:
+        return ToolError(f"You may not change {path!r}. Nothing was changed.")
+    return ToolError(f"Failed to save {path!r}: HTTP {status}. Nothing was changed.")
 
 
 def configure_whiteboard_tools(mcp: MCPServer) -> None:
@@ -213,7 +317,7 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
         client = await get_client(ctx)
         excluded = await get_excluded_file_paths(client.webdav)
         _refuse_excluded(path, excluded)
-        elements, etag = await _read_board(client, path)
+        elements, etag = await _read_board(client, path, _read_elements)
         page = _page(elements, offset, limit)
         end = offset + len(page)
         return WhiteboardResponse(
@@ -224,3 +328,166 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
             offset=offset,
             next_offset=end if end < len(elements) else None,
         )
+
+    @mcp.tool(
+        title="Create Whiteboard",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )
+    @require_scopes("whiteboard.write")
+    @instrument_tool
+    async def nc_whiteboard_create(path: str, ctx: Context) -> WhiteboardEditResponse:
+        """Create an empty Nextcloud whiteboard.
+
+        Fails if a file already exists at the path. Add content with
+        nc_whiteboard_add_elements, passing the etag this returns.
+
+        Args:
+            path: Path of the new board. The name must end in .whiteboard, and
+                the folder must exist.
+        """
+        _refuse_traversal(path)
+        name = path.replace("\\", "/").rsplit("/", 1)[-1]
+        if not name.lower().endswith(".whiteboard") or name.startswith("."):
+            raise ToolError(f"A whiteboard's name must end in .whiteboard: {path!r}")
+        client = await get_client(ctx)
+        excluded = await get_excluded_file_paths(client.webdav)
+        _refuse_excluded(path, excluded)
+        try:
+            result = await client.webdav.write_file(
+                path, serialize_board(NEW_BOARD), WHITEBOARD_MIME_TYPE
+            )
+        except HTTPStatusError as e:
+            if e.response.status_code == 409:
+                raise ToolError(f"Folder not found for {path!r}") from e
+            raise _write_error(path, e) from e
+        if result.get("status_code") == 412:
+            raise ToolError(f"A file already exists at {path!r}")
+        if result.get("status_code") == 423:
+            raise ToolError(f"{path!r} is locked by another client")
+        return WhiteboardEditResponse(
+            path=path, etag=result.get("etag"), element_ids=[]
+        )
+
+    @mcp.tool(
+        title="Add Whiteboard Elements",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )
+    @require_scopes("whiteboard.write")
+    @instrument_tool
+    async def nc_whiteboard_add_elements(
+        path: str,
+        etag: str,
+        elements: Annotated[
+            list[NewElement], Field(min_length=1, max_length=MAX_ELEMENTS_PER_EDIT)
+        ],
+        ctx: Context,
+    ) -> WhiteboardEditResponse:
+        """Add shapes, texts, arrows and frames to a Nextcloud whiteboard.
+
+        A shape takes its label as text. An arrow connects two elements by id:
+        existing ones, or ones added in the same call with an id given here.
+        Labels and arrow ends are placed for you. Coordinates grow to the right
+        and downwards, and nc_whiteboard_get shows where things already are.
+        Each call reads the whole board and saves it again.
+
+        Warning: if someone has the board open in a browser, their next save
+        can silently undo this change. Ask the user to close the board first.
+
+        Args:
+            path: Path of the board
+            etag: The etag from the last nc_whiteboard_get, or from the last
+                change. The change is refused if the board changed since
+            elements: The elements to add, in order. Later ones are drawn on top
+
+        Returns:
+            The new etag, and the ids of the added elements in the order given.
+        """
+        return await _edit(ctx, path, etag, lambda scene: add_elements(scene, elements))
+
+    @mcp.tool(
+        title="Update Whiteboard Elements",
+        annotations=ToolAnnotations(idempotent_hint=False, open_world_hint=True),
+    )
+    @require_scopes("whiteboard.write")
+    @instrument_tool
+    async def nc_whiteboard_update_elements(
+        path: str,
+        etag: str,
+        changes: Annotated[
+            list[ElementChange], Field(min_length=1, max_length=MAX_ELEMENTS_PER_EDIT)
+        ],
+        ctx: Context,
+    ) -> WhiteboardEditResponse:
+        """Change the text, position, size or colours of elements on a whiteboard.
+
+        Elements are named by their id from nc_whiteboard_get. A shape moves
+        with its label, a frame with what is in it, and arrows follow the
+        elements they connect. An element moved out of its frame leaves it.
+        Each call reads the whole board and saves it again.
+
+        Warning: if someone has the board open in a browser, their next save
+        can silently undo this change. Ask the user to close the board first.
+
+        Args:
+            path: Path of the board
+            etag: The etag from the last nc_whiteboard_get, or from the last
+                change. The change is refused if the board changed since
+            changes: One entry per element. Fields left out stay as they are
+
+        Returns:
+            The new etag, and the ids of every element that changed, including
+            labels and arrows that followed.
+        """
+        return await _edit(
+            ctx, path, etag, lambda scene: update_elements(scene, changes)
+        )
+
+    @mcp.tool(
+        title="Delete Whiteboard Elements",
+        annotations=ToolAnnotations(
+            destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )
+    @require_scopes("whiteboard.write")
+    @instrument_tool
+    async def nc_whiteboard_delete_elements(
+        path: str,
+        etag: str,
+        ids: Annotated[
+            list[ElementId], Field(min_length=1, max_length=MAX_ELEMENTS_PER_EDIT)
+        ],
+        ctx: Context,
+    ) -> WhiteboardEditResponse:
+        """Delete elements from a Nextcloud whiteboard.
+
+        A shape's label goes with it. An arrow that ends at a deleted element
+        stays, unattached at that end. What is in a deleted frame stays.
+        Nextcloud keeps earlier versions of the file, so a deletion can be
+        undone by restoring one. Each call reads the whole board and saves it
+        again.
+
+        Warning: if someone has the board open in a browser, their next save
+        can silently undo this change. Ask the user to close the board first.
+
+        Args:
+            path: Path of the board
+            etag: The etag from the last nc_whiteboard_get, or from the last
+                change. The change is refused if the board changed since
+            ids: Ids of the elements to delete, from nc_whiteboard_get
+
+        Returns:
+            The new etag, and the ids of every element that changed.
+        """
+        return await _edit(ctx, path, etag, lambda scene: delete_elements(scene, ids))
+
+    async def _edit(
+        ctx: Context,
+        path: str,
+        etag: str,
+        edit: Callable[[dict[str, Any]], list[str]],
+    ) -> WhiteboardEditResponse:
+        _refuse_traversal(path)
+        client = await get_client(ctx)
+        excluded = await get_excluded_file_paths(client.webdav)
+        _refuse_excluded(path, excluded)
+        return await _edit_board(client, path, etag, edit)

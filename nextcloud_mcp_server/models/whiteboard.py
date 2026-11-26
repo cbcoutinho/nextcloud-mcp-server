@@ -25,3 +25,21 @@ class WhiteboardResponse(BaseResponse):
         default=None,
         description="Pass as `offset` to read on. None when this page ends the board.",
     )
+
+
+class WhiteboardEditResponse(BaseResponse):
+    """The result of a change to a board."""
+
+    path: str = Field(description="Path of the board")
+    etag: str | None = Field(
+        description=(
+            "Etag of the board after the change. Pass it to the next change. "
+            "None if the server returned none: read the board again first."
+        )
+    )
+    element_ids: list[str] = Field(
+        description=(
+            "Ids of the added elements in the order given, or of every element "
+            "that changed"
+        )
+    )
