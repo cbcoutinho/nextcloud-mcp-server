@@ -72,10 +72,8 @@ class MailAccount(BaseModel):
     def _derive_has_signature(cls, data: Any) -> Any:
         # The signature text itself stays out of the response.
         if isinstance(data, dict) and "has_signature" not in data:
-            data = {
-                **data,
-                "has_signature": bool((data.get("signature") or "").strip()),
-            }
+            sig = data.get("signature")
+            data = {**data, "has_signature": isinstance(sig, str) and bool(sig.strip())}
         return data
 
 

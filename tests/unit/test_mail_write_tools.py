@@ -551,7 +551,21 @@ def _account(editor_mode: str = "plaintext", signature: str | None = None) -> di
         # An explicit is_html wins over the editor mode.
         ("richtext", None, False, "Hi", False),
         ("plaintext", "Me\nACME", None, "Hi\n\n-- \nMe\nACME", False),
-        ("plaintext", "<p>Me <b>ACME</b></p>", None, "Hi\n\n-- \nMe **ACME**", False),
+        (
+            "plaintext",
+            "<p>Me <b>A&amp;B</b></p><p>ACME</p>",
+            None,
+            "Hi\n\n-- \nMe A&B\nACME",
+            False,
+        ),
+        # A plain signature with ">" is not mistaken for HTML.
+        (
+            "richtext",
+            "-> Me",
+            None,
+            '<p>Hi</p><div class="signature">-&gt; Me</div>',
+            True,
+        ),
         (
             "richtext",
             "<p>Me</p>",
@@ -629,6 +643,22 @@ async def test_plain_body_is_converted_when_editor_mode_picks_html(
     kwargs = fake_mail.save_draft.await_args.kwargs
     assert kwargs["body"] == "Hi &amp; bye<br><br>Me"
     assert kwargs["is_html"] is True
+
+
+async def test_plain_body_with_angle_brackets_is_still_converted(mail_tools, fake_mail):
+    """``>`` in prose or a quoted line does not make a body HTML."""
+    fake_mail.list_accounts.return_value = [_account("richtext")]
+    fake_mail.save_draft.return_value = _saved_draft()
+
+    await _call(
+        mail_tools["nc_mail_save_draft"],
+        account_id=1,
+        to=[],
+        subject="s",
+        body="a > b\n> quoted",
+    )
+
+    assert fake_mail.save_draft.await_args.kwargs["body"] == "a &gt; b<br>&gt; quoted"
 
 
 async def test_send_message_appends_signature(mail_tools, fake_mail):

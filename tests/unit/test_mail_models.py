@@ -21,7 +21,8 @@ def test_account_maps_is_delegated_alias():
 
 
 @pytest.mark.parametrize(
-    ("signature", "expected"), [(None, False), ("  ", False), ("<p>Me</p>", True)]
+    ("signature", "expected"),
+    [(None, False), ("  ", False), (123, False), ("<p>Me</p>", True)],
 )
 def test_account_exposes_editor_mode_and_has_signature(signature, expected):
     account = MailAccount(

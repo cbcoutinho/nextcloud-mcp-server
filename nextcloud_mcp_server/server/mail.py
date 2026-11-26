@@ -3,6 +3,7 @@
 import html
 import logging
 import mimetypes
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Annotated
@@ -45,7 +46,6 @@ from nextcloud_mcp_server.utils.image_view import (
     image_tool_result,
     prepare_image_in_thread,
 )
-from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -107,17 +107,30 @@ def _cap_attachment_content(content: str | None) -> str | None:
     return content
 
 
-def _looks_like_html(text: str) -> bool:
-    """Same sniff as the Mail composer's ``detect()`` (``src/util/text.js``).
+_HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
+_BLOCK_END = re.compile(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6])\s*>")
 
-    Used for signatures instead of ``signatureMode``: Mail's settings UI never
-    writes that field, so it stays 0 (plain) even for the HTML it saves.
+
+def _looks_like_html(text: str) -> bool:
+    """Whether ``text`` contains an actual tag.
+
+    Stricter than the Mail composer's ``detect()`` (any ``>``), so a plain
+    ``a > b`` or a ``> quoted`` line stays plain text. Used for signatures
+    instead of ``signatureMode``: Mail's settings UI never writes that field,
+    so it stays 0 (plain) even for the HTML it saves.
     """
-    return ">" in text
+    return _HTML_TAG.search(text) is not None
 
 
 def _plain_to_html(text: str) -> str:
     return html.escape(text).replace("\n", "<br>")
+
+
+def _html_to_text(text: str) -> str:
+    # shortcut: tags are dropped (link targets lost); use a real converter if
+    # signatures with links matter. markdownify is an optional extra, so not here.
+    text = _HTML_TAG.sub("", _BLOCK_END.sub("\n", text))
+    return re.sub(r"\n{3,}", "\n\n", html.unescape(text)).strip()
 
 
 def _append_signature(body: str, is_html: bool, signature: str) -> str:
@@ -132,7 +145,7 @@ def _append_signature(body: str, is_html: bool, signature: str) -> str:
             signature = _plain_to_html(signature)
         return f'{body}<div class="signature">{signature}</div>'
     if sig_html:
-        signature = html_to_markdown(signature).strip()
+        signature = _html_to_text(signature)
     return f"{body}\n\n-- \n{signature}"
 
 
@@ -148,7 +161,8 @@ async def _compose_body(
     ``is_html=None`` follows the account's ``editorMode`` (``richtext`` is
     HTML); a plain-text body is then converted, so its line breaks survive.
     An account the listing does not return falls back to plain text without
-    a signature.
+    a signature. A failed listing raises rather than falling back, so a mail
+    never goes out silently missing the signature the user configured.
     """
     if is_html is not None and not include_signature:
         return body, is_html
@@ -160,7 +174,8 @@ async def _compose_body(
         is_html = account.get("editorMode") == "richtext"
         if is_html and not _looks_like_html(body):
             body = _plain_to_html(body)
-    signature = (account.get("signature") or "").strip()
+    signature = account.get("signature")
+    signature = signature.strip() if isinstance(signature, str) else ""
     if include_signature and signature:
         body = _append_signature(body, is_html, signature)
     return body, is_html
