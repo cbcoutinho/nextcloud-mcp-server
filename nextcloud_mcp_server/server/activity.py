@@ -46,12 +46,14 @@ def _rich_file_paths(value: Any) -> list[str]:
 
 
 def activity_file_paths(activity: dict[str, Any]) -> list[str]:
-    """Every file path an activity names: its objects and its rich subject.
+    """Every file path an activity names: its objects and its rich subject/message.
 
     Objects are checked whatever the ``object_type``: a comment or share can name
     files too, and a non-path name that happens to match only hides one activity.
     """
-    paths = _rich_file_paths(activity.get("subject_rich"))
+    paths = _rich_file_paths(
+        [activity.get("subject_rich"), activity.get("message_rich")]
+    )
     paths += list(activity.get("objects", {}).values())
     if isinstance(name := activity.get("object_name"), str) and name:
         paths.append(name)
@@ -71,7 +73,7 @@ def configure_activity_tools(mcp: MCPServer) -> None:
         """List the activity stream filters this Nextcloud offers.
 
         Common ones are ``all``, ``self`` (by you), ``by`` (by others) and
-        ``files``; apps add their own.
+        ``files``. Apps add their own.
         """
         client = await get_client(ctx)
         filters = await client.activity.list_filters()
@@ -102,7 +104,7 @@ def configure_activity_tools(mcp: MCPServer) -> None:
         activity with ``sort="desc", limit=1`` and keep its ``activity_id``.
 
         If ``cursor_reset`` is true the cursor was not recognised and the stream
-        restarted from the beginning; changes may have been missed.
+        restarted from the beginning, and changes may have been missed.
 
         One activity can group changes to several files: ``objects`` lists all of
         them, ``object_name`` only the first. The stream is not a complete audit
@@ -110,7 +112,7 @@ def configure_activity_tools(mcp: MCPServer) -> None:
 
         Args:
             filter: Stream filter, from nc_activity_list_filters
-            since: Activity id to continue after; omit to start at the newest
+            since: Activity id to continue after. Omit to start at the newest
                 (``desc``) or oldest (``asc``) activity
             limit: Activities to read, at most 200
             sort: ``asc`` for oldest first, ``desc`` for newest first

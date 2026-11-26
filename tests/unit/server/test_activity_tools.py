@@ -159,3 +159,15 @@ def test_file_paths_never_raises_on_arbitrary_json(subject_rich, object_name):
         }
     )
     assert all(isinstance(p, str) for p in paths)
+
+
+async def test_excluded_file_in_rich_message(client, tools):
+    """Comment activities can name a file in message_rich only."""
+    hidden = _activity(
+        1,
+        object_type="comments",
+        message_rich=["{file}", {"file": {"type": "file", "path": "Private/y"}}],
+    )
+    client.activity.list_activities.return_value = _page([hidden])
+    result = await tools.nc_activity_list(SimpleNamespace())
+    assert result.excluded_count == 1
