@@ -302,7 +302,11 @@ def _longest_utf8_prefix(line: str, limit: int) -> str:
 def windows(draw):
     """A UTF-8 file (any line endings, multi-byte characters) and a request
     for a window of it: (raw, start, end, max_bytes)."""
-    lines = draw(st.lists(st.text(st.characters(exclude_characters="\n")), max_size=6))
+    lines = draw(
+        st.lists(
+            st.text(st.characters(codec="utf-8", exclude_characters="\n")), max_size=6
+        )
+    )
     raw = "\n".join(lines).encode() + draw(st.sampled_from([b"", b"\n"]))
     total = len(io.BytesIO(raw).readlines())
     start = draw(st.integers(1, total + 2))

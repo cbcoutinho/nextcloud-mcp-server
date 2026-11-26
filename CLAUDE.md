@@ -705,8 +705,33 @@ parsers that raised on `Infinity` or an unknown XML encoding.
   not re-derive the answer. Examples: `transported_etags` in
   `tests/unit/client/test_webdav.py` and `statuscodes` in
   `tests/unit/client/test_ocs.py`.
-- **Filter input shapes with `assume()`** inside the test, rather than a bare
-  `return`. Use `.filter` only for a condition on a single strategy.
+- **Never discard an input with an early `return`.** Hypothesis counts a
+  returned example as a *pass*, so a `return` on an input the test does not
+  cover inflates the run with examples that checked nothing. Prefer, in order:
+  1. a strategy that only generates what the test covers (a composite, or
+     required keys in `fixed_dictionaries`);
+  2. `assume(...)` inside the test for a condition across several drawn values.
+     Hypothesis then discards the example and raises a `filter_too_much`
+     health check if it discards too many;
+  3. `.filter` only for a condition on a single strategy.
+
+  A `return` is fine only to **end a branch whose outcome was already
+  asserted**: `except InvalidBoardError: return` in a "raises only X"
+  property, or `pytest.raises(...)` followed by `return`.
+- **Check that generation reaches the asserted branch.** A branching property
+  (`if result is None: return`) is only as good as the share of draws reaching
+  the other branch. Mutation-style strategies (every key optional *and*
+  wrong-typed) can reach it on ~0% of draws, leaving those assertions run only
+  by `@example`s. When a new property branches, sample the strategy once, e.g.
+  by recording the branch in a counter over 500 draws. If one side is starved,
+  add a strategy for the well-formed shape, either mixed in with `|` or as its
+  own property. Example: `note_payloads` beside `webhook_payloads` in
+  `tests/unit/test_webhook_parser.py`. Use `hypothesis.event("…")` to make the
+  split visible in `--hypothesis-show-statistics`.
+- **Draw text that the code can encode.** `st.characters()` without
+  `codec="utf-8"` can yield lone surrogates, which raise `UnicodeEncodeError`
+  in `.encode()`. CI's derandomized `ci` profile can miss this for months, so
+  it surfaces only as a local flake.
 - **Pin every bug a property found as an `@example`** on that property. The
   regression is then replayed on every run, independent of generation.
 - **Parsers of untrusted input** (webhook payloads, OCS/DAV bodies, provider
