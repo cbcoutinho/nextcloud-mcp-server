@@ -2362,6 +2362,7 @@ postgres = [
     { name = "psycopg", extra = ["binary", "pool"] },
 ]
 semantic = [
+    { name = "beautifulsoup4" },
     { name = "boto3" },
     { name = "botocore" },
     { name = "fastembed" },
@@ -2411,6 +2412,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.14.0" },
     { name = "anyio", specifier = ">=4.0" },
     { name = "authlib", specifier = ">=1.6.5" },
+    { name = "beautifulsoup4", marker = "extra == 'semantic'", specifier = ">=4.12" },
     { name = "boto3", marker = "extra == 'semantic'", specifier = ">=1.35.0" },
     { name = "botocore", marker = "extra == 'semantic'", specifier = ">=1.35.0" },
     { name = "click", specifier = ">=8.1.8" },

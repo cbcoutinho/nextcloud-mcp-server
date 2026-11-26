@@ -223,6 +223,18 @@ covers up to 100 messages per mailbox (the Mail API's per-request maximum;
 paging beyond it is not implemented yet), and a message's sent timestamp is used
 for change detection, since mail is immutable.
 
+The indexed text is the subject, the `From`/`To`/`Cc`/`Bcc` lines, and the body
+as Markdown, which is also what Astrolabe's chunk viewer renders. HTML bodies
+keep headings, lists, links, emphasis, quoted replies and data tables. Layout
+tables (newsletters) are flattened into ordinary blocks. Images become
+`[image: <alt text>]` placeholders and are never loaded.
+
+Because the sent date never changes, the layout carries its own version
+(`MAIL_CONTENT_VERSION`, stored on each chunk). When an upgrade raises it, the
+next scan re-queues every indexed message once to rebuild its text. That costs
+one re-embedding of at most 100 messages per mailbox per user, and needs no
+operator action.
+
 **To index only some of your mail**, set `MAIL_INDEX_TAG` to a tag name — see
 [configuration.md](configuration.md#indexing-a-subset-of-mail--mail_index_tag).
 Only messages carrying that tag are then indexed, and the 100-per-mailbox cap

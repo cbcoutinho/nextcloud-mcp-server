@@ -222,6 +222,7 @@ semantic = [
     "boto3>=1.35.0", # Amazon Bedrock provider
     "botocore>=1.35.0", # providers/bedrock.py exception types
     "markdownify>=0.14.1", # vector/html_processor.py (News/Mail ingest)
+    "beautifulsoup4>=4.12", # vector/html_processor.py mail tree rewrite (also markdownify's parser)
 ]
 # PDF/Office text extraction (document_processors/): what nc_webdav_read_file
 # parses with, and what semantic ingest builds on. Without it the read tool
