@@ -293,7 +293,7 @@ jobs:
 
       # Start services with the appropriate profile
       - name: Run docker compose
-        uses: hoverkraft-tech/compose-action@b659c744ee9bed25aea2307c017ad849bd104433 # v3.2.0
+        uses: hoverkraft-tech/compose-action@cdaf49f2d715a87c3387e86cb35c772b14f0efe0 # v3.2.1
         with:
           compose-file: "./docker-compose.yml"
           compose-flags: "--profile ${{ matrix.profile }} ${{ matrix.extra-compose-profiles }}"
@@ -477,7 +477,7 @@ jobs:
           echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
 
       - name: Run docker compose (single-user + docling)
-        uses: hoverkraft-tech/compose-action@b659c744ee9bed25aea2307c017ad849bd104433 # v3.2.0
+        uses: hoverkraft-tech/compose-action@cdaf49f2d715a87c3387e86cb35c772b14f0efe0 # v3.2.1
         with:
           compose-file: "./docker-compose.yml"
           compose-flags: "--profile single-user --profile docling"
@@ -606,7 +606,7 @@ jobs:
           echo "TOKEN_ENCRYPTION_KEY=${KEY}" >> "$GITHUB_ENV"
 
       - name: Run docker compose (single-user + collabora)
-        uses: hoverkraft-tech/compose-action@b659c744ee9bed25aea2307c017ad849bd104433 # v3.2.0
+        uses: hoverkraft-tech/compose-action@cdaf49f2d715a87c3387e86cb35c772b14f0efe0 # v3.2.1
         with:
           compose-file: "./docker-compose.yml"
           compose-flags: "--profile single-user --profile collabora"
