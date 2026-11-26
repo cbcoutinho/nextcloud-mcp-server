@@ -1,5 +1,6 @@
 """MCP tools for Nextcloud Mail app (read, send, drafts, flags, tags, move, delete)."""
 
+import html
 import logging
 import mimetypes
 from collections.abc import Generator
@@ -10,6 +11,7 @@ from httpx2 import HTTPStatusError, RequestError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, ToolAnnotations
+from nextcloud_client import NextcloudClient
 from nextcloud_client.mail import DEFAULT_TAG_COLOR, InvalidSearchFilter
 from pydantic import Field
 
@@ -43,6 +45,7 @@ from nextcloud_mcp_server.utils.image_view import (
     image_tool_result,
     prepare_image_in_thread,
 )
+from nextcloud_mcp_server.vector.html_processor import html_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,65 @@ def _cap_attachment_content(content: str | None) -> str | None:
             f"(> {MAX_ATTACHMENT_CONTENT_BYTES})]"
         )
     return content
+
+
+def _looks_like_html(text: str) -> bool:
+    """Same sniff as the Mail composer's ``detect()`` (``src/util/text.js``).
+
+    Used for signatures instead of ``signatureMode``: Mail's settings UI never
+    writes that field, so it stays 0 (plain) even for the HTML it saves.
+    """
+    return ">" in text
+
+
+def _plain_to_html(text: str) -> str:
+    return html.escape(text).replace("\n", "<br>")
+
+
+def _append_signature(body: str, is_html: bool, signature: str) -> str:
+    """Append ``signature`` to ``body``, converted to the body's format.
+
+    Mirrors the Mail composer: the RFC 3676 ``-- `` separator goes only into
+    plain-text bodies; an HTML body gets the signature without one.
+    """
+    sig_html = _looks_like_html(signature)
+    if is_html:
+        if not sig_html:
+            signature = _plain_to_html(signature)
+        return f'{body}<div class="signature">{signature}</div>'
+    if sig_html:
+        signature = html_to_markdown(signature).strip()
+    return f"{body}\n\n-- \n{signature}"
+
+
+async def _compose_body(
+    client: NextcloudClient,
+    account_id: int,
+    body: str,
+    is_html: bool | None,
+    include_signature: bool,
+) -> tuple[str, bool]:
+    """Resolve the body format and signature the Mail composer would apply.
+
+    ``is_html=None`` follows the account's ``editorMode`` (``richtext`` is
+    HTML); a plain-text body is then converted, so its line breaks survive.
+    An account the listing does not return falls back to plain text without
+    a signature.
+    """
+    if is_html is not None and not include_signature:
+        return body, is_html
+    account = next(
+        (a for a in await client.mail.list_accounts() if a.get("id") == account_id),
+        {},
+    )
+    if is_html is None:
+        is_html = account.get("editorMode") == "richtext"
+        if is_html and not _looks_like_html(body):
+            body = _plain_to_html(body)
+    signature = (account.get("signature") or "").strip()
+    if include_signature and signature:
+        body = _append_signature(body, is_html, signature)
+    return body, is_html
 
 
 @require_scopes("mail.read")
@@ -274,10 +336,11 @@ async def nc_mail_send_message(
     subject: str,
     body: str,
     ctx: Context,
-    is_html: bool = False,
+    is_html: bool | None = None,
     cc: Recipients | None = None,
     bcc: Recipients | None = None,
     references: str | None = None,
+    include_signature: bool = True,
 ) -> SendMessageResponse:
     """Send an email through a configured Nextcloud Mail account (requires mail.send scope).
 
@@ -291,12 +354,17 @@ async def nc_mail_send_message(
         account_id: Mail account ID to send from (from nc_mail_list_accounts)
         to: Array of To recipients (``[]`` when sending only to cc/bcc)
         subject: Email subject
-        body: Email body (plain text unless is_html is true)
-        is_html: Whether body contains HTML (default false)
+        body: Email body without a signature (plain text unless is_html
+            is true)
+        is_html: Whether body contains HTML. Omit to follow the account's
+            editor mode (see nc_mail_list_accounts), as the Mail app does.
         cc: Optional array of CC recipients
         bcc: Optional array of BCC recipients. At least one recipient is
             needed across to, cc and bcc.
         references: Optional RFC 2822 Message-ID for reply threading
+        include_signature: Append the account's signature, converted to the
+            body format, as the Mail app does (default true). No-op when the
+            account has none.
 
     Returns:
         SendMessageResponse with success status and optional message
@@ -312,6 +380,9 @@ async def nc_mail_send_message(
 
     client = await get_client(ctx)
     try:
+        body, is_html = await _compose_body(
+            client, account_id, body, is_html, include_signature
+        )
         await client.mail.send_message(
             account_id=account_id,
             to=to_list,
@@ -353,9 +424,10 @@ async def nc_mail_save_draft(
     subject: str,
     body: str,
     ctx: Context,
-    is_html: bool = False,
+    is_html: bool | None = None,
     cc: Recipients | None = None,
     bcc: Recipients | None = None,
+    include_signature: bool = True,
 ) -> SaveDraftResponse:
     """Save an email as a draft WITHOUT sending it (requires mail.draft scope).
 
@@ -389,10 +461,15 @@ async def nc_mail_save_draft(
         account_id: Mail account ID to save the draft in (from nc_mail_list_accounts)
         to: Array of To recipients (``[]`` for none yet)
         subject: Email subject
-        body: Email body (plain text unless is_html is true)
-        is_html: Whether body contains HTML (default false)
+        body: Email body without a signature (plain text unless is_html
+            is true)
+        is_html: Whether body contains HTML. Omit to follow the account's
+            editor mode (see nc_mail_list_accounts), as the Mail app does.
         cc: Optional array of CC recipients
         bcc: Optional array of BCC recipients
+        include_signature: Append the account's signature, converted to the
+            body format, as the Mail app does (default true). No-op when the
+            account has none.
 
     Returns:
         SaveDraftResponse confirming the draft was saved. Find the draft in
@@ -404,6 +481,9 @@ async def nc_mail_save_draft(
 
     client = await get_client(ctx)
     try:
+        body, is_html = await _compose_body(
+            client, account_id, body, is_html, include_signature
+        )
         result = await client.mail.save_draft(
             account_id=account_id,
             to=to_list,

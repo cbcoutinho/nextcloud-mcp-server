@@ -1,6 +1,8 @@
 """Pydantic models for Nextcloud Mail app responses."""
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .base import BaseResponse, StatusResponse
 
@@ -53,6 +55,28 @@ class MailAccount(BaseModel):
     is_delegated: bool = Field(
         False, alias="isDelegated", description="Whether this is a delegated account"
     )
+    editor_mode: str | None = Field(
+        None,
+        alias="editorMode",
+        description="Composer mode, 'richtext' or 'plaintext'. Mail tools "
+        "write HTML for 'richtext' unless is_html is given.",
+    )
+    has_signature: bool = Field(
+        False,
+        description="Whether a signature is configured. Mail tools append it "
+        "unless include_signature is false.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_has_signature(cls, data: Any) -> Any:
+        # The signature text itself stays out of the response.
+        if isinstance(data, dict) and "has_signature" not in data:
+            data = {
+                **data,
+                "has_signature": bool((data.get("signature") or "").strip()),
+            }
+        return data
 
 
 class MailMailbox(BaseModel):
