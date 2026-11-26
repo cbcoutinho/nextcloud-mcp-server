@@ -5,6 +5,20 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.222.0 (2026-11-26)
+
+### Feat
+
+- **lucarne**: file channels one by one and report Lucarne's own errors
+- **lucarne**: bound text parameters and document catalogue edits
+- **lucarne**: add tools to subscribe to a channel and add a video to a playlist
+- **lucarne**: add MCP tools for catalogues, channel filing and playlists
+
+### Fix
+
+- **lucarne**: request the Lucarne scopes upstream by default
+- **lucarne**: annotate the error context manager as a Generator
+
 ## v0.221.3 (2026-11-26)
 
 ### Fix
