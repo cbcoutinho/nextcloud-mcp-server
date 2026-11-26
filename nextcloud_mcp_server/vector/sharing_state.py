@@ -101,8 +101,8 @@ async def find_indexed_content(
 
     ``image_identity`` (ADR-042 §3) is the image model the document's points
     must carry, or None when the document takes no part in that rule. Every
-    point of an in-scope document carries it, written or skipped, so the
-    unordered ``limit=1`` scroll below can compare any of them.
+    point of an in-scope document carries it, written or skipped, so whichever
+    matching point the ``limit=1`` lookup below returns can be compared.
 
     ``snapshot`` (local mode, GH #1941) answers the lookup from the scanner's
     one-pass read instead of a per-document scroll.
