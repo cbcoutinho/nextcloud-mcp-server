@@ -527,7 +527,8 @@ async def test_save_draft_follows_editor_mode_and_appends_signature(
             await nc_mcp_client.call_tool("nc_mail_list_accounts", {})
         )
         account = next(a for a in accounts["results"] if a["id"] == account_id)
-        assert account["editor_mode"] == "richtext"
+        # Responses serialize by alias, as for ``emailAddress`` above.
+        assert account["editorMode"] == "richtext"
         assert account["has_signature"] is True
 
         _tool_payload(
