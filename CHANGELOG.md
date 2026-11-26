@@ -5,6 +5,16 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.224.0 (2026-11-26)
+
+### Feat
+
+- **vector**: index mail as Markdown the chunk viewer can render
+
+### Fix
+
+- **vector**: cap mail table colspan and floor markdownify at 1.0
+
 ## v0.223.0 (2026-11-26)
 
 ### Feat
