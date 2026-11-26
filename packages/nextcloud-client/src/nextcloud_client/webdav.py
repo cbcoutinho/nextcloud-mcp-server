@@ -3,6 +3,7 @@
 import logging
 import mimetypes
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +26,28 @@ logger = logging.getLogger(__name__)
 # Sabre answers in XML, so its ``Accept: application/json`` would be a lie.
 _XML_CONTENT_TYPE = "text/xml"
 
+# XML 1.0's Char production, as code-point ranges. ``xml_escape`` handles
+# markup characters but cannot make anything outside these representable; sent
+# anyway, such a character produces a body the server rejects unexplained.
+# Spelled as integers, not a regex character class: formatters rewrite \uXXXX
+# escapes into literal (often invisible) characters.
+_XML_CHAR_RANGES = (
+    (0x09, 0x0A),
+    (0x0D, 0x0D),
+    (0x20, 0xD7FF),
+    (0xE000, 0xFFFD),
+    (0x10000, 0x10FFFF),
+)
+
+
+def xml_text_problem(text: str) -> str | None:
+    """Why ``text`` cannot be sent as XML character data, or None if it can."""
+    for char in text:
+        code = ord(char)
+        if not any(low <= code <= high for low, high in _XML_CHAR_RANGES):
+            return f"it contains the character U+{code:04X}, which XML cannot carry"
+    return None
+
 
 class OversizeDownload(Exception):
     """A streamed download exceeded its byte budget and was aborted.
@@ -37,6 +60,10 @@ class OversizeDownload(Exception):
 
 class UnexpectedContentType(Exception):
     """A download was refused because of the content type the server reported."""
+
+
+class VersionLabelRejected(Exception):
+    """The server answered a version-label PROPPATCH but refused the update."""
 
 
 def _read_complete_body(response: Response, label: str) -> bytes:
@@ -210,6 +237,22 @@ def normalize_etag(raw: Optional[str]) -> Optional[str]:
 
 #: Collection holding one file's comments, addressed by file id.
 _COMMENTS_PATH = "/remote.php/dav/comments/files"
+
+
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _http_date(value: str | None) -> datetime | None:
+    """Parse a DAV ``getlastmodified`` (RFC 1123) value, or None if unusable."""
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        logger.debug("Unparseable getlastmodified %r", value)
+        return None
+    # A "-0000" zone parses naive; sorting must never mix naive and aware.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _dav_props_ok(response_elem: ET.Element) -> dict[str, str]:
@@ -870,13 +913,33 @@ class WebDAVClient(BaseNextcloudClient):
         :class:`httpx2.RemoteProtocolError` on a short read (#965).
         """
         await self._ensure_principal_id()
-        webdav_path = self._webdav_path(path)
+        return await self._stream_dav_to_file(
+            self._webdav_path(path),
+            path,
+            dest,
+            max_bytes=max_bytes,
+            expected_type=expected_type,
+        )
 
+    async def _stream_dav_to_file(
+        self,
+        dav_path: str,
+        path: str,
+        dest: Path,
+        *,
+        max_bytes: int | None = None,
+        expected_type: str | None = None,
+    ) -> Tuple[int, str, Optional[str]]:
+        """Shared body of :meth:`stream_to_file` and :meth:`stream_version_to_file`.
+
+        ``dav_path`` is the DAV URL path to GET; ``path`` is what the caller
+        knows the resource as, used only in log and error messages.
+        """
         logger.debug("Streaming file to %s: %s", dest, path)
 
         written = 0
         try:
-            async with self._stream_request("GET", webdav_path) as response:
+            async with self._stream_request("GET", dav_path) as response:
                 content_type = response.headers.get(
                     "content-type", "application/octet-stream"
                 )
@@ -2805,7 +2868,11 @@ class WebDAVClient(BaseNextcloudClient):
     _VERSION_PROPS = (
         ("size", "{DAV:}getcontentlength"),
         ("modified", "{DAV:}getlastmodified"),
+        ("content_type", "{DAV:}getcontenttype"),
+        # A version's ETag is its revision id, not the live file's ETag.
+        ("revision_etag", "{DAV:}getetag"),
         ("label", "{http://nextcloud.org/ns}version-label"),
+        ("author", "{http://nextcloud.org/ns}version-author"),
     )
 
     def _trashbin_base(self) -> str:
@@ -2896,9 +2963,24 @@ class WebDAVClient(BaseNextcloudClient):
         return {"restored": entry_id}
 
     async def list_versions(
-        self, path: str, *, file_id: Optional[str | int] = None
+        self,
+        path: str,
+        *,
+        file_id: Optional[str | int] = None,
+        current_modified: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List the stored previous versions of a file.
+        """List the versions of a file, newest first.
+
+        Nextcloud includes the *current* revision in this listing (keyed by
+        the live file's mtime), but its content cannot be fetched from the
+        versions endpoint -- only historical revisions can. Pass the live
+        file's ``getlastmodified`` as ``current_modified`` to have that entry
+        marked ``is_current=True``; the match is the one Nextcloud's own web
+        UI makes (version mtime == file mtime, at second precision). Without
+        it ``is_current`` is ``None`` (unknown).
+
+        Nextcloud returns the entries in database order (no ``ORDER BY``), so
+        they are sorted here by ``modified``, newest first.
 
         ``file_id`` lets a caller that already resolved the path (e.g. the
         MCP tool layer, which does so for the excluded-tag guard) skip a
@@ -2933,8 +3015,47 @@ class WebDAVClient(BaseNextcloudClient):
                 continue
             entry = self._read_props(response_elem, self._VERSION_PROPS)
             entry["version_id"] = version_id
+            entry["revision_etag"] = normalize_etag(entry.get("revision_etag"))
             versions.append(entry)
+
+        current = _http_date(current_modified)
+        for entry in versions:
+            entry["is_current"] = (
+                None
+                if current is None
+                else _http_date(entry.get("modified")) == current
+            )
+        versions.sort(
+            key=lambda v: _http_date(v.get("modified")) or _EPOCH, reverse=True
+        )
         return {"path": path, "file_id": file_id, "versions": versions}
+
+    async def stream_version_to_file(
+        self,
+        file_id: str | int,
+        version_id: str,
+        dest: Path,
+        *,
+        max_bytes: int | None = None,
+    ) -> Tuple[int, str, Optional[str]]:
+        """Stream one stored version of a file to ``dest``.
+
+        Same contract as :meth:`stream_to_file`, except that the returned etag
+        is the version's revision id, not the live file's ETag. Raises
+        ``HTTPStatusError`` (404) for a revision with no stored content --
+        including the *current* revision, which Nextcloud lists but serves only
+        from the files endpoint.
+        """
+        await self._ensure_principal_id()
+        dav_path = (
+            f"{self._versions_base()}/versions/{file_id}/{quote(version_id, safe='')}"
+        )
+        return await self._stream_dav_to_file(
+            dav_path,
+            f"version {version_id} of file {file_id}",
+            dest,
+            max_bytes=max_bytes,
+        )
 
     async def restore_version(
         self, path: str, version_id: str, *, file_id: Optional[str | int] = None
@@ -2964,6 +3085,96 @@ class WebDAVClient(BaseNextcloudClient):
             },
         )
         return {"path": path, "restored_version": version_id}
+
+    async def set_version_label(
+        self,
+        path: str,
+        version_id: str,
+        label: str,
+        *,
+        file_id: Optional[str | int] = None,
+    ) -> Dict[str, Any]:
+        """Name a version, rename it, or (with ``label=""``) clear its name.
+
+        A ``PROPPATCH`` of ``nc:version-label`` on the version resource, as
+        Nextcloud's web UI sends it. The element is always written with an
+        explicit closing tag: Sabre parses a self-closing ``<nc:version-label/>``
+        as ``null``, which Nextcloud's ``string``-typed handler rejects with a
+        TypeError, so clearing must send an empty *string* instead.
+
+        Raises :class:`VersionLabelRejected` when the server answers the
+        multistatus with a non-2xx status for the property -- e.g. a storage
+        backend that cannot store version metadata -- or with a body that is
+        not a multistatus. Raises ``ValueError``, before any request, for a
+        label holding characters XML 1.0 cannot carry (see
+        :func:`xml_text_problem`).
+
+        ``file_id``: see :meth:`list_versions`.
+        """
+        problem = xml_text_problem(label)
+        if problem:
+            raise ValueError(f"Invalid version label: {problem}")
+        await self._ensure_principal_id()
+        if file_id is None:
+            file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propertyupdate xmlns:d="DAV:" xmlns:nc="http://nextcloud.org/ns">'
+            "<d:set><d:prop>"
+            f"<nc:version-label>{xml_escape(label)}</nc:version-label>"
+            "</d:prop></d:set>"
+            "</d:propertyupdate>"
+        )
+        response = await self._make_request(
+            "PROPPATCH",
+            f"{self._versions_base()}/versions/{file_id}/{quote(version_id, safe='')}",
+            content=body,
+            headers={"Content-Type": _XML_CONTENT_TYPE},
+        )
+
+        # A PROPPATCH succeeds at the HTTP level (207) even when the property
+        # update itself was refused; the verdict is in the propstat status.
+        # An empty 2xx body is RFC 8144's minimal success (204), with no
+        # propstat to read; _make_request has already raised on a non-2xx.
+        if not response.content.strip():
+            return {"path": path, "version_id": version_id, "label": label}
+        try:
+            root = ET.fromstring(response.content)
+        except ET.ParseError as e:
+            # Fail closed: the label may or may not have been applied, and only
+            # a listing can tell. Log the status so the ambiguity is debuggable.
+            logger.warning(
+                "Unparseable PROPPATCH response (HTTP %s) for version %s of %s",
+                response.status_code,
+                version_id,
+                path,
+            )
+            raise VersionLabelRejected(
+                f"Nextcloud answered the label update of version {version_id!r} "
+                f"of {path!r} with a body that is not a DAV multistatus: {e}"
+            ) from e
+        # Success must be affirmed: a multistatus with no readable status line
+        # says nothing about whether the write landed, so it is not a success.
+        confirmed = False
+        for propstat in root.iter("{DAV:}propstat"):
+            status = (propstat.findtext("{DAV:}status") or "").split()
+            if len(status) < 2:
+                continue
+            if not status[1].startswith("2"):
+                raise VersionLabelRejected(
+                    f"Nextcloud refused to set the label of version {version_id!r} "
+                    f"of {path!r}: {' '.join(status[1:])}"
+                )
+            confirmed = True
+        if not confirmed:
+            raise VersionLabelRejected(
+                f"Nextcloud's answer to the label update of version {version_id!r} "
+                f"of {path!r} carried no property status, so success is unconfirmed"
+            )
+        return {"path": path, "version_id": version_id, "label": label}
 
     # -- File tags (systemtags) ---------------------------------------------
     #

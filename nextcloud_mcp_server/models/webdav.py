@@ -365,21 +365,75 @@ class RestoreFromTrashResponse(BaseResponse):
 class FileVersion(BaseModel):
     """One stored version of a file."""
 
-    version_id: str = Field(description="Version id, needed to restore it")
+    version_id: str = Field(description="Version id, needed to read or restore it")
     size: Optional[int] = Field(None, description="Size in bytes")
     modified: Optional[str] = Field(None, description="Last-modified of this version")
+    content_type: Optional[str] = Field(None, description="MIME type of this version")
+    revision_etag: Optional[str] = Field(
+        None,
+        description=(
+            "ETag of this revision (its revision id). Not the live file's ETag: "
+            "never pass it as nc_webdav_write_file's if_match"
+        ),
+    )
     label: Optional[str] = Field(None, description="Version label, when set")
+    author: Optional[str] = Field(
+        None,
+        description=(
+            "User id of whoever created this revision, when the storage backend "
+            "records it"
+        ),
+    )
+    is_current: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether this entry is the file's current content. Nextcloud lists "
+            "the current revision alongside the stored ones"
+        ),
+    )
 
 
 class ListVersionsResponse(BaseResponse):
-    """Stored previous versions of a file."""
+    """Versions of a file, including the current revision."""
 
     path: str = Field(description="Path the versions belong to")
     file_id: str = Field(description="Nextcloud file id")
-    versions: List[FileVersion] = Field(
-        default_factory=list, description="Stored versions, newest first"
+    current_etag: Optional[str] = Field(
+        None,
+        description=(
+            "ETag of the live file, the one to pass as nc_webdav_write_file's if_match"
+        ),
     )
-    total_count: int = Field(description="Number of stored versions")
+    versions: List[FileVersion] = Field(
+        default_factory=list,
+        description="Versions, newest first; the current revision is flagged",
+    )
+    total_count: int = Field(description="Number of versions listed")
+
+
+class ReadVersionResponse(ReadFileResponse):
+    """Content of one version of a file.
+
+    ``etag`` is the live file's ETag only when ``is_current`` is true; for a
+    historical revision it is ``None`` and the revision is identified by
+    ``revision_etag``, so it can never be mistaken for a write precondition.
+    """
+
+    version_id: str = Field(description="Version id that was read")
+    is_current: bool = Field(
+        description=(
+            "True when the requested revision is the file's current content, "
+            "which is then read from the file itself"
+        )
+    )
+    modified: Optional[str] = Field(None, description="Last-modified of this version")
+    revision_etag: Optional[str] = Field(
+        None, description="ETag of this revision (its revision id)"
+    )
+    label: Optional[str] = Field(None, description="Version label, when set")
+    author: Optional[str] = Field(
+        None, description="User id of whoever created this revision, when recorded"
+    )
 
 
 class RestoreVersionResponse(BaseResponse):
@@ -387,6 +441,19 @@ class RestoreVersionResponse(BaseResponse):
 
     path: str = Field(description="Path that was rolled back")
     restored_version: str = Field(description="Version id that is now current")
+
+
+class SetVersionLabelResponse(BaseResponse):
+    """Outcome of naming, renaming or un-naming a file version."""
+
+    path: str = Field(description="Path the version belongs to")
+    version_id: str = Field(description="Version id that was labelled")
+    label: Optional[str] = Field(
+        None, description="Label the version now carries, or None if cleared"
+    )
+    previous_label: Optional[str] = Field(
+        None, description="Label the version carried before, or None"
+    )
 
 
 class SystemTag(BaseModel):
