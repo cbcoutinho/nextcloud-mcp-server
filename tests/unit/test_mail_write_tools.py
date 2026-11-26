@@ -567,6 +567,17 @@ def _account(editor_mode: str = "plaintext", signature: str | None = None) -> di
             "Hi\n\n-- \nACME (https://acme.example)",
             False,
         ),
+        # A link whose text is its address is not repeated.
+        (
+            "plaintext",
+            '<a href="https://acme.example">https://acme.example</a>',
+            None,
+            "Hi\n\n-- \nhttps://acme.example",
+            False,
+        ),
+        # A signature that carries its own separator does not get a second one.
+        ("plaintext", "-- \nMe", None, "Hi\n\n-- \nMe", False),
+        ("plaintext", "--\nMe", None, "Hi\n\n--\nMe", False),
         # A plain signature with ">" is not mistaken for HTML.
         (
             "richtext",
@@ -646,10 +657,11 @@ async def test_plain_body_is_converted_when_editor_mode_picks_html(
         account_id=1,
         to=[],
         subject="s",
-        body="Hi & bye\n\nMe",
+        body="Hi & bye\r\n\nMe",
     )
 
     kwargs = fake_mail.save_draft.await_args.kwargs
+    # CRLF and LF both become a single <br>, with no stray carriage return.
     assert kwargs["body"] == "Hi &amp; bye<br><br>Me"
     assert kwargs["is_html"] is True
 

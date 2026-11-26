@@ -109,6 +109,7 @@ def _cap_attachment_content(content: str | None) -> str | None:
 
 _HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
 _BLOCK_END = re.compile(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6])\s*>")
+_SIG_SEPARATOR = re.compile(r"-- ?\r?\n")
 _LINK = re.compile(r"""(?is)<a\s[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>""")
 
 
@@ -124,13 +125,18 @@ def _looks_like_html(text: str) -> bool:
 
 
 def _plain_to_html(text: str) -> str:
-    return html.escape(text).replace("\n", "<br>")
+    return html.escape(text.replace("\r\n", "\n")).replace("\n", "<br>")
+
+
+def _link_to_text(m: re.Match[str]) -> str:
+    href, label = m[1], m[2]
+    return label if label.strip() == href else f"{label} ({href})"
 
 
 def _html_to_text(text: str) -> str:
     # shortcut: list bullets and other formatting are dropped; use a real
     # converter if that matters. markdownify is an optional extra, so not here.
-    text = _LINK.sub(lambda m: f"{m[2]} ({m[1]})", text)
+    text = _LINK.sub(_link_to_text, text)
     text = _HTML_TAG.sub("", _BLOCK_END.sub("\n", text))
     return re.sub(r"\n{3,}", "\n\n", html.unescape(text)).strip()
 
@@ -150,7 +156,10 @@ def _append_signature(body: str, is_html: bool, signature: str) -> str:
         return f'{body}<br><div class="signature">{signature}</div>'
     if sig_html:
         signature = _html_to_text(signature)
-    return f"{body}\n\n-- \n{signature}"
+    # Some users store the separator in the signature itself; don't double it.
+    if not _SIG_SEPARATOR.match(signature):
+        signature = f"-- \n{signature}"
+    return f"{body}\n\n{signature}"
 
 
 async def _compose_body(
