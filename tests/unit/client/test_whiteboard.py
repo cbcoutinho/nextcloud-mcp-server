@@ -90,7 +90,21 @@ def _summary(*elements: dict) -> dict[str, dict]:
 # ── Parsing ─────────────────────────────────────────────────────────────
 
 
-@given(content=st.binary())
+#: Raw bytes are nearly always refused. JSON documents, some carrying an
+#: element list (bare or under ``data``), reach the accepting branch too.
+board_contents = (
+    st.binary()
+    | json_values.map(lambda v: json.dumps(v).encode())
+    | st.fixed_dictionaries(
+        {"elements": st.lists(json_values, max_size=3)},
+        optional={"files": json_values, "appState": json_values},
+    )
+    .flatmap(lambda scene: st.sampled_from([scene, {"data": scene}]))
+    .map(lambda doc: json.dumps(doc).encode())
+)
+
+
+@given(content=board_contents)
 @example(content=b"[" * 100_000)
 @example(content=b'{"elements": [' + b"1" * 5000 + b"]}")
 @example(content=b'{"elements": "\xff"}')
@@ -99,7 +113,7 @@ def test_parse_board_raises_only_invalid_board(content: bytes):
     try:
         scene = parse_board(content)
     except InvalidBoardError:
-        return
+        return  # refusing is a valid outcome; the property is "nothing else"
     assert isinstance(scene["elements"], list)
 
 

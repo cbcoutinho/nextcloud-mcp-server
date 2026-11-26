@@ -253,7 +253,11 @@ _NOTE_CREATED = {
 @example({"user": {"uid": "a"}, "event": {**_NOTE_CREATED, "node": [None]}})
 def test_any_payload_yields_a_faithful_task_or_none(payload):
     """Total: a malformed payload is ignored, never an exception. A task is only
-    ever built from a well-formed envelope, and carries exactly its values."""
+    ever built from a well-formed envelope, and carries exactly its values.
+
+    Nearly every draw here yields ``None``; the ``return`` ends that (asserted:
+    no exception) branch. The task branch is exercised by
+    ``test_a_well_formed_note_event_yields_its_task``."""
     task = extract_document_task(payload)
 
     if task is None:
@@ -263,6 +267,53 @@ def test_any_payload_yields_a_faithful_task_or_none(payload):
     assert task.modified_at == int(payload.get("time", 0) or 0)
     assert isinstance(task.doc_id, str)
     assert task.operation in {"index", "delete"}
+
+
+_FILE_EVENT_CLASSES = [c for c in _EVENT_CLASSES if c.startswith("OCP\\Files\\")]
+
+
+@st.composite
+def note_payloads(draw):
+    """A well-formed file event for a note, and the task it must yield.
+
+    ``webhook_payloads`` makes every key optional and wrong-typed, so it almost
+    never draws a valid envelope: it proves totality, not faithfulness. This
+    strategy only draws the valid shape, so every example reaches the task branch.
+    """
+    uid = draw(st.from_regex(r"[a-z]{1,8}", fullmatch=True))
+    event_class = draw(st.sampled_from(_FILE_EVENT_CLASSES))
+    node_id = draw(st.integers() | st.text(min_size=1))
+    time = draw(st.integers(min_value=0, max_value=2**40))
+    name = draw(st.from_regex(r"[A-Za-z0-9 ]{1,12}", fullmatch=True))
+    payload = {
+        "user": {"uid": uid},
+        "time": time,
+        "event": {
+            "class": event_class,
+            "node": {"id": node_id, "path": f"/{uid}/files/Notes/{name}.md"},
+        },
+    }
+    operation = "delete" if event_class.endswith("BeforeNodeDeletedEvent") else "index"
+    return payload, (uid, str(node_id), operation, time)
+
+
+@pytest.mark.unit
+@given(note_payloads())
+def test_a_well_formed_note_event_yields_its_task(case):
+    """A file event on a note always yields a task carrying the payload's
+    user, node id and time, with the operation its event class implies."""
+    payload, (uid, doc_id, operation, time) = case
+
+    task = extract_document_task(payload)
+
+    assert task is not None
+    assert (task.user_id, task.doc_id, task.doc_type, task.operation) == (
+        uid,
+        doc_id,
+        "note",
+        operation,
+    )
+    assert task.modified_at == time
 
 
 @pytest.mark.unit
