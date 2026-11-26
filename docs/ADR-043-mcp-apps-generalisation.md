@@ -59,7 +59,8 @@ them:
 - **Tool result size:** the spec says nothing about it.
 
 Rows marked "observed" come from our own runs, not from documentation (note
-465798).
+465798). The ADR depends on that note **only** for those rows. Every other
+claim cites code, a PR or public documentation.
 
 ### Problems the POC exposed
 
@@ -139,15 +140,15 @@ Rows marked "observed" come from our own runs, not from documentation (note
   resource the same way:
   - inline vendored assets after the hash check;
   - set the `_meta.ui` block, the scopes union and a content version (§4);
-  - register the resource after every tool bound to it, so the scopes union is
-    complete. Today this is a "keep this last in the module" comment, guarded by
+  - build the resources **lazily**: `register_view` only records the view,
+    and the resources are built when `_app_extensions()` assembles the extension
+    at server start. By then every `app_tool` has been imported, so the scopes
+    union is always complete.
+  - *Background:* today the union depends on a "keep this last in the module"
+    comment, guarded by
     `test_the_viewer_resource_publishes_every_scope_its_tools_need`
-    (`tests/unit/server/test_document_viewer.py`).
-  - Instead, `register_view` records the view, and the resources are built
-    **lazily** when `_app_extensions()` assembles the extension at server
-    start. By then every `app_tool` has been imported, so the ordering cannot be
-    wrong, and the module-order comment goes away. The scope test stays as a
-    regression guard.
+    (`tests/unit/server/test_document_viewer.py`). The comment goes away, and
+    the test stays as a regression guard.
 - **Each view gates itself.** The global "only with vector sync" switch becomes
   a per-view requirement, evaluated like capability gating (fail-open, see
   `capabilities.py`). The document viewer gets a non-indexed mode (problem 3):
@@ -193,7 +194,7 @@ still work.
 | Key | On | Meaning |
 |---|---|---|
 | `nextcloud-mcp/scopes` | each app/launch tool; the view (union) | Scopes a proxy should request for that call (exists today) |
-| `nextcloud-mcp/version` | the view **and** every tool bound to it | Content hash of the served HTML. *New* |
+| `nextcloud-mcp/version` | the view **and** every tool bound to it | Hash of the HTML **as served**, after inlining, so a vendored-asset bump changes it. *New* |
 | `nextcloud-mcp/effect` | each app/launch tool | `read`, `copy` or `in_place` (§2). Informational for hosts. *New* |
 
 **How a host checks freshness without the payload.**
@@ -227,11 +228,29 @@ server promises to keep. The server side of that promise is `effect` (§2).
       user typed fails if it's taken.
   - **What it limits:** repeated saves can produce several copies, but the cap
     bounds how many.
+  - **`effect="copy"` is the author's promise**, and code review has to check
+    it: `app_tool` can't prove a tool never overwrites. Each `copy` tool
+    therefore ships with tests that pin both collision paths. For
+    `apply_changes` these exist:
+    `test_save_steps_past_existing_copies_and_never_overwrites` and
+    `test_save_with_an_explicit_name_that_exists_fails_instead_of_renaming`.
 - **In-place writes** (`effect="in_place"`: anything that changes or deletes
   existing data) must **fail closed** without elicitation, whether or not a
   host confirmed. `app_tool` enforces this itself, so the rule doesn't depend on
   each tool author remembering it. This covers the future views that edit data
   in place (Deck, Tables).
+  - **Consequence, stated deliberately:** no host observed so far, Astrolabe
+    included, supports elicitation, so **an `in_place` tool can't run in any
+    current host**. That is intended: we won't build in-place editing on an
+    unverifiable assumption.
+  - **Two ways forward, decided with the first in-place view:**
+    - Astrolabe implements elicitation. It's our host, so this is the
+      preferred route.
+    - Or a confirmation the server can verify itself, such as a short-lived,
+      single-use token the server mints when it shows a proposal (the
+      propose → apply pattern of #1578), bound to the user, the target and the
+      etag.
+  - An Astrolabe-only flag the server simply trusts is **not** acceptable.
 
 ### 5. Payload rules
 
@@ -249,9 +268,17 @@ server promises to keep. The server side of that promise is `effect` (§2).
   - The view reloads from `open_document` **at most once** automatically.
   - On a second conflict it stops and tells the user that the file is changing
     and to reopen it, instead of looping on a frequently edited file.
+  - **Staged changes are tied to the etag.** Their geometry was computed
+    against that version. On a reload with a new etag, the view drops them and
+    says so ("the file changed; N staged changes were cleared"). It never
+    silently re-applies them to a different version. `preview_changes` and
+    `apply_changes` already take the etag, so the server rejects stale
+    changes too.
 - **Size budget for a view.** A view's `resources/read` stays under **3 MB**
-  (today ~2 MB). This provisional ceiling gets revisited once host caps on
-  `resources/read` are known. It is enforced by a unit test,
+  (today ~2 MB). It is measured on the **serialized `resources/read` JSON
+  response**, the wire payload including escaping, not the raw HTML. This
+  provisional ceiling gets revisited once host caps on `resources/read` are
+  known. It is enforced by a unit test,
   `test_views_stay_within_size_budget`, which builds each registered view and
   checks its size; the harness card adds it.
 - **Before fixing the cap**, measure the effective result limit for
@@ -340,11 +367,12 @@ Provider states: "file N is an indexed PDF", "file N changed since etag E".
      from a stateful server.
    - **Proposed:** verify against a provider started with
      `stateless_http=True, json_response=True` (python-sdk 2.3.0 app-factory
-     options), behind a verification-only environment flag,
-     `MCP_PACT_STATELESS_VERIFICATION`.
-     - It is **off by default** and logs a warning at startup when on, because
-       it also makes `client_supports_apps()` false (item 3).
-     - With it on, each request stands alone, needs no `initialize`, and gets
+     options).
+     - These are set by a **test-only app factory** in `tests/contract/`, which
+       calls `get_app()` with those options. There is no environment flag, so
+       a deployment can't turn the mode on by accident. That matters because it
+       also makes `client_supports_apps()` false (item 3).
+     - In this mode each request stands alone, needs no `initialize`, and gets
        plain JSON. A stateless server ignores `Mcp-Session-Id`.
 3. **Stateless mode loses client capabilities.** The stateless transport is
    built without the client's `initialize` capabilities, so
@@ -391,10 +419,14 @@ Nextcloud (ADR-029, *Upstream Nextcloud apps*).
 
 ### 10. Exit criteria for the validation phase (Proposed → Accepted)
 
-- [ ] A second view built on `app_tool` / `register_view`, preferably one that
-      writes in place, so §4's fail-closed rule is exercised. Candidates: SAR
+- [ ] A second view built on `app_tool` / `register_view`. Candidates: SAR
       case review, search-results map (PCA coordinates already exist), Deck
       board.
+  - It may be read-only or copy-only.
+  - §4's fail-closed path is exercised regardless, by a unit test: an
+    `effect="in_place"` tool is refused without elicitation, and runs after an
+    accepted elicitation from the MCP Inspector.
+  - A live in-place view waits for one of the two routes in §4.
 - [ ] Both views pass the Tier 1 harness (§9B) and are checked by hand in
       Astrolabe and claude.ai.
   - Le Chat is **best-effort**, because Mistral doesn't document MCP Apps in
@@ -413,7 +445,7 @@ Listed so the gap between Proposed and Accepted is visible, not silent:
 
 | Work | Board | Covers |
 |---|---|---|
-| Pact: Astrolabe ⇄ MCP JSON-RPC surface (consumer + provider, stateless verification flag) | 11 | §9A |
+| Pact: Astrolabe ⇄ MCP JSON-RPC surface (consumer + provider, test-only stateless app factory) | 11 | §9A |
 | View harness: sandboxed Playwright host, Tier 1 only, scanned-page case, size-budget test | 11 | §9B, §5 |
 | `app_tool` / `register_view` + `effect` + `nextcloud-mcp/version` | 12 | §2, §4 |
 | Paged, etag-guarded `read_document_bytes` / `preview_changes` (breaking) | 12 | §5 |
