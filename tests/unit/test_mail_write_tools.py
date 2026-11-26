@@ -8,6 +8,7 @@ being used in a URL, and that the tools return typed ``BaseResponse`` models.
 """
 
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -558,26 +559,34 @@ def _account(editor_mode: str = "plaintext", signature: str | None = None) -> di
             "Hi\n\n-- \nMe A&B\nACME",
             False,
         ),
+        # Link targets survive the HTML-to-text conversion.
+        (
+            "plaintext",
+            '<p><a href="https://acme.example">ACME</a></p>',
+            None,
+            "Hi\n\n-- \nACME (https://acme.example)",
+            False,
+        ),
         # A plain signature with ">" is not mistaken for HTML.
         (
             "richtext",
             "-> Me",
             None,
-            '<p>Hi</p><div class="signature">-&gt; Me</div>',
+            '<p>Hi</p><br><div class="signature">-&gt; Me</div>',
             True,
         ),
         (
             "richtext",
             "<p>Me</p>",
             None,
-            '<p>Hi</p><div class="signature"><p>Me</p></div>',
+            '<p>Hi</p><br><div class="signature"><p>Me</p></div>',
             True,
         ),
         (
             "richtext",
             "Me & co\nACME",
             None,
-            '<p>Hi</p><div class="signature">Me &amp; co<br>ACME</div>',
+            '<p>Hi</p><br><div class="signature">Me &amp; co<br>ACME</div>',
             True,
         ),
     ],
@@ -674,3 +683,18 @@ async def test_send_message_appends_signature(mail_tools, fake_mail):
     )
 
     assert fake_mail.send_message.await_args.kwargs["body"] == "Hi\n\n-- \nMe"
+
+
+async def test_unknown_account_falls_back_with_a_warning(mail_tools, fake_mail, caplog):
+    """An account missing from the listing is logged, then sent plain."""
+    fake_mail.list_accounts.return_value = [{**_account("richtext", "Me"), "id": 2}]
+    fake_mail.save_draft.return_value = _saved_draft()
+    caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.server.mail")
+
+    await _call(
+        mail_tools["nc_mail_save_draft"], account_id=1, to=[], subject="s", body="Hi"
+    )
+
+    kwargs = fake_mail.save_draft.await_args.kwargs
+    assert (kwargs["body"], kwargs["is_html"]) == ("Hi", False)
+    assert "not in the account list" in caplog.text

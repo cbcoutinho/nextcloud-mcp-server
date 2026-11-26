@@ -109,6 +109,7 @@ def _cap_attachment_content(content: str | None) -> str | None:
 
 _HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
 _BLOCK_END = re.compile(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6])\s*>")
+_LINK = re.compile(r"""(?is)<a\s[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>""")
 
 
 def _looks_like_html(text: str) -> bool:
@@ -127,8 +128,9 @@ def _plain_to_html(text: str) -> str:
 
 
 def _html_to_text(text: str) -> str:
-    # shortcut: tags are dropped (link targets lost); use a real converter if
-    # signatures with links matter. markdownify is an optional extra, so not here.
+    # shortcut: list bullets and other formatting are dropped; use a real
+    # converter if that matters. markdownify is an optional extra, so not here.
+    text = _LINK.sub(lambda m: f"{m[2]} ({m[1]})", text)
     text = _HTML_TAG.sub("", _BLOCK_END.sub("\n", text))
     return re.sub(r"\n{3,}", "\n\n", html.unescape(text)).strip()
 
@@ -143,7 +145,9 @@ def _append_signature(body: str, is_html: bool, signature: str) -> str:
     if is_html:
         if not sig_html:
             signature = _plain_to_html(signature)
-        return f'{body}<div class="signature">{signature}</div>'
+        # The <br> keeps the signature off the body's last line when the body
+        # does not end in a block element; an extra blank line is harmless.
+        return f'{body}<br><div class="signature">{signature}</div>'
     if sig_html:
         signature = _html_to_text(signature)
     return f"{body}\n\n-- \n{signature}"
@@ -168,8 +172,16 @@ async def _compose_body(
         return body, is_html
     account = next(
         (a for a in await client.mail.list_accounts() if a.get("id") == account_id),
-        {},
+        None,
     )
+    if account is None:
+        # Mail rejects an unknown account on the write itself; this only picks
+        # the defaults the request goes out with.
+        logger.warning(
+            "Mail account %s not in the account list; using plain text, no signature",
+            account_id,
+        )
+        account = {}
     if is_html is None:
         is_html = account.get("editorMode") == "richtext"
         if is_html and not _looks_like_html(body):
