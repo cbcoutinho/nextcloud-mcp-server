@@ -34,6 +34,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 if TYPE_CHECKING:
     from nextcloud_mcp_server.vector.folder_ancestors import FileIdResolver
+    from nextcloud_mcp_server.vector.scan_snapshot import IndexSnapshot
 
 from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.vector import payload_keys
@@ -79,6 +80,7 @@ async def find_indexed_content(
     embedding_identity: str,
     index_mode: str = payload_keys.INDEX_MODE_HYBRID,
     image_identity: str | None = None,
+    snapshot: IndexSnapshot | None = None,
 ) -> dict | None:
     """Return a real point's payload if this exact content is already indexed.
 
@@ -99,32 +101,39 @@ async def find_indexed_content(
 
     ``image_identity`` (ADR-042 §3) is the image model the document's points
     must carry, or None when the document takes no part in that rule. Every
-    point of an in-scope document carries it, written or skipped, so the
-    unordered ``limit=1`` scroll below can compare any of them.
+    point of an in-scope document carries it, written or skipped, so whichever
+    matching point the ``limit=1`` lookup below returns can be compared.
+
+    ``snapshot`` (local mode, GH #1941) answers the lookup from the scanner's
+    one-pass read instead of a per-document scroll.
 
     Returns the payload dict (including ``acl_principals``) on a hit, else None.
     """
     if not etag:
         return None
-    qdrant_client = await get_qdrant_client()
-    settings = get_settings()
-    points, _ = await qdrant_client.scroll(
-        collection_name=settings.get_collection_name(),
-        scroll_filter=Filter(
-            must=[
-                FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-                FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
-                FieldCondition(key="etag", match=MatchValue(value=etag)),
-                get_placeholder_filter(),
-            ]
-        ),
-        limit=1,
-        with_payload=True,
-        with_vectors=False,
-    )
-    if not points:
+    if snapshot is not None and snapshot.answers(doc_type):
+        found = snapshot.real_by_etag.get((doc_id, etag))
+    else:
+        qdrant_client = await get_qdrant_client()
+        settings = get_settings()
+        points, _ = await qdrant_client.scroll(
+            collection_name=settings.get_collection_name(),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                    FieldCondition(key="doc_type", match=MatchValue(value=doc_type)),
+                    FieldCondition(key="etag", match=MatchValue(value=etag)),
+                    get_placeholder_filter(),
+                ]
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False,
+        )
+        found = (points[0].payload or {}) if points else None
+    if found is None:
         return None
-    payload = dict(points[0].payload or {})
+    payload = dict(found)
     if payload.get(payload_keys.EMBEDDING_IDENTITY) != embedding_identity:
         # Existing vectors were produced by a different embedding model — a
         # re-embed is required, so this content is not reusable as-is.
@@ -325,6 +334,7 @@ async def claim_existing_index(
     webdav: FileIdResolver | None = None,
     folder_ancestor_cache: dict[str, str | None] | None = None,
     image_identity: str | None = None,
+    snapshot: IndexSnapshot | None = None,
 ) -> bool:
     """Tenant-wide dedup claim: skip reprocessing if content is already indexed.
 
@@ -353,7 +363,13 @@ async def claim_existing_index(
     embedding_identity = build_embedding_identity(get_settings())
     try:
         existing = await find_indexed_content(
-            doc_id, doc_type, etag, embedding_identity, index_mode, image_identity
+            doc_id,
+            doc_type,
+            etag,
+            embedding_identity,
+            index_mode,
+            image_identity,
+            snapshot=snapshot,
         )
     except Exception as exc:  # noqa: BLE001 — degrade to "process normally"
         logger.warning(

@@ -20,7 +20,7 @@ Placeholders contain:
 import logging
 import time
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from qdrant_client import AsyncQdrantClient, models
@@ -30,6 +30,9 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.vector.scan_snapshot import IndexSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +165,7 @@ async def query_document_metadata(
     doc_id: str,
     doc_type: str,
     user_id: str,
+    snapshot: "IndexSnapshot | None" = None,
 ) -> dict | None:
     """Query Qdrant for this user's existing entry for a document.
 
@@ -198,6 +202,8 @@ async def query_document_metadata(
         doc_id: Document ID
         doc_type: Document type
         user_id: User ID
+        snapshot: The scanner's one-pass read (local mode, GH #1941); when
+            given, both lookups answer from it instead of scrolling.
 
     Returns:
         Payload dict if found, None otherwise
@@ -207,6 +213,9 @@ async def query_document_metadata(
         settings = get_settings()
 
         async def _first(is_placeholder: bool) -> dict | None:
+            if snapshot is not None and snapshot.answers(doc_type):
+                found = snapshot.by_user.get((user_id, doc_id, is_placeholder))
+                return dict(found) if found is not None else None
             points, _ = await qdrant_client.scroll(
                 collection_name=settings.get_collection_name(),
                 scroll_filter=Filter(

@@ -25,6 +25,7 @@ from qdrant_client.models import (
     MatchAny,
     MatchValue,
     PayloadField,
+    PayloadSelectorExclude,
     Record,
 )
 
@@ -54,6 +55,10 @@ from nextcloud_mcp_server.vector.placeholder import (
 )
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
 from nextcloud_mcp_server.vector.queue.ports import TaskProducer
+from nextcloud_mcp_server.vector.scan_snapshot import (
+    EXCLUDED_PAYLOAD_FIELDS,
+    IndexSnapshot,
+)
 
 if TYPE_CHECKING:
     from nextcloud_mcp_server.search.algorithms import NextcloudClientProtocol
@@ -99,7 +104,7 @@ async def _iter_all_points(
     *,
     collection_name: str,
     scroll_filter: Filter,
-    payload_fields: list[str],
+    payload_fields: list[str] | PayloadSelectorExclude,
     page_size: int = _DELETION_TRACKING_PAGE_SIZE,
 ) -> AsyncIterator[Record]:
     """Yield every point matching the filter, paginating until exhausted.
@@ -121,6 +126,10 @@ async def _iter_all_points(
     ``set`` of doc_ids or a scalar, so nothing needs the full list. Keep it
     that way: consume this in an ``async for`` and reduce as you go — do not
     re-add a ``list(...)`` around it.
+
+    ``_local_mode_file_snapshot`` is the one caller that keeps payloads: only
+    metadata, only for tagged files, and only in local mode, which
+    qdrant-client warns against past ~20k points.
     """
     offset = None
     while True:
@@ -136,6 +145,47 @@ async def _iter_all_points(
             yield point
         if offset is None:
             break
+
+
+async def _local_mode_file_snapshot(
+    settings: Settings, file_ids: set[str]
+) -> IndexSnapshot | None:
+    """Read every file point once, in local mode only (GH #1941).
+
+    Local Qdrant has no payload indexes, so each per-file lookup in the
+    tagged-file loop is a full Python pass over the collection. Returns None in
+    network mode (indexed lookups are cheap there) and on any error, which
+    falls back to the per-file lookups. See ``scan_snapshot`` for why reading
+    it once before the loop is safe.
+
+    shortcut: read once per user scan, so N local-mode users cost N passes per
+    cycle (still O(points) each); hoist to the cycle and filter per user if
+    multi-user local deployments grow.
+    """
+    if not settings.qdrant_location or not file_ids:
+        return None
+    try:
+        qdrant_client = await get_qdrant_client()
+        return await IndexSnapshot.collect(
+            _iter_all_points(
+                qdrant_client,
+                collection_name=settings.get_collection_name(),
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="doc_type", match=MatchValue(value="file"))
+                    ]
+                ),
+                payload_fields=PayloadSelectorExclude(exclude=EXCLUDED_PAYLOAD_FIELDS),
+            ),
+            "file",
+            file_ids,
+        )
+    except Exception:  # noqa: BLE001 — optimisation only; per-file lookups still work
+        logger.warning(
+            "Local-mode file snapshot failed; using per-file Qdrant lookups",
+            exc_info=True,
+        )
+        return None
 
 
 async def _scroll_doc_ids(
@@ -1132,6 +1182,10 @@ async def scan_user_documents(
             # ancestor chain per file under the same tree.
             folder_ancestor_cache: dict[str, str | None] = {}
 
+            file_snapshot = await _local_mode_file_snapshot(
+                settings, {str(f["id"]) for f in tagged_files}
+            )
+
             for file_info in tagged_files:
                 # Files are already filtered by MIME type in find_files_by_tag()
                 file_count += 1
@@ -1221,6 +1275,7 @@ async def scan_user_documents(
                     webdav=nc_client.webdav,
                     folder_ancestor_cache=folder_ancestor_cache,
                     image_identity=image_identity,
+                    snapshot=file_snapshot,
                 ):
                     _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(
@@ -1240,7 +1295,9 @@ async def scan_user_documents(
                 # defeated by a file shared across users -- whose single
                 # user-agnostic placeholder's user_id is overwritten by the last
                 # scanner, so every other user re-queued it on a loop.
-                if etag and await is_dead_lettered(file_id, "file", etag, tiers_sig):
+                if etag and await is_dead_lettered(
+                    file_id, "file", etag, tiers_sig, snapshot=file_snapshot
+                ):
                     _potentially_deleted.pop((user_id, file_id, "file"), None)
                     logger.debug(
                         "Skipping dead-lettered file %s (ID: %s) until content/"
@@ -1290,7 +1347,10 @@ async def scan_user_documents(
 
                     # Query Qdrant for existing entry (placeholder or real)
                     existing_metadata = await query_document_metadata(
-                        doc_id=file_id, doc_type="file", user_id=user_id
+                        doc_id=file_id,
+                        doc_type="file",
+                        user_id=user_id,
+                        snapshot=file_snapshot,
                     )
 
                     # Send if never indexed or modified since last index

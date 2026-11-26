@@ -55,7 +55,7 @@ tracked as a follow-up, not done here.
 import logging
 import time
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from qdrant_client import models
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
@@ -64,6 +64,9 @@ from nextcloud_mcp_server.config import get_settings
 from nextcloud_mcp_server.providers import get_provider
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.qdrant_client import get_qdrant_client
+
+if TYPE_CHECKING:
+    from nextcloud_mcp_server.vector.scan_snapshot import IndexSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +352,7 @@ async def is_dead_lettered(
     doc_type: str,
     etag: str,
     tiers_sig: str,
+    snapshot: "IndexSnapshot | None" = None,
 ) -> bool:
     """Whether this exact content is currently dead-lettered (skip re-queuing).
 
@@ -357,31 +361,35 @@ async def is_dead_lettered(
     or a new escalation tier (e.g. OCR enabled) makes the document retryable
     again. An empty ``etag`` is never dead-lettered (we cannot content-address it).
     Fail-safe: a Qdrant error degrades to False (process normally), mirroring
-    ``sharing_state.claim_existing_index``.
+    ``sharing_state.claim_existing_index``. ``snapshot`` (local mode, GH #1941)
+    answers from the scanner's one-pass read instead of a scroll.
     """
     if not etag:
         return False
-    try:
-        qdrant_client = await get_qdrant_client()
-        settings = get_settings()
-        points, _ = await qdrant_client.scroll(
-            collection_name=settings.get_collection_name(),
-            scroll_filter=_dead_letter_filter(doc_id, doc_type),
-            limit=1,
-            with_payload=True,
-            with_vectors=False,
-        )
-    except Exception as e:
-        logger.warning(
-            "Dead-letter lookup failed for %s_%s (%s); processing normally",
-            doc_type,
-            doc_id,
-            e,
-        )
+    if snapshot is not None and snapshot.answers(doc_type):
+        payload = snapshot.dead_letters.get(doc_id)
+    else:
+        try:
+            qdrant_client = await get_qdrant_client()
+            settings = get_settings()
+            points, _ = await qdrant_client.scroll(
+                collection_name=settings.get_collection_name(),
+                scroll_filter=_dead_letter_filter(doc_id, doc_type),
+                limit=1,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as e:
+            logger.warning(
+                "Dead-letter lookup failed for %s_%s (%s); processing normally",
+                doc_type,
+                doc_id,
+                e,
+            )
+            return False
+        payload = (points[0].payload or {}) if points else None
+    if payload is None:
         return False
-    if not points:
-        return False
-    payload = dict(points[0].payload or {})
     return payload.get("etag") == etag and payload.get("tiers_sig") == tiers_sig
 
 
