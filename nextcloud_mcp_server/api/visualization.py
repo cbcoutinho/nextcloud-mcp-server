@@ -218,24 +218,6 @@ def _reranked_label(rerank: bool, outcome: str) -> str:
     return "false"
 
 
-def _rerank_sort_key(result: Any) -> tuple[bool, float]:
-    """Order reranked results, keeping unscored rows at the tail.
-
-    Rows the reranker did not score sort behind every scored row rather than
-    being compared against them. They are different scales — a cross-encoder
-    score spans [0, 1] while ``.score`` is a rank artifact (~2/k for RRF) or an
-    unbounded raw BM25 value — so ranking them against each other lets an
-    UNSCORED row outrank a genuinely reranked one purely by scale (a raw BM25
-    8.5 beats every possible rerank score). Unscored rows are exactly the ones
-    ``rerank_results`` appends in retrieval order to sit at the tail, so this
-    preserves that placement instead of shuffling them back into the middle.
-    """
-    return (
-        result.rerank_score is not None,
-        result.rerank_score if result.rerank_score is not None else result.score,
-    )
-
-
 def _build_search_algorithm(
     requested_algorithm: str | None,
     settings: Settings,
@@ -675,12 +657,15 @@ async def unified_search(request: Request) -> JSONResponse:
 
         all_results, dropped_count = await _search_with_acl(request, user_id, _execute)
 
-        # Sort by rerank score when present, retrieval score otherwise —
-        # without this the re-sort would silently undo the rerank ordering,
-        # since .score deliberately still holds the retrieval score. See
-        # _rerank_sort_key for why unscored rows are kept at the tail rather
-        # than compared against reranked ones.
-        sorted_results = sorted(all_results, key=_rerank_sort_key, reverse=True)
+        # A reranked pool is already in its final order (verify-on-read keeps
+        # order). Re-sorting it would undo that: .score still holds the
+        # retrieval score, and rerank_results keeps image hits in their
+        # retrieval slot, a placement no sort key can reproduce.
+        sorted_results = (
+            all_results
+            if rerank_outcome == RERANK_APPLIED
+            else sorted(all_results, key=lambda r: r.score, reverse=True)
+        )
 
         # Relevance cut, applied BEFORE pagination so a page fills with rows
         # that qualify rather than returning a short page of whatever survived.
@@ -1101,7 +1086,6 @@ async def vector_search(request: Request) -> JSONResponse:
                 results, rerank_outcome = await rerank_results(
                     results, query, settings=settings, surface="http_viz"
                 )
-                results = sorted(results, key=_rerank_sort_key, reverse=True)
             # Relevance cut before the trim, so a filtered request still fills
             # up to `limit` with qualifying rows instead of returning whatever
             # is left of the top `limit`. Runs with or without reranking.

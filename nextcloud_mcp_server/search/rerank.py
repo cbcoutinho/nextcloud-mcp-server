@@ -194,6 +194,11 @@ async def rerank_results(
     it actually returns, and can distinguish a routine skip from a real
     reranker failure — the two are indistinguishable through a bare boolean,
     which would make every 0-1 result query look like an outage.
+
+    Rows the reranker cannot score are never dropped. Image hits keep their
+    retrieval slot. Every other unscored row moves to the tail. An image hit
+    therefore survives only as far as its retrieval rank carries it: one ranked
+    beyond the caller's trim budget is still cut there.
     """
     client = await _get_client(settings)
     if client is None or len(results) < 2:
@@ -257,8 +262,22 @@ async def rerank_results(
         ordered.append(result)
         taken.add(original_index)
 
-    # Anything the reranker did not score — unscorable rows, and any index the
+    # Image hits (ADR-042) have no text for the cross-encoder to judge, but their
+    # retrieval rank is real, so they keep their retrieval slot. At the tail, the
+    # callers' trim back to the verification budget would always drop them
+    # (Deck #1614).
+    anchored = {
+        i
+        for i, r in enumerate(results)
+        if i not in taken and (r.metadata or {}).get("match") == "image"
+    }
+    # Anything else the reranker did not score — blank rows, and any index the
     # provider omitted — is APPENDED in retrieval order, never dropped. Dropping
     # would read as a ranking change while actually being lost recall.
-    ordered.extend(r for i, r in enumerate(results) if i not in taken)
-    return ordered, RERANK_APPLIED
+    ordered.extend(
+        r for i, r in enumerate(results) if i not in taken and i not in anchored
+    )
+    rest = iter(ordered)
+    return [
+        results[i] if i in anchored else next(rest) for i in range(len(results))
+    ], RERANK_APPLIED
