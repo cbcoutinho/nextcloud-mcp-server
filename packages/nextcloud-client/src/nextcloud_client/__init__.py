@@ -13,6 +13,7 @@ from httpx2 import (
     Timeout,
 )
 
+from .activity import ActivityClient
 from .auth import BearerAuth
 from .base import STREAMING_REQUEST_EXTENSION
 from .calendar import CalendarClient
@@ -223,6 +224,7 @@ class NextcloudClient:
         self.sharing = SharingClient(self._client, username)
         self.shopping_list = ShoppingListClient(self._client, username)
         self.lucarne = LucarneClient(self._client, username)
+        self.activity = ActivityClient(self._client, username)
 
         # Initialize controllers
         self._notes_search = NotesSearchController()

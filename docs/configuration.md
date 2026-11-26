@@ -1790,7 +1790,7 @@ account with Talk disabled sees no Talk tools while their colleague does.
   payload, unparseable version), the tool stays listed. Availability beats
   precision — an instance we can't interrogate behaves exactly as before.
 - Only apps that actually publish a capability block are gated: **Notes, Tables,
-  Deck, Cookbook and Talk** (`spreed`). Calendar and Contacts tools speak
+  Deck, Cookbook, Talk** (`spreed`) **and Activity**. Calendar and Contacts tools speak
   CalDAV/CardDAV and keep working with those web apps uninstalled, so they are
   never gated; Collectives, News, Mail, Shopping List, Whiteboard and Lucarne (an
   AppAPI external app, which publishes no capability block) have nothing to gate on.
@@ -1897,6 +1897,7 @@ tag names to file paths and applies the following:
 | `nc_webdav_find_by_name` | Excluded files are filtered from results |
 | `nc_webdav_find_by_type` | Excluded files are filtered from results |
 | `nc_webdav_list_favorites` | Excluded files are filtered from results |
+| `nc_activity_list` | An activity naming any excluded file (in `objects`, `object_name` or its rich subject) is left out whole; `excluded_count` says how many |
 
 Tagging a **folder** hides the folder itself **and** every descendant
 recursively, via path-prefix match.
