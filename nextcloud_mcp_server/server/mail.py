@@ -110,7 +110,9 @@ def _cap_attachment_content(content: str | None) -> str | None:
 _HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
 _BLOCK_END = re.compile(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6])\s*>")
 _SIG_SEPARATOR = re.compile(r"-- ?\r?\n")
-_LINK = re.compile(r"""(?is)<a\s[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>""")
+# shortcut: matches the <a href="..."> form Mail's editor writes, with plain
+# link text; other forms lose the URL (text kept). Linear, no backtracking.
+_LINK = re.compile(r'(?i)<a href="([^"]*)"[^>]*>([^<]*)</a>')
 
 
 def _looks_like_html(text: str) -> bool:
@@ -394,6 +396,7 @@ async def nc_mail_send_message(
             is true)
         is_html: Whether body contains HTML. Omit to follow the account's
             editor mode (see nc_mail_list_accounts), as the Mail app does.
+            Pass false for plain text that contains literal tags like <div>.
         cc: Optional array of CC recipients
         bcc: Optional array of BCC recipients. At least one recipient is
             needed across to, cc and bcc.
@@ -501,6 +504,7 @@ async def nc_mail_save_draft(
             is true)
         is_html: Whether body contains HTML. Omit to follow the account's
             editor mode (see nc_mail_list_accounts), as the Mail app does.
+            Pass false for plain text that contains literal tags like <div>.
         cc: Optional array of CC recipients
         bcc: Optional array of BCC recipients
         include_signature: Append the account's signature, converted to the
