@@ -15,6 +15,7 @@ from nextcloud_client.webdav import (
     VersionLabelRejected,
     like_predicate,
     normalize_etag,
+    xml_text_problem,
 )
 from pydantic import Field
 
@@ -2134,6 +2135,9 @@ def configure_webdav_tools(mcp: MCPServer):
                 Surrounding whitespace is trimmed.
         """
         label = label.strip()
+        problem = xml_text_problem(label)
+        if problem:
+            raise ToolError(f"Invalid version label: {problem}.")
         client = await get_client(ctx)
         info = await _resolve_file_info(client, path)
         # Listing first refuses an unknown id before anything is written and

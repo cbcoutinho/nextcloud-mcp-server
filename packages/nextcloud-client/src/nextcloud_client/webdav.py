@@ -2,6 +2,7 @@
 
 import logging
 import mimetypes
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -25,6 +26,21 @@ logger = logging.getLogger(__name__)
 # ``Destination`` headers, and deliberately not ``ocs.OCS_REQUEST_HEADERS`` --
 # Sabre answers in XML, so its ``Accept: application/json`` would be a lie.
 _XML_CONTENT_TYPE = "text/xml"
+
+# Characters outside XML 1.0's Char production. ``xml_escape`` handles markup
+# characters but cannot make these representable; sent anyway, they produce a
+# body the server rejects without explaining why.
+_XML_FORBIDDEN_CHAR = re.compile("[^\x09\x0a\x0d\x20-퟿-�\U00010000-\U0010ffff]")
+
+
+def xml_text_problem(text: str) -> str | None:
+    """Why ``text`` cannot be sent as XML character data, or None if it can."""
+    match = _XML_FORBIDDEN_CHAR.search(text)
+    if match is None:
+        return None
+    return (
+        f"it contains the character U+{ord(match.group()):04X}, which XML cannot carry"
+    )
 
 
 class OversizeDownload(Exception):
@@ -3081,11 +3097,17 @@ class WebDAVClient(BaseNextcloudClient):
         TypeError, so clearing must send an empty *string* instead.
 
         Raises :class:`VersionLabelRejected` when the server answers the
-        multistatus with a non-200 status for the property -- e.g. a storage
-        backend that cannot store version metadata.
+        multistatus with a non-2xx status for the property -- e.g. a storage
+        backend that cannot store version metadata -- or with a body that is
+        not a multistatus. Raises ``ValueError``, before any request, for a
+        label holding characters XML 1.0 cannot carry (see
+        :func:`xml_text_problem`).
 
         ``file_id``: see :meth:`list_versions`.
         """
+        problem = xml_text_problem(label)
+        if problem:
+            raise ValueError(f"Invalid version label: {problem}")
         await self._ensure_principal_id()
         if file_id is None:
             file_id = await self.get_fileid(path)
@@ -3116,6 +3138,14 @@ class WebDAVClient(BaseNextcloudClient):
         try:
             root = ET.fromstring(response.content)
         except ET.ParseError as e:
+            # Fail closed: the label may or may not have been applied, and only
+            # a listing can tell. Log the status so the ambiguity is debuggable.
+            logger.warning(
+                "Unparseable PROPPATCH response (HTTP %s) for version %s of %s",
+                response.status_code,
+                version_id,
+                path,
+            )
             raise VersionLabelRejected(
                 f"Nextcloud answered the label update of version {version_id!r} "
                 f"of {path!r} with a body that is not a DAV multistatus: {e}"

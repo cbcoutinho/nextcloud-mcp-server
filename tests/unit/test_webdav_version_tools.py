@@ -293,6 +293,16 @@ async def test_empty_label_clears(set_label, fake_client):
     assert result.label is None
 
 
+async def test_unrepresentable_label_is_refused_before_any_request(
+    set_label, fake_client
+):
+    with pytest.raises(ToolError, match="Invalid version label"):
+        await set_label(
+            path="doc.md", version_id="1700000000", label="a\x0bb", ctx=_ctx()
+        )
+    fake_client.webdav.get_file_info.assert_not_called()
+
+
 async def test_set_label_on_unknown_version_is_refused(set_label, fake_client):
     with pytest.raises(ToolError, match="no version"):
         await set_label(path="doc.md", version_id="999", label="x", ctx=_ctx())

@@ -5,17 +5,41 @@ The collection itself shows up as a response element and has to be skipped,
 otherwise it would be reported as a deleted file or a stored version.
 """
 
+import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock
+from xml.sax.saxutils import escape as xml_escape
 
 import pytest
 from httpx2 import AsyncClient
+from hypothesis import example, given
+from hypothesis import strategies as st
 from nextcloud_client.webdav import (
     VersionLabelRejected,
     WebDAVClient,
     _http_date,
+    xml_text_problem,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@given(st.text())
+@example("\x00")
+@example("\x0b")
+@example("￾")
+@example("a < b & </x> ]]>")
+@example("\U0001f600 emoji")
+def test_xml_text_problem_matches_what_xml_can_carry(text):
+    """Accepted text survives escaping and parsing intact; rejected text
+    would not parse at all. (XML normalizes a bare CR to LF on parse.)"""
+    document = f"<x>{xml_escape(text)}</x>"
+    try:
+        parsed = ET.fromstring(document).text or ""
+    except ET.ParseError:
+        assert xml_text_problem(text) is not None
+        return
+    assert xml_text_problem(text) is None
+    assert parsed == text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _client() -> WebDAVClient:
@@ -241,6 +265,12 @@ class TestSetVersionLabel:
         client, _ = _client_with_response(mocker, b"<html>proxy page")
         with pytest.raises(VersionLabelRejected, match="not a DAV multistatus"):
             await client.set_version_label("doc.txt", "17", "x", file_id=42)
+
+    async def test_unrepresentable_label_is_refused_before_any_request(self, mocker):
+        client, http = _client_with_response(mocker, _PROPPATCH_OK)
+        with pytest.raises(ValueError, match="U\\+0000"):
+            await client.set_version_label("doc.txt", "17", "a\x00b", file_id=42)
+        http.request.assert_not_called()
 
     async def test_sets_the_label(self, mocker):
         body = await self._sent_body(mocker, "checkpoint")
