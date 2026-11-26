@@ -312,25 +312,39 @@ def measure_text(text: str, font_size: float) -> tuple[float, float]:
 
 def wrap_text(text: str, max_width: float, font_size: float) -> str:
     """``text`` with line breaks added so that no line exceeds ``max_width``."""
+    return "\n".join(
+        line
+        for paragraph in text.split("\n")
+        for line in _wrap_paragraph(paragraph, max_width, font_size)
+    )
+
+
+def _wrap_paragraph(paragraph: str, max_width: float, font_size: float) -> list[str]:
     wrapped: list[str] = []
-    for paragraph in text.split("\n"):
-        line = ""
-        for word in paragraph.split(" "):
-            candidate = f"{line} {word}" if line else word
-            if _line_width(candidate, font_size) <= max_width:
-                line = candidate
-                continue
-            if line:
-                wrapped.append(line)
-            # A word longer than the line is broken between characters.
-            line = ""
-            for char in word:
-                if line and _line_width(line + char, font_size) > max_width:
-                    wrapped.append(line)
-                    line = ""
-                line += char
-        wrapped.append(line)
-    return "\n".join(wrapped)
+    line = ""
+    for word in paragraph.split(" "):
+        candidate = f"{line} {word}" if line else word
+        if _line_width(candidate, font_size) <= max_width:
+            line = candidate
+            continue
+        if line:
+            wrapped.append(line)
+        pieces = _break_word(word, max_width, font_size)
+        wrapped.extend(pieces[:-1])
+        line = pieces[-1]
+    wrapped.append(line)
+    return wrapped
+
+
+def _break_word(word: str, max_width: float, font_size: float) -> list[str]:
+    """A word longer than the line, broken between characters. The last piece
+    starts the next line."""
+    pieces = [""]
+    for char in word:
+        if pieces[-1] and _line_width(pieces[-1] + char, font_size) > max_width:
+            pieces.append("")
+        pieces[-1] += char
+    return pieces
 
 
 # ── Geometry ────────────────────────────────────────────────────────────
@@ -734,6 +748,28 @@ def add_elements(
     # Everything is checked before the scene changes, so an error leaves it as
     # it was.
     scene = _Scene(scene_dict, now_ms)
+    staged = _stage(scene, new)
+    pending = {element["id"]: element for _, element in staged}
+    for item, element in staged:
+        _fill_new(item, element)
+    for item, element in staged:
+        if item.frame is not None:
+            _put_in_frame(scene, pending, item, element)
+        if item.type == "arrow":
+            _bind_ends(scene, pending, item, element)
+
+    # Everything is valid: change the scene.
+    for _, element in staged:
+        scene.append(element)
+    for item, element in staged:
+        _connect(scene, pending, item, element)
+    return [element["id"] for _, element in staged]
+
+
+def _stage(
+    scene: _Scene, new: list[NewElement]
+) -> list[tuple[NewElement, dict[str, Any]]]:
+    """A base element for each new one, with its id, not yet in the scene."""
     staged: list[tuple[NewElement, dict[str, Any]]] = []
     for item in new:
         element_id = item.id or scene.new_id()
@@ -742,100 +778,132 @@ def add_elements(
                 raise BoardEditError(f"the board already has an element {item.id!r}")
             scene.all_ids.add(item.id)
         staged.append((item, _base(scene, item.type, element_id)))
-    pending = {element["id"]: element for _, element in staged}
+    return staged
 
-    def lookup(element_id: str, purpose: str) -> dict[str, Any]:
-        if element_id in pending:
-            return pending[element_id]
-        return scene.get(element_id, purpose)
 
-    for item, element in staged:
-        _fill_new(item, element)
-    for item, element in staged:
-        if item.frame is not None:
-            frame = lookup(item.frame, "put it in")
-            if frame.get("type") not in ("frame", "magicframe"):
-                raise BoardEditError(f"{item.frame!r} is not a frame")
-            if item.type != "arrow" and not _contains(frame, element):
-                raise BoardEditError(
-                    f"element {element['id']!r} does not lie inside frame {item.frame!r}"
-                )
-            element["frameId"] = item.frame
-        if item.type == "arrow":
-            for key, ref in (("startBinding", item.start), ("endBinding", item.end)):
-                if ref is None:  # _fill_new refuses this: kept for the type checker
-                    raise BoardEditError("an arrow needs start and end")
-                target = lookup(ref, "connect")
-                if target.get("type") not in _BINDABLE or target.get("containerId"):
-                    raise BoardEditError(f"an arrow cannot end at {ref!r}")
-                element[key] = {"elementId": ref, "focus": 0, "gap": _BINDING_GAP}
-            if item.start == item.end:
-                raise BoardEditError("an arrow needs two different elements")
+def _lookup(
+    scene: _Scene, pending: dict[str, dict[str, Any]], element_id: str, purpose: str
+) -> dict[str, Any]:
+    """An element added in the same call, or one already on the board."""
+    if element_id in pending:
+        return pending[element_id]
+    return scene.get(element_id, purpose)
 
-    # Everything is valid: change the scene.
-    for _, element in staged:
-        scene.append(element)
-    for item, element in staged:
-        if item.type == "arrow":
-            for ref in (item.start, item.end):
-                target = scene.by_id[str(ref)]
-                _add_bound(target, element["id"], "arrow")
-                if target["id"] not in pending:
-                    scene.touch(target)
-            _route(scene, element)
-        if item.text and item.type in (*_SHAPES, "arrow"):
-            _set_label(scene, element, item.text, item.font_size)
-    return [element["id"] for _, element in staged]
+
+def _put_in_frame(
+    scene: _Scene,
+    pending: dict[str, dict[str, Any]],
+    item: NewElement,
+    element: dict[str, Any],
+) -> None:
+    frame_id = str(item.frame)
+    frame = _lookup(scene, pending, frame_id, "put it in")
+    if frame.get("type") not in ("frame", "magicframe"):
+        raise BoardEditError(f"{frame_id!r} is not a frame")
+    if item.type != "arrow" and not _contains(frame, element):
+        raise BoardEditError(
+            f"element {element['id']!r} does not lie inside frame {frame_id!r}"
+        )
+    element["frameId"] = frame_id
+
+
+def _bind_ends(
+    scene: _Scene,
+    pending: dict[str, dict[str, Any]],
+    item: NewElement,
+    element: dict[str, Any],
+) -> None:
+    """Set a new arrow's bindings, after checking both ends."""
+    for key, ref in (("startBinding", item.start), ("endBinding", item.end)):
+        if ref is None:  # _fill_new refuses this: kept for the type checker
+            raise BoardEditError("an arrow needs start and end")
+        target = _lookup(scene, pending, ref, "connect")
+        if target.get("type") not in _BINDABLE or target.get("containerId"):
+            raise BoardEditError(f"an arrow cannot end at {ref!r}")
+        element[key] = {"elementId": ref, "focus": 0, "gap": _BINDING_GAP}
+    if item.start == item.end:
+        raise BoardEditError("an arrow needs two different elements")
+
+
+def _connect(
+    scene: _Scene,
+    pending: dict[str, dict[str, Any]],
+    item: NewElement,
+    element: dict[str, Any],
+) -> None:
+    """Bind a new arrow to the elements at its ends, and label a new element."""
+    if item.type == "arrow":
+        for ref in (item.start, item.end):
+            target = scene.by_id[str(ref)]
+            _add_bound(target, element["id"], "arrow")
+            if target["id"] not in pending:
+                scene.touch(target)
+        _route(scene, element)
+    if item.text and item.type in (*_SHAPES, "arrow"):
+        _set_label(scene, element, item.text, item.font_size)
 
 
 def _fill_new(item: NewElement, element: dict[str, Any]) -> None:
-    kind = item.type
-    if kind == "arrow":
-        if item.start is None or item.end is None:
-            raise BoardEditError("an arrow needs start and end")
-        if item.x is not None or item.y is not None or item.width or item.height:
-            raise BoardEditError(
-                "an arrow takes no position or size: it runs between start and end"
-            )
-        element.update(
-            {
-                "points": [[0, 0], [0, 0]],
-                "lastCommittedPoint": None,
-                "startBinding": None,
-                "endBinding": None,
-                "startArrowhead": None,
-                "endArrowhead": "arrow",
-                "elbowed": False,
-            }
-        )
+    if item.type == "arrow":
+        _fill_arrow(item, element)
     else:
-        if item.start is not None or item.end is not None:
-            raise BoardEditError(f"only an arrow takes start and end, not {kind!r}")
-        if item.x is None or item.y is None:
-            raise BoardEditError(f"{kind!r} needs x and y")
-        element["x"], element["y"] = item.x, item.y
-    if kind in _SHAPES:
+        _place(item, element)
+    _size(item, element)
+    if item.stroke_color:
+        element["strokeColor"] = item.stroke_color
+    if item.background_color:
+        element["backgroundColor"] = item.background_color
+
+
+def _fill_arrow(item: NewElement, element: dict[str, Any]) -> None:
+    if item.start is None or item.end is None:
+        raise BoardEditError("an arrow needs start and end")
+    if item.x is not None or item.y is not None or item.width or item.height:
+        raise BoardEditError(
+            "an arrow takes no position or size: it runs between start and end"
+        )
+    element.update(
+        {
+            "points": [[0, 0], [0, 0]],
+            "lastCommittedPoint": None,
+            "startBinding": None,
+            "endBinding": None,
+            "startArrowhead": None,
+            "endArrowhead": "arrow",
+            "elbowed": False,
+        }
+    )
+
+
+def _place(item: NewElement, element: dict[str, Any]) -> None:
+    if item.start is not None or item.end is not None:
+        raise BoardEditError(f"only an arrow takes start and end, not {item.type!r}")
+    if item.x is None or item.y is None:
+        raise BoardEditError(f"{item.type!r} needs x and y")
+    element["x"], element["y"] = item.x, item.y
+
+
+def _size(item: NewElement, element: dict[str, Any]) -> None:
+    if item.type in _SHAPES:
         element["width"] = item.width or DEFAULT_SHAPE_WIDTH
         element["height"] = item.height or DEFAULT_SHAPE_HEIGHT
-    elif kind == "frame":
+    elif item.type == "frame":
         if item.width is None or item.height is None:
             raise BoardEditError("a frame needs width and height")
         element.update(
             {"width": item.width, "height": item.height, "name": item.text or None}
         )
-    elif kind == "text":
-        if not item.text:
-            raise BoardEditError("a text needs text")
-        if item.width or item.height:
-            raise BoardEditError("a text takes no size: it is sized to its content")
-        font_size = item.font_size or DEFAULT_FONT_SIZE
-        text = _text_fields(item.text, font_size)
-        element.update(text)
-        element["boundElements"] = None
-    if item.stroke_color:
-        element["strokeColor"] = item.stroke_color
-    if item.background_color:
-        element["backgroundColor"] = item.background_color
+    elif item.type == "text":
+        _fill_text(item, element)
+
+
+def _fill_text(item: NewElement, element: dict[str, Any]) -> None:
+    if not item.text:
+        raise BoardEditError("a text needs text")
+    if item.width or item.height:
+        raise BoardEditError("a text takes no size: it is sized to its content")
+    element.update(_text_fields(item.text, item.font_size or DEFAULT_FONT_SIZE))
+    element["boundElements"] = None
 
 
 def _text_fields(text: str, font_size: int) -> dict[str, Any]:
@@ -908,6 +976,30 @@ def _apply_change(
     change: ElementChange,
     moved: dict[str, tuple[float, float]],
 ) -> None:
+    _check_change(element, change)
+    _change_box(scene, element, change, moved)
+    if change.stroke_color is not None:
+        element["strokeColor"] = change.stroke_color
+        scene.touch(element)
+    if change.background_color is not None:
+        element["backgroundColor"] = change.background_color
+        scene.touch(element)
+    _change_text(scene, element, change)
+    if _resizes(change):
+        for arrow in scene.arrows_of(element):
+            _route(scene, arrow)
+
+
+def _resizes(change: ElementChange) -> bool:
+    return change.width is not None or change.height is not None
+
+
+def _given(value: float | None, current: float) -> float:
+    return current if value is None else value
+
+
+def _check_change(element: dict[str, Any], change: ElementChange) -> None:
+    """Refuse a change the element cannot take, before anything is changed."""
     kind = element.get("type")
     if element.get("containerId"):
         raise BoardEditError(
@@ -916,128 +1008,171 @@ def _apply_change(
     geometry = (change.x, change.y, change.width, change.height)
     if kind == "arrow" and any(v is not None for v in geometry):
         raise BoardEditError("an arrow follows the elements it connects: move those")
-    if kind == "text" and (change.width is not None or change.height is not None):
+    if kind == "text" and _resizes(change):
         raise BoardEditError("a text is sized to its content")
-    resizable = (*_SHAPES, "frame", "magicframe")
-    if kind not in resizable and (
-        change.width is not None or change.height is not None
-    ):
+    if kind not in (*_SHAPES, "frame", "magicframe") and _resizes(change):
         raise BoardEditError(f"{kind!r} cannot be resized here")
 
+
+def _change_box(
+    scene: _Scene,
+    element: dict[str, Any],
+    change: ElementChange,
+    moved: dict[str, tuple[float, float]],
+) -> None:
+    """Resize the element now, and record a move for ``_move_closure``."""
     x, y, width, height = _box(element)
     if change.x is not None or change.y is not None:
-        dx = (change.x if change.x is not None else x) - x
-        dy = (change.y if change.y is not None else y) - y
+        dx = _given(change.x, x) - x
+        dy = _given(change.y, y) - y
         if dx or dy:
             moved[str(element["id"])] = (dx, dy)
-    if change.width is not None or change.height is not None:
-        element["width"] = change.width if change.width is not None else width
-        element["height"] = change.height if change.height is not None else height
-        scene.touch(element)
-    if change.stroke_color is not None:
-        element["strokeColor"] = change.stroke_color
-        scene.touch(element)
-    if change.background_color is not None:
-        element["backgroundColor"] = change.background_color
+    if _resizes(change):
+        element["width"] = _given(change.width, width)
+        element["height"] = _given(change.height, height)
         scene.touch(element)
 
+
+def _change_text(scene: _Scene, element: dict[str, Any], change: ElementChange) -> None:
+    kind = element.get("type")
     if kind == "text":
-        if change.text is not None or change.font_size is not None:
-            text = change.text if change.text is not None else _original_text(element)
-            if not text:
-                raise BoardEditError("a text cannot be empty: delete it instead")
-            font_size = change.font_size or _font_size(element)
-            element.update(
-                {
-                    k: v
-                    for k, v in _text_fields(text, font_size).items()
-                    if k in ("text", "originalText", "fontSize", "width", "height")
-                }
-            )
-            scene.touch(element)
+        _change_text_element(scene, element, change)
     elif kind in ("frame", "magicframe"):
-        if change.font_size is not None:
-            raise BoardEditError("a frame has no font size")
-        if change.text is not None:
-            element["name"] = change.text or None
-            scene.touch(element)
+        _rename_frame(scene, element, change)
     elif kind in (*_SHAPES, "arrow"):
-        if change.text is not None:
-            _set_label(scene, element, change.text, change.font_size)
-        elif change.font_size is not None:
-            label = scene.label_of(element)
-            if label is None:
-                raise BoardEditError(f"{change.id!r} has no label to resize")
-            label["fontSize"] = change.font_size
-            _layout_label(scene, element, label)
-        elif change.width is not None or change.height is not None:
-            label = scene.label_of(element)
-            if label is not None:
-                _layout_label(scene, element, label)
+        _change_label(scene, element, change)
     elif change.text is not None or change.font_size is not None:
         raise BoardEditError(f"{kind!r} has no text to change")
-    if change.width is not None or change.height is not None:
-        for arrow in scene.arrows_of(element):
-            _route(scene, arrow)
+
+
+def _change_text_element(
+    scene: _Scene, element: dict[str, Any], change: ElementChange
+) -> None:
+    if change.text is None and change.font_size is None:
+        return
+    text = _original_text(element) if change.text is None else change.text
+    if not text:
+        raise BoardEditError("a text cannot be empty: delete it instead")
+    font_size = change.font_size or _font_size(element)
+    element.update(
+        {
+            k: v
+            for k, v in _text_fields(text, font_size).items()
+            if k in ("text", "originalText", "fontSize", "width", "height")
+        }
+    )
+    scene.touch(element)
+
+
+def _rename_frame(
+    scene: _Scene, element: dict[str, Any], change: ElementChange
+) -> None:
+    if change.font_size is not None:
+        raise BoardEditError("a frame has no font size")
+    if change.text is not None:
+        element["name"] = change.text or None
+        scene.touch(element)
+
+
+def _change_label(
+    scene: _Scene, element: dict[str, Any], change: ElementChange
+) -> None:
+    """Change a shape's or an arrow's label, or lay it out again after a resize."""
+    if change.text is not None:
+        _set_label(scene, element, change.text, change.font_size)
+        return
+    label = scene.label_of(element)
+    if change.font_size is not None:
+        if label is None:
+            raise BoardEditError(f"{change.id!r} has no label to resize")
+        label["fontSize"] = change.font_size
+        _layout_label(scene, element, label)
+    elif label is not None and _resizes(change):
+        _layout_label(scene, element, label)
 
 
 def _move_closure(scene: _Scene, moved: dict[str, tuple[float, float]]) -> None:
     """Move elements, with their labels, frame members and arrows."""
     if not moved:
         return
-    shift: dict[str, tuple[float, float]] = {}
-    for element_id, delta in moved.items():
-        shift[element_id] = delta
-        element = scene.by_id[element_id]
-        if element.get("type") in ("frame", "magicframe"):
-            for member in scene.by_id.values():
-                if member.get("frameId") == element_id and member["id"] not in moved:
-                    shift.setdefault(member["id"], delta)
-    for element_id in list(shift):
-        label = scene.label_of(scene.by_id[element_id])
-        if label is not None:
-            shift.setdefault(label["id"], shift[element_id])
+    shift = _with_labels(scene, _with_frame_members(scene, moved))
     arrows: dict[int, dict[str, Any]] = {}
     for element_id, (dx, dy) in shift.items():
         element = scene.by_id[element_id]
         if element.get("type") == "arrow":
             arrows[id(element)] = element
             continue
-        x, y, _, _ = _box(element)
-        element["x"], element["y"] = x + dx, y + dy
-        scene.touch(element)
+        _translate(scene, element, dx, dy)
         for arrow in scene.arrows_of(element):
             arrows[id(arrow)] = arrow
     for arrow in arrows.values():
         if arrow["id"] in shift:
             # An arrow inside a moved frame moves with it; its bound ends are
             # then pointed at their elements again.
-            dx, dy = shift[arrow["id"]]
-            x, y, _, _ = _box(arrow)
-            arrow["x"], arrow["y"] = x + dx, y + dy
-            scene.touch(arrow)
+            _translate(scene, arrow, *shift[arrow["id"]])
         _route(scene, arrow)
+
+
+def _with_frame_members(
+    scene: _Scene, moved: dict[str, tuple[float, float]]
+) -> dict[str, tuple[float, float]]:
+    """``moved``, plus the members of each moved frame that did not move
+    themselves."""
+    shift: dict[str, tuple[float, float]] = {}
+    for element_id, delta in moved.items():
+        shift[element_id] = delta
+        if scene.by_id[element_id].get("type") not in ("frame", "magicframe"):
+            continue
+        for member in scene.by_id.values():
+            if member.get("frameId") == element_id and member["id"] not in moved:
+                shift.setdefault(member["id"], delta)
+    return shift
+
+
+def _with_labels(
+    scene: _Scene, shift: dict[str, tuple[float, float]]
+) -> dict[str, tuple[float, float]]:
+    """``shift``, plus the label of each element in it."""
+    labels: dict[str, tuple[float, float]] = {}
+    for element_id, delta in shift.items():
+        label = scene.label_of(scene.by_id[element_id])
+        if label is not None:
+            labels.setdefault(label["id"], delta)
+    for label_id, delta in labels.items():
+        shift.setdefault(label_id, delta)
+    return shift
+
+
+def _translate(scene: _Scene, element: dict[str, Any], dx: float, dy: float) -> None:
+    x, y, _, _ = _box(element)
+    element["x"], element["y"] = x + dx, y + dy
+    scene.touch(element)
 
 
 def _leave_frames(scene: _Scene) -> None:
     """Take a changed element out of a frame it no longer lies inside."""
-    for element in list(scene.touched.values()):
-        frame_id = element.get("frameId")
-        if (
-            not isinstance(frame_id, str)
-            or element.get("type") == "arrow"
-            or element.get("containerId")
-            or element.get("isDeleted") is True
-        ):
-            continue
-        frame = scene.by_id.get(frame_id)
-        if frame is None or _contains(frame, element):
-            continue
+    leaving = [e for e in scene.touched.values() if _outside_frame(scene, e)]
+    for element in leaving:
         element["frameId"] = None
         label = scene.label_of(element)
         if label is not None:
             label["frameId"] = None
             scene.touch(label)
+
+
+def _outside_frame(scene: _Scene, element: dict[str, Any]) -> bool:
+    """Whether an element has a frame and no longer lies inside it. A label
+    follows its container, and an arrow's frame is left as it is."""
+    frame_id = element.get("frameId")
+    if (
+        not isinstance(frame_id, str)
+        or element.get("type") == "arrow"
+        or element.get("containerId")
+        or element.get("isDeleted") is True
+    ):
+        return False
+    frame = scene.by_id.get(frame_id)
+    return frame is not None and not _contains(frame, element)
 
 
 def delete_elements(
@@ -1071,27 +1206,38 @@ def _delete(scene: _Scene, element: dict[str, Any]) -> None:
         return
     element["isDeleted"] = True
     scene.touch(element)
-    element_id = element["id"]
     label = scene.label_of(element)
     if label is not None:
         label["isDeleted"] = True
         scene.touch(label)
     if element.get("type") == "arrow":
-        for key in ("startBinding", "endBinding"):
-            target = _binding_target(scene, element, key)
-            if target is not None and _remove_bound(target, element_id):
-                scene.touch(target)
+        _unbind_ends(scene, element)
+    _unbind_arrows(scene, element)
+    if element.get("type") in ("frame", "magicframe"):
+        _free_members(scene, element["id"])
+
+
+def _unbind_ends(scene: _Scene, arrow: dict[str, Any]) -> None:
+    """Take a deleted arrow off the elements at its ends."""
+    for key in ("startBinding", "endBinding"):
+        target = _binding_target(scene, arrow, key)
+        if target is not None and _remove_bound(target, arrow["id"]):
+            scene.touch(target)
+
+
+def _unbind_arrows(scene: _Scene, element: dict[str, Any]) -> None:
+    """Leave the arrows that end at a deleted element unbound at that end."""
     for arrow in scene.arrows_of(element):
         for key in ("startBinding", "endBinding"):
             binding = arrow.get(key)
-            if isinstance(binding, dict) and binding.get("elementId") == element_id:
+            if isinstance(binding, dict) and binding.get("elementId") == element["id"]:
                 arrow[key] = None
                 scene.touch(arrow)
-    if element.get("type") in ("frame", "magicframe"):
-        for member in scene.by_id.values():
-            if (
-                member.get("frameId") == element_id
-                and member.get("isDeleted") is not True
-            ):
-                member["frameId"] = None
-                scene.touch(member)
+
+
+def _free_members(scene: _Scene, frame_id: str) -> None:
+    """Take the members of a deleted frame out of it."""
+    for member in scene.by_id.values():
+        if member.get("frameId") == frame_id and member.get("isDeleted") is not True:
+            member["frameId"] = None
+            scene.touch(member)

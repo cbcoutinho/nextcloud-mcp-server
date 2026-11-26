@@ -230,6 +230,62 @@ def _write_error(path: str, e: HTTPStatusError) -> ToolError:
     return ToolError(f"Failed to save {path!r}: HTTP {status}. Nothing was changed.")
 
 
+async def _find_boards(
+    client: "NextcloudClient", path: str, excluded: set[str]
+) -> list[FileInfo]:
+    """The boards under ``path``, without those in excluded folders."""
+    try:
+        found = await client.webdav.find_all_by_type(WHITEBOARD_MIME_TYPE, scope=path)
+    except HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise ToolError(f"Folder not found: {path!r}") from e
+        raise ToolError(
+            f"Failed to list whiteboards: HTTP {e.response.status_code}"
+        ) from e
+    return [
+        FileInfo(**item)
+        for item in found
+        if not is_path_excluded(item["path"], excluded)
+    ]
+
+
+def _refuse_bad_name(path: str) -> None:
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if not name.lower().endswith(".whiteboard") or name.startswith("."):
+        raise ToolError(f"A whiteboard's name must end in .whiteboard: {path!r}")
+
+
+async def _create_board(client: "NextcloudClient", path: str) -> WhiteboardEditResponse:
+    """Write an empty board, never over an existing file."""
+    try:
+        result = await client.webdav.write_file(
+            path, serialize_board(NEW_BOARD), WHITEBOARD_MIME_TYPE
+        )
+    except HTTPStatusError as e:
+        if e.response.status_code == 409:
+            raise ToolError(f"Folder not found for {path!r}") from e
+        raise _write_error(path, e) from e
+    if result.get("status_code") == 412:
+        raise ToolError(f"A file already exists at {path!r}")
+    if result.get("status_code") == 423:
+        raise ToolError(f"{path!r} is locked by another client")
+    return WhiteboardEditResponse(path=path, etag=result.get("etag"), element_ids=[])
+
+
+async def _edit(
+    ctx: Context,
+    path: str,
+    etag: str,
+    edit: Callable[[dict[str, Any]], list[str]],
+) -> WhiteboardEditResponse:
+    """Check the path, then edit the board through ``_edit_board``."""
+    _refuse_traversal(path)
+    client = await get_client(ctx)
+    excluded = await get_excluded_file_paths(client.webdav)
+    _refuse_excluded(path, excluded)
+    return await _edit_board(client, path, etag, edit)
+
+
 def configure_whiteboard_tools(mcp: MCPServer) -> None:
     """Configure Whiteboard app MCP tools."""
 
@@ -256,21 +312,7 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
         excluded = await get_excluded_file_paths(client.webdav)
         if path:
             _refuse_excluded(path, excluded)
-        try:
-            found = await client.webdav.find_all_by_type(
-                WHITEBOARD_MIME_TYPE, scope=path
-            )
-        except HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ToolError(f"Folder not found: {path!r}") from e
-            raise ToolError(
-                f"Failed to list whiteboards: HTTP {e.response.status_code}"
-            ) from e
-        boards = [
-            FileInfo(**item)
-            for item in found
-            if not is_path_excluded(item["path"], excluded)
-        ]
+        boards = await _find_boards(client, path, excluded)
         return SearchFilesResponse(
             results=boards,
             total_found=len(boards),
@@ -346,27 +388,11 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
                 the folder must exist.
         """
         _refuse_traversal(path)
-        name = path.replace("\\", "/").rsplit("/", 1)[-1]
-        if not name.lower().endswith(".whiteboard") or name.startswith("."):
-            raise ToolError(f"A whiteboard's name must end in .whiteboard: {path!r}")
+        _refuse_bad_name(path)
         client = await get_client(ctx)
         excluded = await get_excluded_file_paths(client.webdav)
         _refuse_excluded(path, excluded)
-        try:
-            result = await client.webdav.write_file(
-                path, serialize_board(NEW_BOARD), WHITEBOARD_MIME_TYPE
-            )
-        except HTTPStatusError as e:
-            if e.response.status_code == 409:
-                raise ToolError(f"Folder not found for {path!r}") from e
-            raise _write_error(path, e) from e
-        if result.get("status_code") == 412:
-            raise ToolError(f"A file already exists at {path!r}")
-        if result.get("status_code") == 423:
-            raise ToolError(f"{path!r} is locked by another client")
-        return WhiteboardEditResponse(
-            path=path, etag=result.get("etag"), element_ids=[]
-        )
+        return await _create_board(client, path)
 
     @mcp.tool(
         title="Add Whiteboard Elements",
@@ -479,15 +505,3 @@ def configure_whiteboard_tools(mcp: MCPServer) -> None:
             The new etag, and the ids of every element that changed.
         """
         return await _edit(ctx, path, etag, lambda scene: delete_elements(scene, ids))
-
-    async def _edit(
-        ctx: Context,
-        path: str,
-        etag: str,
-        edit: Callable[[dict[str, Any]], list[str]],
-    ) -> WhiteboardEditResponse:
-        _refuse_traversal(path)
-        client = await get_client(ctx)
-        excluded = await get_excluded_file_paths(client.webdav)
-        _refuse_excluded(path, excluded)
-        return await _edit_board(client, path, etag, edit)
