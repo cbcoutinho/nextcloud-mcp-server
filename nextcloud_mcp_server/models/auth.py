@@ -101,6 +101,7 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         "whiteboard.read",
         "lucarne.read",
         "lucarne.write",
+        "activity.read",
         # MCP-server-level rather than a Nextcloud app, but it gates tools the
         # same way, so it lives in the same vocabulary. Advertised in DCR only
         # when vector sync is enabled — see app.py.

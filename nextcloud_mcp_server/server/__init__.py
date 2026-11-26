@@ -7,6 +7,7 @@ from nextcloud_mcp_server.capabilities import stamp_required_capability
 from nextcloud_mcp_server.context import get_client
 from nextcloud_mcp_server.request_context import current_context
 
+from .activity import configure_activity_tools
 from .calendar import configure_calendar_tools
 from .collectives import configure_collectives_tools
 from .contacts import configure_contacts_tools
@@ -45,6 +46,7 @@ AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
     "shopping_list": configure_shopping_list_tools,
     "whiteboard": configure_whiteboard_tools,
     "lucarne": configure_lucarne_tools,
+    "activity": configure_activity_tools,
 }
 
 # App name → the key it publishes on /ocs/v2.php/cloud/capabilities, for apps
@@ -53,6 +55,7 @@ AVAILABLE_APPS: dict[str, Callable[[MCPServer], None]] = {
 # absence of a key is what closes the gate and most apps publish nothing:
 #
 #   notes / tables / deck / cookbook → own key, carries `version`
+#   activity                         → own key (`apiv2` features), no version
 #   talk                             → `spreed`; the whole block is omitted for
 #                                      a user Talk is disabled for, which is
 #                                      exactly when its tools should vanish
@@ -71,6 +74,7 @@ APP_CAPABILITY_KEY: dict[str, str] = {
     "deck": "deck",
     "cookbook": "cookbook",
     "talk": "spreed",
+    "activity": "activity",
 }
 
 
@@ -119,6 +123,7 @@ __all__ = [
     "configure_sharing_tools",
     "configure_shopping_list_tools",
     "configure_lucarne_tools",
+    "configure_activity_tools",
     "configure_tables_tools",
     "configure_talk_tools",
     "configure_webdav_tools",
