@@ -37,7 +37,11 @@ Things to know:
   no activity, and activity expires (365 days by default).
 - A file restored from the trash can get a new id.
 - `EXCLUDED_TAGS` applies: an activity naming any excluded file is left out
-  whole, never partly redacted, and counted in `excluded_count`. The exclusion
+  whole, never partly redacted, and counted in `excluded_count`. The cursor
+  still advances past it, so `excluded_count` does reveal that *something*
+  under an excluded tag changed (never what). Like the other `EXCLUDED_TAGS`
+  checks, tag lookup fails open per tag: if Nextcloud's tag API errors, that
+  tag is skipped with a warning. The exclusion
   is checked against the file's current tags and the path recorded in the
   activity; a file renamed out of an excluded folder since is matched by its old
   path.

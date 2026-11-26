@@ -46,12 +46,15 @@ def _rich_file_paths(value: Any) -> list[str]:
 
 
 def activity_file_paths(activity: dict[str, Any]) -> list[str]:
-    """Every file path an activity names: its objects and its rich subject."""
+    """Every file path an activity names: its objects and its rich subject.
+
+    Objects are checked whatever the ``object_type``: a comment or share can name
+    files too, and a non-path name that happens to match only hides one activity.
+    """
     paths = _rich_file_paths(activity.get("subject_rich"))
-    if activity.get("object_type") == "files":
-        paths += list(activity.get("objects", {}).values())
-        if isinstance(name := activity.get("object_name"), str) and name:
-            paths.append(name)
+    paths += list(activity.get("objects", {}).values())
+    if isinstance(name := activity.get("object_name"), str) and name:
+        paths.append(name)
     return paths
 
 

@@ -97,6 +97,15 @@ async def test_excluded_file_in_rich_subject_only(client, tools):
     assert result.activities == []
 
 
+async def test_objects_checked_for_non_file_activity(client, tools):
+    """A comment or share activity naming a hidden file in `objects` is dropped."""
+    client.activity.list_activities.return_value = _page(
+        [_activity(1, object_type="comments", objects={"9": "/Private/x.md"})]
+    )
+    result = await tools.nc_activity_list(SimpleNamespace())
+    assert result.excluded_count == 1
+
+
 async def test_empty_page_keeps_the_cursor(client, tools):
     client.activity.list_activities.return_value = _page([])
     result = await tools.nc_activity_list(SimpleNamespace(), sort="asc", since=41)
