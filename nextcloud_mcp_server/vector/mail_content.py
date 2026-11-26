@@ -15,7 +15,26 @@ from typing import Any
 from nextcloud_client.mail import MailClient
 
 from nextcloud_mcp_server.config import get_settings
-from nextcloud_mcp_server.vector.html_processor import html_to_markdown
+from nextcloud_mcp_server.vector.html_processor import (
+    escape_setext_underlines,
+    mail_html_to_markdown,
+)
+
+# Version of the text :func:`build_mail_content` produces. Stored on every mail
+# chunk under ``MAIL_CONTENT_VERSION_KEY``. Mail is immutable, so the scanner's
+# ``modified_at`` (the sent date) never changes. Without this, a message
+# indexed under an older layout would keep it forever. The scanner re-queues
+# indexed mail whose stored version is lower. Points written before the key
+# existed carry none and count as version 1.
+#
+# Bump it with any change to the produced text, including
+# ``mail_html_to_markdown``.
+#   1: markdownify defaults (layout tables squashed into one cell, ``![]()``
+#      images, unescaped ``|`` in table cells).
+#   2: mail-specific HTML conversion; setext-underline escaping for plain text
+#      and the subject.
+MAIL_CONTENT_VERSION = 2
+MAIL_CONTENT_VERSION_KEY = "mail_content_version"
 
 # Messages indexed (and verified) per mailbox. This equals the Mail API's
 # per-request maximum (it clamps ``limit`` to 1..100), so it cannot be raised
@@ -134,16 +153,26 @@ def build_mail_content(message: dict[str, Any]) -> str:
 
     Cc/Bcc are included so recipient-oriented queries ("emails where alice was
     cc'd") can match. The body is the Mail OCS ``body`` field — sanitized HTML
-    when ``hasHtmlBody`` is set (converted to Markdown for embedding), otherwise
-    plain text.
+    when ``hasHtmlBody`` is set, otherwise plain text.
+
+    The text is also what Astrolabe's chunk viewer renders as Markdown (with
+    ``breaks: true``, so the header lines stay separate lines). HTML bodies go
+    through :func:`mail_html_to_markdown`. In plain-text bodies and the
+    subject, lines that would become a setext heading underline are escaped.
+
+    Changing the produced text changes chunk offsets: bump
+    ``MAIL_CONTENT_VERSION`` with it.
     """
-    subject = message.get("subject") or ""
+    subject = escape_setext_underlines(message.get("subject") or "")
     from_str = format_mail_addresses(message.get("from"))
     to_str = format_mail_addresses(message.get("to"))
     cc_str = format_mail_addresses(message.get("cc"))
     bcc_str = format_mail_addresses(message.get("bcc"))
     raw_body = message.get("body") or ""
-    body_text = html_to_markdown(raw_body) if message.get("hasHtmlBody") else raw_body
+    if message.get("hasHtmlBody"):
+        body_text = mail_html_to_markdown(raw_body)
+    else:
+        body_text = escape_setext_underlines(raw_body)
 
     content_parts = [subject]
     if from_str:

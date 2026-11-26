@@ -42,6 +42,8 @@ from nextcloud_mcp_server.server.tag_exclusion import (
 from nextcloud_mcp_server.vector import payload_keys
 from nextcloud_mcp_server.vector.dead_letter import is_dead_lettered
 from nextcloud_mcp_server.vector.mail_content import (
+    MAIL_CONTENT_VERSION,
+    MAIL_CONTENT_VERSION_KEY,
     MAIL_SCAN_MAX_PER_MAILBOX,
     list_index_window,
     mail_index_filter,
@@ -2178,6 +2180,24 @@ async def scan_mail_messages(
                                 format(placeholder_age, ".1f"),
                             )
                             needs_indexing = True
+                    elif (
+                        existing_metadata.get(MAIL_CONTENT_VERSION_KEY) or 1
+                    ) < MAIL_CONTENT_VERSION:
+                        # Indexed under an older build_mail_content layout.
+                        # modified_at (the sent date) never changes for mail,
+                        # so this is the only route to the new text. Re-queued
+                        # once; the re-index stamps the current version. Only
+                        # an older version triggers it: after a rollback the
+                        # stored version is higher and the newer text is kept,
+                        # since the offsets it was chunked with still match it.
+                        logger.debug(
+                            "Mail message %s indexed with content version %s; "
+                            "reindexing at %s",
+                            doc_id,
+                            existing_metadata.get(MAIL_CONTENT_VERSION_KEY) or 1,
+                            MAIL_CONTENT_VERSION,
+                        )
+                        needs_indexing = True
 
                     if needs_indexing:
                         await write_placeholder_point(

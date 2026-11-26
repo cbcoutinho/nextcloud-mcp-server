@@ -2362,6 +2362,7 @@ postgres = [
     { name = "psycopg", extra = ["binary", "pool"] },
 ]
 semantic = [
+    { name = "beautifulsoup4" },
     { name = "boto3" },
     { name = "botocore" },
     { name = "fastembed" },
@@ -2411,6 +2412,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.14.0" },
     { name = "anyio", specifier = ">=4.0" },
     { name = "authlib", specifier = ">=1.6.5" },
+    { name = "beautifulsoup4", marker = "extra == 'semantic'", specifier = ">=4.12" },
     { name = "boto3", marker = "extra == 'semantic'", specifier = ">=1.35.0" },
     { name = "botocore", marker = "extra == 'semantic'", specifier = ">=1.35.0" },
     { name = "click", specifier = ">=8.1.8" },
@@ -2420,7 +2422,7 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.5.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "langchain-text-splitters", specifier = ">=1.0.0" },
-    { name = "markdownify", marker = "extra == 'semantic'", specifier = ">=0.14.1" },
+    { name = "markdownify", marker = "extra == 'semantic'", specifier = ">=1.0.0" },
     { name = "markupsafe", specifier = ">=3.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=2.3,<2.4" },
     { name = "mistralai", marker = "extra == 'documents'", specifier = ">=2.4.5" },

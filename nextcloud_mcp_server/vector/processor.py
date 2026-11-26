@@ -83,6 +83,8 @@ from nextcloud_mcp_server.vector.image_ingest import (
     in_image_scope,
 )
 from nextcloud_mcp_server.vector.mail_content import (
+    MAIL_CONTENT_VERSION,
+    MAIL_CONTENT_VERSION_KEY,
     build_mail_content,
     format_mail_addresses,
 )
@@ -2585,6 +2587,9 @@ async def _index_document_inner(
                 "has_attachments": file_metadata.get("has_attachments"),
                 "account_id": file_metadata.get("account_id"),
                 "mailbox_id": file_metadata.get("mailbox_id"),
+                # Read by the scanner to re-index mail built by an older
+                # build_mail_content layout (see MAIL_CONTENT_VERSION).
+                MAIL_CONTENT_VERSION_KEY: MAIL_CONTENT_VERSION,
             }
             if doc_task.doc_type == "mail_message"
             else {}

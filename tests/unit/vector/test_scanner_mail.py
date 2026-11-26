@@ -11,6 +11,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nextcloud_mcp_server.vector import scanner as scanner_module
+from nextcloud_mcp_server.vector.mail_content import (
+    MAIL_CONTENT_VERSION,
+    MAIL_CONTENT_VERSION_KEY,
+)
 from nextcloud_mcp_server.vector.scanner import DocumentTask, scan_mail_messages
 
 pytestmark = pytest.mark.unit
@@ -26,6 +30,14 @@ def _clear_scanner_module_state():
     scanner_module._potentially_deleted.clear()
     scanner_module._mail_cap_logged.clear()
     scanner_module._empty_discovery_streak.clear()
+
+
+# An indexed point that is current on both axes: same sent date as the listing
+# below, and built by the current build_mail_content layout.
+_UP_TO_DATE = {
+    "modified_at": 1700000000,
+    MAIL_CONTENT_VERSION_KEY: MAIL_CONTENT_VERSION,
+}
 
 
 def _patch_incremental(mocker, *, indexed_ids, existing_metadata, interval=1):
@@ -190,9 +202,7 @@ async def test_incremental_new_message_queued(mocker):
 async def test_incremental_reappeared_message_clears_grace(mocker):
     """A message back in Nextcloud is removed from the deletion grace period."""
     # Already indexed and up-to-date, so it won't be re-queued.
-    _patch_incremental(
-        mocker, indexed_ids=["100"], existing_metadata={"modified_at": 1700000000}
-    )
+    _patch_incremental(mocker, indexed_ids=["100"], existing_metadata=_UP_TO_DATE)
     scanner_module._potentially_deleted[("alice", "100", "mail_message")] = 123.0
     nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
 
@@ -212,9 +222,7 @@ async def test_incremental_reappeared_message_clears_grace(mocker):
 
 async def test_incremental_deletes_after_grace_period(mocker):
     """An indexed message gone from Nextcloud past the grace period is deleted."""
-    _patch_incremental(
-        mocker, indexed_ids=["999"], existing_metadata={"modified_at": 1700000000}
-    )
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=_UP_TO_DATE)
     # Seed the grace period far in the past so the delta exceeds grace_period.
     scanner_module._potentially_deleted[("alice", "999", "mail_message")] = 0.0
     # The mailbox still lists other (already up-to-date) mail, so 999 is
@@ -241,9 +249,7 @@ async def test_incremental_deletes_after_grace_period(mocker):
 
 async def test_incremental_first_missing_starts_grace(mocker):
     """A newly-missing indexed message enters the grace period (no delete yet)."""
-    _patch_incremental(
-        mocker, indexed_ids=["999"], existing_metadata={"modified_at": 1700000000}
-    )
+    _patch_incremental(mocker, indexed_ids=["999"], existing_metadata=_UP_TO_DATE)
     # Not previously seen as missing; the mailbox still lists other mail.
     nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
 
@@ -356,9 +362,7 @@ async def test_grace_key_isolated_by_doc_type(mocker):
     """
     # Mail message 42 is indexed and up-to-date (so it isn't re-queued), and is
     # present in Nextcloud (so the reappeared-clear path runs for mail).
-    _patch_incremental(
-        mocker, indexed_ids=["42"], existing_metadata={"modified_at": 1700000000}
-    )
+    _patch_incremental(mocker, indexed_ids=["42"], existing_metadata=_UP_TO_DATE)
     # A note 42 is mid-grace-period for the same user.
     scanner_module._potentially_deleted[("alice", "42", "note")] = 123.0
     nc_client = _single_message_client([{"databaseId": 42, "dateInt": 1700000000}])
@@ -475,3 +479,63 @@ async def test_cap_log_level_depends_on_whether_a_filter_is_set(
     assert len(cap_records) == 1, "expected exactly one cap message"
     assert cap_records[0].levelname == expected_level
     assert expected_fragment in cap_records[0].getMessage()
+
+
+@pytest.mark.parametrize(
+    "existing_metadata",
+    [
+        pytest.param({"modified_at": 1700000000}, id="pre-version-point"),
+        pytest.param(
+            {"modified_at": 1700000000, MAIL_CONTENT_VERSION_KEY: 1},
+            id="older-version",
+        ),
+    ],
+)
+async def test_incremental_requeues_mail_built_by_an_older_layout(
+    mocker, existing_metadata
+):
+    """Unchanged mail indexed under an older content layout is re-queued once.
+
+    The sent date never changes, so without the version check a message would
+    keep its old indexed text (and old chunk offsets) forever.
+    """
+    _patch_incremental(mocker, indexed_ids=["100"], existing_metadata=existing_metadata)
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 1
+    assert [(t.doc_id, t.operation) for t in stream.tasks] == [("100", "index")]
+
+
+async def test_incremental_does_not_requeue_failed_mail_for_a_version_bump(mocker):
+    """A permanent failure is not retried just because the layout version moved.
+
+    A failed point carries no content version, so checking the version first
+    would re-queue a message that keeps failing on every scan.
+    """
+    _patch_incremental(
+        mocker,
+        indexed_ids=["100"],
+        existing_metadata={"modified_at": 1700000000, "status": "failed"},
+    )
+    nc_client = _single_message_client([{"databaseId": 100, "dateInt": 1700000000}])
+
+    stream = _CollectingStream()
+    queued = await scan_mail_messages(
+        user_id="alice",
+        send_stream=stream,
+        nc_client=nc_client,
+        initial_sync=False,
+        scan_id=1,
+    )
+
+    assert queued == 0
+    assert stream.tasks == []

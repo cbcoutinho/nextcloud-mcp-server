@@ -921,3 +921,64 @@ async def test_list_messages_iso_date_bounds(nc_mcp_client, provisioned_mail_acc
     window = f"start:{today - timedelta(days=1)} end:{today}"
     assert message_id in await listed_ids(window)
     assert message_id not in await listed_ids(f"end:{today - timedelta(days=2)}")
+
+
+# Synthetic newsletter-style HTML (Deck card #1618): a layout table wrapping a
+# heading, a list, a remote image, a data table with a '|' in a cell, and a
+# Gmail-style quoted reply.
+_FORMATTED_HTML = """<html><head><style>p{color:#333}</style></head><body>
+<table width="100%"><tr><td align="center"><table width="600"><tr><td>
+<h1>Quarterly Update</h1>
+<p>Hello <b>team</b>, the <i>highlights</i>:</p>
+<ul><li><a href="https://example.com/report">Full report</a></li><li>Second point</li></ul>
+<img src="https://example.com/banner.png" alt="Banner art">
+<table><tr><th>Region</th><th>Total</th></tr>
+<tr><td>North | East</td><td>12</td></tr></table>
+<div class="gmail_quote"><div>On Monday, Alice wrote:<br></div>
+<blockquote class="gmail_quote"><div>First line<br>Second line</div></blockquote></div>
+</td></tr></table></td></tr></table>
+</body></html>"""
+
+
+async def test_html_mail_indexes_as_renderable_markdown(
+    nc_client, nc_mcp_client, provisioned_mail_account
+):
+    """The text indexed for an HTML mail keeps its structure as Markdown.
+
+    Goes through the same OCS ``get_message`` call the vector processor uses,
+    so the input is the Mail app's real sanitized HTML (image src rewriting,
+    attribute stripping) rather than the hand-written fixtures in
+    ``tests/unit/vector/test_mail_html.py``.
+    """
+    from nextcloud_mcp_server.vector.mail_content import build_mail_content
+
+    subject = f"Formatted mail probe {uuid.uuid4().hex[:8]}"
+    msg = EmailMessage()
+    msg["From"] = "sender@example.org"
+    msg["To"] = ADMIN_EMAIL
+    msg["Subject"] = subject
+    msg.set_content("plain alternative")
+    msg.add_alternative(_FORMATTED_HTML, subtype="html")
+    with smtplib.SMTP("localhost", 3025, timeout=15) as smtp:
+        smtp.send_message(msg)
+
+    listed = await _sync_and_fetch_message(nc_mcp_client, subject)
+    message = await nc_client.mail.get_message(int(listed["id"]))
+    assert message.get("hasHtmlBody"), message.keys()
+
+    content = build_mail_content(message)
+    header, _, body = content.partition("\n\n")
+    assert header.splitlines()[0] == subject
+    assert "From: sender@example.org" in header.splitlines()
+
+    assert "# Quarterly Update" in body
+    assert "**team**" in body
+    assert "*highlights*" in body
+    assert "- [Full report](https://example.com/report)" in body
+    assert "[image: Banner art]" in body
+    assert "![" not in body
+    assert "| Region | Total |" in body
+    assert "| North \\| East | 12 |" in body
+    assert "> First line" in body
+    assert "> Second line" in body
+    assert "color:#333" not in body
