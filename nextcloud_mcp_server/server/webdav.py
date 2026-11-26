@@ -45,6 +45,7 @@ from nextcloud_mcp_server.models.webdav import (
     ListTrashResponse,
     ListVersionsResponse,
     ParseStatus,
+    ReadVersionResponse,
     RestoreFromTrashResponse,
     RestoreVersionResponse,
     SystemTag,
@@ -388,6 +389,24 @@ def _as_int(raw: Any) -> Optional[int]:
         return None
 
 
+def _file_version(v: dict[str, Any]) -> FileVersion:
+    """Shape one client-layer version entry into the MCP model.
+
+    An absent label or author reaches here as ``""`` (an empty DAV element) or
+    ``None`` (the backend does not record it); both mean "not set".
+    """
+    return FileVersion(
+        version_id=v["version_id"],
+        size=_as_int(v.get("size")),
+        modified=v.get("modified"),
+        content_type=v.get("content_type") or None,
+        revision_etag=v.get("revision_etag"),
+        label=v.get("label") or None,
+        author=v.get("author") or None,
+        is_current=v.get("is_current"),
+    )
+
+
 async def _resolve_file_id(client: "NextcloudClient", path: str) -> int:
     """Resolve ``path`` to the numeric file ID the DAV collections are keyed by.
 
@@ -414,6 +433,34 @@ async def _resolve_file_id(client: "NextcloudClient", path: str) -> int:
         raise ToolError(
             f"Unexpected non-numeric file id {file_id!r} for {path!r}"
         ) from None
+
+
+async def _resolve_file_info(client: "NextcloudClient", path: str) -> dict[str, Any]:
+    """Like :func:`_resolve_file_id`, but return the file's DAV properties.
+
+    The version tools need the live file's ``last_modified`` (to tell which
+    listed version is the current one) and ``etag`` alongside its id, and one
+    Depth-0 PROPFIND answers all three.
+
+    Raises:
+        ToolError: If the path is excluded by tag, does not exist, or the
+            server's answer carries no file id.
+    """
+    excluded = await get_excluded_file_paths(client.webdav)
+    if is_path_excluded(path, excluded):
+        raise ToolError(f"Access denied: {path!r} is tagged with an excluded tag")
+
+    try:
+        info = await client.webdav.get_file_info(path)
+    except HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise ToolError(f"File not found: {path!r}") from None
+        raise
+    if not info or info.get("id") is None:
+        raise ToolError(f"Could not resolve a file id for {path!r}")
+    if info.get("is_directory"):
+        raise ToolError(f"{path!r} is a folder; only files have versions")
+    return info
 
 
 def configure_webdav_tools(mcp: MCPServer):
@@ -1839,7 +1886,11 @@ def configure_webdav_tools(mcp: MCPServer):
     @require_scopes("files.read")
     @instrument_tool
     async def nc_webdav_list_versions(path: str, ctx: Context) -> ListVersionsResponse:
-        """List stored previous versions of a file.
+        """List the versions of a file, newest first.
+
+        Nextcloud lists the current revision alongside the stored ones, and it is
+        flagged ``is_current``. Read any of them with nc_webdav_read_version
+        without changing the file.
 
         Args:
             path: Path to the file, relative to the user's files root.
@@ -1847,25 +1898,170 @@ def configure_webdav_tools(mcp: MCPServer):
         client = await get_client(ctx)
         # Resolving through the shared helper applies the excluded-tag guard
         # and turns a missing file into a refusal rather than a ValueError
-        # surfacing from the client layer. Passing the id through spares
-        # list_versions a second get_fileid round-trip for the same path.
-        file_id = await _resolve_file_id(client, path)
+        # surfacing from the client layer. Its PROPFIND also carries the live
+        # mtime that identifies the current revision.
+        info = await _resolve_file_info(client, path)
 
-        data = await client.webdav.list_versions(path, file_id=file_id)
-        versions = [
-            FileVersion(
-                version_id=v["version_id"],
-                size=_as_int(v.get("size")),
-                modified=v.get("modified"),
-                label=v.get("label"),
-            )
-            for v in data.get("versions", [])
-        ]
+        data = await client.webdav.list_versions(
+            path, file_id=info["id"], current_modified=info.get("last_modified")
+        )
+        versions = [_file_version(v) for v in data.get("versions", [])]
         return ListVersionsResponse(
             path=data["path"],
             file_id=str(data["file_id"]),
+            current_etag=info.get("etag"),
             versions=versions,
             total_count=len(versions),
+        )
+
+    @mcp.tool(
+        title="Read File Version",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+    )
+    @require_scopes("files.read")
+    @instrument_tool
+    async def nc_webdav_read_version(
+        path: str,
+        version_id: str,
+        ctx: Context,
+        line_start: int | None = None,
+        line_end: int | None = None,
+        line_numbers: bool = False,
+    ) -> ReadVersionResponse:
+        """Read one version of a file without restoring it.
+
+        Use this to inspect or compare an earlier revision. The live file is
+        not touched. Text is returned as text and anything else base64-encoded,
+        within the same size limit as nc_webdav_read_file. Document text
+        extraction (PDF, DOCX, ...) is not applied to versions.
+
+        Asking for the current revision reads the file itself, and the
+        response says so with ``is_current``.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            version_id: The version_id from nc_webdav_list_versions.
+            line_start: Text files only. First line to read (1-based).
+            line_end: Text files only. Last line to read (1-based, inclusive).
+            line_numbers: Prefix each returned line with its number and a tab.
+
+        Returns:
+            ``ReadVersionResponse``. ``etag`` is set only when ``is_current``
+            is true, so a historical revision can never be passed as
+            nc_webdav_write_file's ``if_match`` by mistake.
+        """
+        lined = line_start is not None or line_end is not None
+        for name, value in (("line_start", line_start), ("line_end", line_end)):
+            if value is not None and value < 1:
+                raise ToolError(
+                    f"Invalid line range: {name}={value}, but lines are "
+                    f"numbered from 1."
+                )
+        if line_start is not None and line_end is not None and line_end < line_start:
+            raise ToolError(
+                f"Invalid line range: line_end={line_end} precedes "
+                f"line_start={line_start}."
+            )
+
+        client = await get_client(ctx)
+        info = await _resolve_file_info(client, path)
+        file_id = info["id"]
+        data = await client.webdav.list_versions(
+            path, file_id=file_id, current_modified=info.get("last_modified")
+        )
+        match = next(
+            (v for v in data.get("versions", []) if v["version_id"] == version_id),
+            None,
+        )
+        if match is None:
+            raise ToolError(
+                f"{path!r} has no version {version_id!r}. List its versions "
+                f"with nc_webdav_list_versions."
+            )
+        is_current = bool(match.get("is_current"))
+
+        # Lazy, as in nc_webdav_read_file: keeps the spool machinery off the
+        # server's startup path.
+        from nextcloud_client.webdav import OversizeDownload  # noqa: PLC0415
+
+        from nextcloud_mcp_server.document_source import (  # noqa: PLC0415
+            SpooledDocumentSource,
+            spool_target,
+        )
+        from nextcloud_mcp_server.vector.spool import (  # noqa: PLC0415
+            download_ceiling,
+        )
+
+        settings = get_settings()
+        ceiling = download_ceiling(settings)
+        try:
+            with spool_target(settings.document_spool_dir) as target:
+                if is_current:
+                    # Nextcloud lists the current revision but serves no
+                    # content for it from the versions endpoint, so read the
+                    # file. If it changed since the listing, these are not the
+                    # bytes of the revision asked for: refuse rather than
+                    # return newer content under an older version id.
+                    written, content_type, etag = await client.webdav.stream_to_file(
+                        path, target, max_bytes=ceiling
+                    )
+                    if info.get("etag") and etag != info["etag"]:
+                        raise ToolError(
+                            f"{path!r} changed while version {version_id!r} was "
+                            f"being read. List its versions again."
+                        )
+                else:
+                    try:
+                        (
+                            written,
+                            content_type,
+                            _,
+                        ) = await client.webdav.stream_version_to_file(
+                            file_id, version_id, target, max_bytes=ceiling
+                        )
+                    except HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            # Never fall back to the current content: that
+                            # would answer a different question than asked.
+                            raise ToolError(
+                                f"Version {version_id!r} of {path!r} has no "
+                                f"stored content (it may have expired)."
+                            ) from None
+                        raise
+                    etag = None
+                source = SpooledDocumentSource(
+                    spool_path=target,
+                    content_type=content_type,
+                    filename=path,
+                    _size=written,
+                    etag=etag,
+                )
+                if lined:
+                    response = await _line_range_response(
+                        source,
+                        path,
+                        line_start or 1,
+                        line_end,
+                        numbered=line_numbers,
+                        parse_status="not_applicable",
+                    )
+                else:
+                    response = await _raw_response(source, path, "not_applicable", [])
+        except OversizeDownload as e:
+            raise ToolError(
+                f"Version {version_id!r} of {path!r} was not downloaded: it "
+                f"exceeds the {ceiling} byte transfer ceiling for a single read "
+                f"(twice DOCUMENT_MAX_PDF_SIZE_MB). {e}"
+            ) from e
+
+        return ReadVersionResponse(
+            **response.model_dump(exclude={"success", "timestamp"}),
+            version_id=version_id,
+            is_current=is_current,
+            modified=match.get("modified"),
+            revision_etag=match.get("revision_etag"),
+            label=match.get("label") or None,
+            author=match.get("author") or None,
         )
 
     @mcp.tool(

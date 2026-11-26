@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx2 import AsyncClient
-from nextcloud_client.webdav import WebDAVClient
+from nextcloud_client.webdav import WebDAVClient, _http_date
 
 pytestmark = pytest.mark.unit
 
@@ -99,3 +99,104 @@ class TestFileIdShortcut:
         client.get_fileid = AsyncMock(return_value="42")
         await client.restore_version("doc.txt", "17")
         client.get_fileid.assert_awaited_once_with("doc.txt")
+
+
+# --- Version metadata, ordering and the current revision (GH #1931) ---------
+
+_VERSIONS_MULTISTATUS = b"""<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:nc="http://nextcloud.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/versions/testuser/versions/42/</d:href>
+    <d:propstat><d:prop/><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/versions/testuser/versions/42/1700000000</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:getcontentlength>5</d:getcontentlength>
+        <d:getlastmodified>Tue, 14 Nov 2023 22:13:20 GMT</d:getlastmodified>
+        <d:getcontenttype>text/markdown</d:getcontenttype>
+        <d:getetag>"1700000000"</d:getetag>
+        <nc:version-label>checkpoint</nc:version-label>
+        <nc:version-author>alice</nc:version-author>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/versions/testuser/versions/42/1700000100</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:getcontentlength>6</d:getcontentlength>
+        <d:getlastmodified>Tue, 14 Nov 2023 22:15:00 GMT</d:getlastmodified>
+        <d:getcontenttype>text/markdown</d:getcontenttype>
+        <d:getetag>"1700000100"</d:getetag>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+    <d:propstat>
+      <d:prop><nc:version-label/><nc:version-author/></d:prop>
+      <d:status>HTTP/1.1 404 Not Found</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"""
+
+
+class TestListVersionsMetadata:
+    async def test_newest_first_whatever_the_server_order(self, mocker):
+        # Nextcloud answers in database order, here oldest first.
+        client, _ = _client_with_response(mocker, _VERSIONS_MULTISTATUS)
+        result = await client.list_versions("doc.md", file_id=42)
+        assert [v["version_id"] for v in result["versions"]] == [
+            "1700000100",
+            "1700000000",
+        ]
+
+    async def test_reads_author_type_and_revision_etag(self, mocker):
+        client, _ = _client_with_response(mocker, _VERSIONS_MULTISTATUS)
+        result = await client.list_versions("doc.md", file_id=42)
+        old = result["versions"][1]
+        assert old["author"] == "alice"
+        assert old["label"] == "checkpoint"
+        assert old["content_type"] == "text/markdown"
+        assert old["revision_etag"] == "1700000000"  # quotes stripped
+        # The 404 propstat block is not folded in as an empty value.
+        assert result["versions"][0]["author"] is None
+
+    async def test_marks_the_current_revision(self, mocker):
+        client, _ = _client_with_response(mocker, _VERSIONS_MULTISTATUS)
+        result = await client.list_versions(
+            "doc.md", file_id=42, current_modified="Tue, 14 Nov 2023 22:15:00 GMT"
+        )
+        assert [v["is_current"] for v in result["versions"]] == [True, False]
+
+    async def test_current_is_unknown_without_the_live_mtime(self, mocker):
+        client, _ = _client_with_response(mocker, _VERSIONS_MULTISTATUS)
+        result = await client.list_versions("doc.md", file_id=42)
+        assert {v["is_current"] for v in result["versions"]} == {None}
+
+
+class TestHttpDate:
+    @pytest.mark.parametrize("value", [None, "", "not a date"])
+    def test_unusable_values_are_none(self, value):
+        assert _http_date(value) is None
+
+    def test_naive_zone_is_treated_as_utc(self):
+        assert _http_date("Tue, 14 Nov 2023 22:15:00 -0000") == _http_date(
+            "Tue, 14 Nov 2023 22:15:00 GMT"
+        )
+
+
+class TestStreamVersion:
+    async def test_gets_the_version_resource(self, mocker, tmp_path):
+        client, _ = _client_with_response(mocker)
+        stream = mocker.patch.object(
+            client,
+            "_stream_dav_to_file",
+            AsyncMock(return_value=(5, "text/plain", "1")),
+        )
+        await client.stream_version_to_file(42, "1700000000", tmp_path / "out")
+        assert (
+            stream.await_args.args[0]
+            == "/remote.php/dav/versions/testuser/versions/42/1700000000"
+        )

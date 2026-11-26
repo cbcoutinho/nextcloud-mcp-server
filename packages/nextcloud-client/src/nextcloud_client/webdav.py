@@ -3,6 +3,7 @@
 import logging
 import mimetypes
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -210,6 +211,22 @@ def normalize_etag(raw: Optional[str]) -> Optional[str]:
 
 #: Collection holding one file's comments, addressed by file id.
 _COMMENTS_PATH = "/remote.php/dav/comments/files"
+
+
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _http_date(value: str | None) -> datetime | None:
+    """Parse a DAV ``getlastmodified`` (RFC 1123) value, or None if unusable."""
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        logger.debug("Unparseable getlastmodified %r", value)
+        return None
+    # A "-0000" zone parses naive; sorting must never mix naive and aware.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _dav_props_ok(response_elem: ET.Element) -> dict[str, str]:
@@ -870,13 +887,33 @@ class WebDAVClient(BaseNextcloudClient):
         :class:`httpx2.RemoteProtocolError` on a short read (#965).
         """
         await self._ensure_principal_id()
-        webdav_path = self._webdav_path(path)
+        return await self._stream_dav_to_file(
+            self._webdav_path(path),
+            path,
+            dest,
+            max_bytes=max_bytes,
+            expected_type=expected_type,
+        )
 
+    async def _stream_dav_to_file(
+        self,
+        dav_path: str,
+        path: str,
+        dest: Path,
+        *,
+        max_bytes: int | None = None,
+        expected_type: str | None = None,
+    ) -> Tuple[int, str, Optional[str]]:
+        """Shared body of :meth:`stream_to_file` and :meth:`stream_version_to_file`.
+
+        ``dav_path`` is the DAV URL path to GET; ``path`` is what the caller
+        knows the resource as, used only in log and error messages.
+        """
         logger.debug("Streaming file to %s: %s", dest, path)
 
         written = 0
         try:
-            async with self._stream_request("GET", webdav_path) as response:
+            async with self._stream_request("GET", dav_path) as response:
                 content_type = response.headers.get(
                     "content-type", "application/octet-stream"
                 )
@@ -2805,7 +2842,11 @@ class WebDAVClient(BaseNextcloudClient):
     _VERSION_PROPS = (
         ("size", "{DAV:}getcontentlength"),
         ("modified", "{DAV:}getlastmodified"),
+        ("content_type", "{DAV:}getcontenttype"),
+        # A version's ETag is its revision id, not the live file's ETag.
+        ("revision_etag", "{DAV:}getetag"),
         ("label", "{http://nextcloud.org/ns}version-label"),
+        ("author", "{http://nextcloud.org/ns}version-author"),
     )
 
     def _trashbin_base(self) -> str:
@@ -2896,9 +2937,24 @@ class WebDAVClient(BaseNextcloudClient):
         return {"restored": entry_id}
 
     async def list_versions(
-        self, path: str, *, file_id: Optional[str | int] = None
+        self,
+        path: str,
+        *,
+        file_id: Optional[str | int] = None,
+        current_modified: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List the stored previous versions of a file.
+        """List the versions of a file, newest first.
+
+        Nextcloud includes the *current* revision in this listing (keyed by
+        the live file's mtime), but its content cannot be fetched from the
+        versions endpoint -- only historical revisions can. Pass the live
+        file's ``getlastmodified`` as ``current_modified`` to have that entry
+        marked ``is_current=True``; the match is the one Nextcloud's own web
+        UI makes (version mtime == file mtime, at second precision). Without
+        it ``is_current`` is ``None`` (unknown).
+
+        Nextcloud returns the entries in database order (no ``ORDER BY``), so
+        they are sorted here by ``modified``, newest first.
 
         ``file_id`` lets a caller that already resolved the path (e.g. the
         MCP tool layer, which does so for the excluded-tag guard) skip a
@@ -2933,8 +2989,47 @@ class WebDAVClient(BaseNextcloudClient):
                 continue
             entry = self._read_props(response_elem, self._VERSION_PROPS)
             entry["version_id"] = version_id
+            entry["revision_etag"] = normalize_etag(entry.get("revision_etag"))
             versions.append(entry)
+
+        current = _http_date(current_modified)
+        for entry in versions:
+            entry["is_current"] = (
+                None
+                if current is None
+                else _http_date(entry.get("modified")) == current
+            )
+        versions.sort(
+            key=lambda v: _http_date(v.get("modified")) or _EPOCH, reverse=True
+        )
         return {"path": path, "file_id": file_id, "versions": versions}
+
+    async def stream_version_to_file(
+        self,
+        file_id: str | int,
+        version_id: str,
+        dest: Path,
+        *,
+        max_bytes: int | None = None,
+    ) -> Tuple[int, str, Optional[str]]:
+        """Stream one stored version of a file to ``dest``.
+
+        Same contract as :meth:`stream_to_file`, except that the returned etag
+        is the version's revision id, not the live file's ETag. Raises
+        ``HTTPStatusError`` (404) for a revision with no stored content --
+        including the *current* revision, which Nextcloud lists but serves only
+        from the files endpoint.
+        """
+        await self._ensure_principal_id()
+        dav_path = (
+            f"{self._versions_base()}/versions/{file_id}/{quote(version_id, safe='')}"
+        )
+        return await self._stream_dav_to_file(
+            dav_path,
+            f"version {version_id} of file {file_id}",
+            dest,
+            max_bytes=max_bytes,
+        )
 
     async def restore_version(
         self, path: str, version_id: str, *, file_id: Optional[str | int] = None
