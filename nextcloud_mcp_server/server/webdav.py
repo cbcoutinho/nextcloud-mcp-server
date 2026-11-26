@@ -1978,12 +1978,19 @@ def configure_webdav_tools(mcp: MCPServer):
                 f"{path!r} has no version {version_id!r}. List its versions "
                 f"with nc_webdav_list_versions."
             )
-        is_current = bool(match.get("is_current"))
+        is_current = match.get("is_current")
+        if is_current is None:
+            # Without the file's mtime there is no telling which entry is the
+            # current revision, and guessing "historical" would turn a read of
+            # the current one into a misleading "no stored content" 404.
+            raise ToolError(
+                f"Could not tell whether version {version_id!r} of {path!r} is "
+                f"the current revision: Nextcloud reported no last-modified "
+                f"time for the file."
+            )
 
         # Lazy, as in nc_webdav_read_file: keeps the spool machinery off the
         # server's startup path.
-        from nextcloud_client.webdav import OversizeDownload  # noqa: PLC0415
-
         from nextcloud_mcp_server.document_source import (  # noqa: PLC0415
             SpooledDocumentSource,
             spool_target,
@@ -2005,7 +2012,10 @@ def configure_webdav_tools(mcp: MCPServer):
                     written, content_type, etag = await client.webdav.stream_to_file(
                         path, target, max_bytes=ceiling
                     )
-                    if info.get("etag") and etag != info["etag"]:
+                    # Normalized on both sides so a quoting difference between
+                    # the PROPFIND value and the GET header is not a "change".
+                    expected = normalize_etag(info.get("etag"))
+                    if expected and normalize_etag(etag) != expected:
                         raise ToolError(
                             f"{path!r} changed while version {version_id!r} was "
                             f"being read. List its versions again."

@@ -185,6 +185,25 @@ async def test_current_revision_that_changed_mid_read_is_refused(
         await read_version(path="doc.md", version_id="1700000100", ctx=_ctx())
 
 
+async def test_quoting_difference_is_not_a_change(read_version, fake_client):
+    """The PROPFIND and the GET header may quote the same ETag differently."""
+    fake_client.webdav.stream_to_file.side_effect = _writer(
+        b"second", "text/markdown", '"live-etag"'
+    )
+    result = await read_version(path="doc.md", version_id="1700000100", ctx=_ctx())
+    assert result.content == "second"
+
+
+async def test_unknown_current_state_is_refused(read_version, fake_client):
+    """With no file mtime, is_current is None: refuse rather than guess."""
+    for v in fake_client.webdav.list_versions.return_value["versions"]:
+        v["is_current"] = None
+    with pytest.raises(ToolError, match="Could not tell"):
+        await read_version(path="doc.md", version_id="1700000100", ctx=_ctx())
+    fake_client.webdav.stream_version_to_file.assert_not_called()
+    fake_client.webdav.stream_to_file.assert_not_called()
+
+
 async def test_unknown_version_is_refused_before_any_download(
     read_version, fake_client
 ):
