@@ -26,7 +26,7 @@ pytestmark = pytest.mark.unit
 @given(st.text())
 @example("\x00")
 @example("\x0b")
-@example("￾")
+@example(chr(0xFFFE))  # a noncharacter; spelled out so formatters keep it visible
 @example("a < b & </x> ]]>")
 @example("\U0001f600 emoji")
 def test_xml_text_problem_matches_what_xml_can_carry(text):

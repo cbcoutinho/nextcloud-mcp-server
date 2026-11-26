@@ -2,7 +2,6 @@
 
 import logging
 import mimetypes
-import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -27,20 +26,27 @@ logger = logging.getLogger(__name__)
 # Sabre answers in XML, so its ``Accept: application/json`` would be a lie.
 _XML_CONTENT_TYPE = "text/xml"
 
-# Characters outside XML 1.0's Char production. ``xml_escape`` handles markup
-# characters but cannot make these representable; sent anyway, they produce a
-# body the server rejects without explaining why.
-_XML_FORBIDDEN_CHAR = re.compile("[^\x09\x0a\x0d\x20-퟿-�\U00010000-\U0010ffff]")
+# XML 1.0's Char production, as code-point ranges. ``xml_escape`` handles
+# markup characters but cannot make anything outside these representable; sent
+# anyway, such a character produces a body the server rejects unexplained.
+# Spelled as integers, not a regex character class: formatters rewrite \uXXXX
+# escapes into literal (often invisible) characters.
+_XML_CHAR_RANGES = (
+    (0x09, 0x0A),
+    (0x0D, 0x0D),
+    (0x20, 0xD7FF),
+    (0xE000, 0xFFFD),
+    (0x10000, 0x10FFFF),
+)
 
 
 def xml_text_problem(text: str) -> str | None:
     """Why ``text`` cannot be sent as XML character data, or None if it can."""
-    match = _XML_FORBIDDEN_CHAR.search(text)
-    if match is None:
-        return None
-    return (
-        f"it contains the character U+{ord(match.group()):04X}, which XML cannot carry"
-    )
+    for char in text:
+        code = ord(char)
+        if not any(low <= code <= high for low, high in _XML_CHAR_RANGES):
+            return f"it contains the character U+{code:04X}, which XML cannot carry"
+    return None
 
 
 class OversizeDownload(Exception):
