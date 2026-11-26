@@ -82,6 +82,10 @@ _SETEXT_UNDERLINE = re.compile(r"^( {0,3})([-=]+[ \t\r]*)$", re.MULTILINE)
 
 _EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
 
+# Mail HTML is untrusted: a cell claiming colspan="1000" would write a thousand
+# pipes into every indexed row. No real data table in a mail spans more columns.
+_MAX_COLSPAN = 50
+
 
 def _owned_by(el: Tag, table: Tag) -> bool:
     """True when ``table`` is the nearest <table> ancestor of ``el``."""
@@ -134,7 +138,7 @@ class _MailMarkdownConverter(MarkdownConverter):
         colspan = 1
         span = str(el.get("colspan") or "")
         if span.isdigit():
-            colspan = max(1, min(1000, int(span)))
+            colspan = max(1, min(_MAX_COLSPAN, int(span)))
         # A literal '|' would end the cell early and shift every column after it.
         cell = " ".join(text.split()).replace("|", r"\|")
         return " " + cell + " |" * colspan

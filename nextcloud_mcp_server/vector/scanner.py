@@ -2186,7 +2186,10 @@ async def scan_mail_messages(
                         # Indexed under an older build_mail_content layout.
                         # modified_at (the sent date) never changes for mail,
                         # so this is the only route to the new text. Re-queued
-                        # once; the re-index stamps the current version.
+                        # once; the re-index stamps the current version. Only
+                        # an older version triggers it: after a rollback the
+                        # stored version is higher and the newer text is kept,
+                        # since the offsets it was chunked with still match it.
                         logger.debug(
                             "Mail message %s indexed with content version %s; "
                             "reindexing at %s",

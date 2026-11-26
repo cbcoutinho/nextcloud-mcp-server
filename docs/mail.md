@@ -227,7 +227,10 @@ The indexed text is the subject, the `From`/`To`/`Cc`/`Bcc` lines, and the body
 as Markdown, which is also what Astrolabe's chunk viewer renders. HTML bodies
 keep headings, lists, links, emphasis, quoted replies and data tables. Layout
 tables (newsletters) are flattened into ordinary blocks. Images become
-`[image: <alt text>]` placeholders and are never loaded.
+`[image: <alt text>]` placeholders and are never loaded. In plain-text mail, a
+line made only of `-` or `=` (such as a `-- ` signature delimiter) gets a
+leading backslash in the indexed text, so it does not turn the line above it
+into a heading.
 
 Because the sent date never changes, the layout carries its own version
 (`MAIL_CONTENT_VERSION`, stored on each chunk). When an upgrade raises it, the

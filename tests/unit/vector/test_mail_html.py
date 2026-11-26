@@ -235,3 +235,13 @@ def test_escape_setext_underlines_only_inserts_backslashes(text):
     restored = re.sub(r"^( {0,3})\\([-=])", r"\1\2", escaped, flags=re.MULTILINE)
     assert restored == text
     assert not re.search(r"^ {0,3}[-=]+[ \t]*$", escaped, flags=re.MULTILINE)
+
+
+def test_hostile_colspan_is_capped():
+    """An untrusted colspan cannot blow a row up to a thousand pipes."""
+    html = (
+        "<table><tr><th>A</th><th>B</th></tr>"
+        '<tr><td colspan="1000">x</td><td>y</td></tr></table>'
+    )
+    row = mail_html_to_markdown(html).splitlines()[-1]
+    assert row.count("|") <= 52
