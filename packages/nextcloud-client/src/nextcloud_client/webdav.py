@@ -40,6 +40,10 @@ class UnexpectedContentType(Exception):
     """A download was refused because of the content type the server reported."""
 
 
+class VersionLabelRejected(Exception):
+    """The server answered a version-label PROPPATCH but refused the update."""
+
+
 def _read_complete_body(response: Response, label: str) -> bytes:
     """Return the response body, raising on a short read vs ``Content-Length``.
 
@@ -3059,6 +3063,61 @@ class WebDAVClient(BaseNextcloudClient):
             },
         )
         return {"path": path, "restored_version": version_id}
+
+    async def set_version_label(
+        self,
+        path: str,
+        version_id: str,
+        label: str,
+        *,
+        file_id: Optional[str | int] = None,
+    ) -> Dict[str, Any]:
+        """Name a version, rename it, or (with ``label=""``) clear its name.
+
+        A ``PROPPATCH`` of ``nc:version-label`` on the version resource, as
+        Nextcloud's web UI sends it. The element is always written with an
+        explicit closing tag: Sabre parses a self-closing ``<nc:version-label/>``
+        as ``null``, which Nextcloud's ``string``-typed handler rejects with a
+        TypeError, so clearing must send an empty *string* instead.
+
+        Raises :class:`VersionLabelRejected` when the server answers the
+        multistatus with a non-200 status for the property -- e.g. a storage
+        backend that cannot store version metadata.
+
+        ``file_id``: see :meth:`list_versions`.
+        """
+        await self._ensure_principal_id()
+        if file_id is None:
+            file_id = await self.get_fileid(path)
+        if not file_id:
+            raise ValueError(f"No file id for path: {path}")
+
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propertyupdate xmlns:d="DAV:" xmlns:nc="http://nextcloud.org/ns">'
+            "<d:set><d:prop>"
+            f"<nc:version-label>{xml_escape(label)}</nc:version-label>"
+            "</d:prop></d:set>"
+            "</d:propertyupdate>"
+        )
+        response = await self._make_request(
+            "PROPPATCH",
+            f"{self._versions_base()}/versions/{file_id}/{quote(version_id, safe='')}",
+            content=body,
+            headers={"Content-Type": _XML_CONTENT_TYPE},
+        )
+
+        # A PROPPATCH succeeds at the HTTP level (207) even when the property
+        # update itself was refused; the verdict is in the propstat status.
+        root = ET.fromstring(response.content)
+        for propstat in root.iter("{DAV:}propstat"):
+            status = (propstat.findtext("{DAV:}status") or "").split()
+            if len(status) >= 2 and status[1] != "200":
+                raise VersionLabelRejected(
+                    f"Nextcloud refused to set the label of version {version_id!r} "
+                    f"of {path!r}: {' '.join(status[1:])}"
+                )
+        return {"path": path, "version_id": version_id, "label": label}
 
     # -- File tags (systemtags) ---------------------------------------------
     #

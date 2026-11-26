@@ -12,6 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from nextcloud_client.webdav import (
     OversizeDownload,
+    VersionLabelRejected,
     like_predicate,
     normalize_etag,
 )
@@ -48,6 +49,7 @@ from nextcloud_mcp_server.models.webdav import (
     ReadVersionResponse,
     RestoreFromTrashResponse,
     RestoreVersionResponse,
+    SetVersionLabelResponse,
     SystemTag,
     TagFileResponse,
     TrashEntry,
@@ -2105,6 +2107,58 @@ def configure_webdav_tools(mcp: MCPServer):
 
         await client.webdav.restore_version(path, version_id, file_id=file_id)
         return RestoreVersionResponse(path=path, restored_version=version_id)
+
+    @mcp.tool(
+        title="Set File Version Label",
+        annotations=ToolAnnotations(
+            # Same label in, same end state out, like a PUT without a version
+            # precondition.
+            idempotent_hint=True,
+            open_world_hint=True,
+        ),
+    )
+    @require_scopes("files.write")
+    @instrument_tool
+    async def nc_webdav_set_version_label(
+        path: str, version_id: str, label: str, ctx: Context
+    ) -> SetVersionLabelResponse:
+        """Name a file version as a checkpoint, rename it, or clear its name.
+
+        Named versions are shown in Nextcloud's version list and are kept
+        when older unnamed versions expire. The file's content is not changed.
+
+        Args:
+            path: Path to the file, relative to the user's files root.
+            version_id: The version_id from nc_webdav_list_versions.
+            label: The new name. An empty string removes the name.
+                Surrounding whitespace is trimmed.
+        """
+        label = label.strip()
+        client = await get_client(ctx)
+        info = await _resolve_file_info(client, path)
+        data = await client.webdav.list_versions(path, file_id=info["id"])
+        match = next(
+            (v for v in data.get("versions", []) if v["version_id"] == version_id),
+            None,
+        )
+        if match is None:
+            raise ToolError(
+                f"{path!r} has no version {version_id!r}. List its versions "
+                f"with nc_webdav_list_versions."
+            )
+
+        try:
+            await client.webdav.set_version_label(
+                path, version_id, label, file_id=info["id"]
+            )
+        except VersionLabelRejected as e:
+            raise ToolError(str(e)) from e
+        return SetVersionLabelResponse(
+            path=path,
+            version_id=version_id,
+            label=label or None,
+            previous_label=match.get("label") or None,
+        )
 
     @mcp.tool(
         title="List Tags",

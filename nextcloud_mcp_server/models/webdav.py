@@ -443,6 +443,19 @@ class RestoreVersionResponse(BaseResponse):
     restored_version: str = Field(description="Version id that is now current")
 
 
+class SetVersionLabelResponse(BaseResponse):
+    """Outcome of naming, renaming or un-naming a file version."""
+
+    path: str = Field(description="Path the version belongs to")
+    version_id: str = Field(description="Version id that was labelled")
+    label: Optional[str] = Field(
+        None, description="Label the version now carries, or None if cleared"
+    )
+    previous_label: Optional[str] = Field(
+        None, description="Label the version carried before, or None"
+    )
+
+
 class SystemTag(BaseModel):
     """A system tag defined on the instance."""
 

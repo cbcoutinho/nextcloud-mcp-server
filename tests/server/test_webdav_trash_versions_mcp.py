@@ -200,3 +200,60 @@ async def test_read_version_refuses_unknown_version(
         "nc_webdav_read_version", {"path": throwaway_file, "version_id": "1"}
     )
     assert result.is_error is True
+
+
+async def test_set_rename_and_clear_version_label(
+    nc_mcp_client: ClientSession,
+    nc_client: NextcloudClient,
+    throwaway_file: str,
+):
+    """A version can be named, renamed and un-named, and the listing shows
+    each state. The file itself is not touched."""
+    await _overwrite(nc_client, throwaway_file, b"second")
+    _, _, etag_before = await nc_client.webdav.read_file(throwaway_file)
+
+    async def listed_label(version_id: str):
+        versions = _payload(
+            await nc_mcp_client.call_tool(
+                "nc_webdav_list_versions", {"path": throwaway_file}
+            )
+        )["versions"]
+        return next(v for v in versions if v["version_id"] == version_id)["label"]
+
+    versions = _payload(
+        await nc_mcp_client.call_tool(
+            "nc_webdav_list_versions", {"path": throwaway_file}
+        )
+    )["versions"]
+    historical = next((v for v in versions if not v["is_current"]), None)
+    if historical is None:
+        pytest.skip("Instance keeps no versions for this file")
+    version_id = historical["version_id"]
+
+    for label, expected, previous in (
+        ("checkpoint <1> & co", "checkpoint <1> & co", None),
+        ("renamed", "renamed", "checkpoint <1> & co"),
+        ("", None, "renamed"),
+    ):
+        result = await nc_mcp_client.call_tool(
+            "nc_webdav_set_version_label",
+            {"path": throwaway_file, "version_id": version_id, "label": label},
+        )
+        assert result.is_error is False, result.content
+        payload = _payload(result)
+        assert payload["label"] == expected
+        assert payload["previous_label"] == previous
+        assert await listed_label(version_id) == expected
+
+    _, _, etag_after = await nc_client.webdav.read_file(throwaway_file)
+    assert etag_after == etag_before
+
+
+async def test_set_label_refuses_unknown_version(
+    nc_mcp_client: ClientSession, throwaway_file: str
+):
+    result = await nc_mcp_client.call_tool(
+        "nc_webdav_set_version_label",
+        {"path": throwaway_file, "version_id": "1", "label": "x"},
+    )
+    assert result.is_error is True

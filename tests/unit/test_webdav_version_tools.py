@@ -16,6 +16,7 @@ import httpx2
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from nextcloud_client.webdav import VersionLabelRejected
 
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
 
@@ -261,3 +262,56 @@ async def test_bad_line_range_is_refused_before_any_request(read_version, fake_c
             path="doc.md", version_id="1700000000", ctx=_ctx(), line_start=0
         )
     fake_client.webdav.get_file_info.assert_not_called()
+
+
+# --- nc_webdav_set_version_label -------------------------------------------
+
+
+@pytest.fixture
+def set_label(tools):
+    return tools["nc_webdav_set_version_label"].fn
+
+
+async def test_set_label_reports_new_and_previous_label(set_label, fake_client):
+    result = await set_label(
+        path="doc.md", version_id="1700000000", label="  release  ", ctx=_ctx()
+    )
+    fake_client.webdav.set_version_label.assert_awaited_once_with(
+        "doc.md", "1700000000", "release", file_id=42
+    )
+    assert result.label == "release"
+    assert result.previous_label == "checkpoint"
+
+
+async def test_empty_label_clears(set_label, fake_client):
+    result = await set_label(
+        path="doc.md", version_id="1700000000", label="", ctx=_ctx()
+    )
+    fake_client.webdav.set_version_label.assert_awaited_once_with(
+        "doc.md", "1700000000", "", file_id=42
+    )
+    assert result.label is None
+
+
+async def test_set_label_on_unknown_version_is_refused(set_label, fake_client):
+    with pytest.raises(ToolError, match="no version"):
+        await set_label(path="doc.md", version_id="999", label="x", ctx=_ctx())
+    fake_client.webdav.set_version_label.assert_not_called()
+
+
+async def test_set_label_rejected_by_server_is_a_tool_error(set_label, fake_client):
+    fake_client.webdav.set_version_label.side_effect = VersionLabelRejected("403")
+    with pytest.raises(ToolError, match="403"):
+        await set_label(path="doc.md", version_id="1700000000", label="x", ctx=_ctx())
+
+
+async def test_set_label_on_excluded_path_is_refused(
+    set_label, fake_client, no_excluded_tags
+):
+    async def excluded(*_, **__):
+        return {"doc.md"}
+
+    no_excluded_tags.side_effect = excluded
+    with pytest.raises(ToolError, match="excluded tag"):
+        await set_label(path="doc.md", version_id="1700000000", label="x", ctx=_ctx())
+    fake_client.webdav.set_version_label.assert_not_called()

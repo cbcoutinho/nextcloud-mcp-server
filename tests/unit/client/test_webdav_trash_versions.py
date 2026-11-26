@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx2 import AsyncClient
-from nextcloud_client.webdav import WebDAVClient, _http_date
+from nextcloud_client.webdav import (
+    VersionLabelRejected,
+    WebDAVClient,
+    _http_date,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -200,3 +204,60 @@ class TestStreamVersion:
             stream.await_args.args[0]
             == "/remote.php/dav/versions/testuser/versions/42/1700000000"
         )
+
+
+# --- Version labels (GH #1931) -----------------------------------------------
+
+_PROPPATCH_OK = b"""<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:nc="http://nextcloud.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/versions/testuser/versions/42/17</d:href>
+    <d:propstat>
+      <d:prop><nc:version-label/></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"""
+
+_PROPPATCH_REFUSED = _PROPPATCH_OK.replace(b"200 OK", b"403 Forbidden")
+
+
+class TestSetVersionLabel:
+    async def _sent_body(self, mocker, label: str) -> str:
+        client, http = _client_with_response(mocker, _PROPPATCH_OK)
+        await client.set_version_label("doc.txt", "17", label, file_id=42)
+        call = http.request.await_args
+        assert call.args[0] == "PROPPATCH"
+        assert call.args[1].endswith("/remote.php/dav/versions/testuser/versions/42/17")
+        return call.kwargs["content"]
+
+    async def test_sets_the_label(self, mocker):
+        body = await self._sent_body(mocker, "checkpoint")
+        assert "<nc:version-label>checkpoint</nc:version-label>" in body
+
+    async def test_clearing_sends_an_explicit_empty_element(self, mocker):
+        # Self-closing parses as null server-side, which Nextcloud's
+        # string-typed handler rejects with a TypeError.
+        body = await self._sent_body(mocker, "")
+        assert "<nc:version-label></nc:version-label>" in body
+        assert "<nc:version-label/>" not in body
+        assert "<nc:version-label />" not in body
+
+    async def test_label_is_xml_escaped(self, mocker):
+        from lxml import etree
+
+        body = await self._sent_body(mocker, "a < b & </nc:version-label>")
+        tree = etree.fromstring(body.encode("utf-8"))
+        label = tree.find(".//{http://nextcloud.org/ns}version-label")
+        assert label.text == "a < b & </nc:version-label>"
+
+    async def test_refused_property_raises(self, mocker):
+        client, _ = _client_with_response(mocker, _PROPPATCH_REFUSED)
+        with pytest.raises(VersionLabelRejected, match="403"):
+            await client.set_version_label("doc.txt", "17", "x", file_id=42)
+
+    async def test_resolves_file_id_when_omitted(self, mocker):
+        client, _ = _client_with_response(mocker, _PROPPATCH_OK)
+        client.get_fileid = AsyncMock(return_value="42")
+        await client.set_version_label("doc.txt", "17", "x")
+        client.get_fileid.assert_awaited_once_with("doc.txt")
