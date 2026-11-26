@@ -9,9 +9,11 @@ shape of the shared code open until a second view has been built against it
 during this phase. They are version-gated as usual, never merge-ordered (see
 *Breaking changes* in `CLAUDE.md`).
 
-Tracked on Deck board 12, card #1612 (all card numbers here are Deck cards, not
-GitHub issues). Builds on the POC (#1525) and the document-first layout
-(#1604). Contract-test work goes on board 11.
+Tracked on Deck board 12, card #1612. Reference key: `#N` is a Deck card
+(never a GitHub issue), `PR #N` is a GitHub pull request in this repo, and
+`note N` is a Nextcloud Notes id in the maintainers' knowledge base. Builds on
+the POC (#1525) and the document-first layout (#1604). Contract-test work goes
+on board 11, next to the viewer test-gap cards #564 and #565.
 
 ## Context
 
@@ -38,21 +40,41 @@ metadata) and `src/components/McpAppHost.vue` (postMessage bridge).
 
 | Behaviour | Astrolabe / Assistant | claude.ai | Le Chat |
 |---|---|---|---|
-| Honours `_meta.ui.csp.resourceDomains` | Yes (builds the CSP from it) | **No**: blocked cdnjs, hence the inlined pdf.js (#1913) | Not checked |
-| `ui/message` | Side-panel agent, no history | Consent card ("Allow once"), then the chat | Lands in the composer |
-| Confirms app-tool writes | Yes: 409 until the user confirms | **No** confirmation before save | Not checked |
-| Elicitation | No | No | Not checked |
+| MCP Apps documented | n/a (our host) | Yes (claude.com connector docs) | **No** for the chat UI; Mistral documents `ui://` only for Studio workflows (`allow_mcp_ui`). It worked in our tenant demo anyway |
+| Honours `_meta.ui.csp.resourceDomains` | Yes (builds the CSP from it) | **Documented yes, observed blocked**: cdnjs was refused although the content item carried `resourceDomains` (PR #1913); cause unconfirmed | Not checked |
+| `ui/message` | Side-panel agent, no history | User allows it or sends it from a pre-filled composer; 8,000-character limit | Lands in the composer |
+| Confirms app-tool writes | Yes: 409 until the user confirms | **No** confirmation observed; none documented | Not checked |
+| Elicitation | No | Not documented | Not documented |
 | Inline width | Host-chosen | ~355 px inline, ~570 px expanded | Expand failed on token expiry (#1602) |
 | Hides app-only tools from the model | Yes (AgentLoop filters) | Yes | Yes |
 
-These differences, not the spec, decide what a view can rely on.
+These differences, not the spec, decide what a view can rely on. The apps
+spec (2026-01-26, the only dated version; a `draft/` exists) permits most of
+them:
+
+- **CSP:** a host MUST build the CSP from the declared domains, but MAY
+  restrict it further.
+- **App-tool calls:** a host MAY subject them to user approval, but isn't
+  required to.
+- **Tool result size:** the spec says nothing about it.
+
+Rows marked "observed" come from our own runs, not from documentation (note
+465798).
 
 ### Problems the POC exposed
 
 1. **Bulk bytes travel as base64 in tool results.** Up to 25 MB, twice per
-   preview, through every hop. claude.ai documents a ~150,000-character tool
-   result cap (note 385998). Whether that cap applies to app-initiated calls is
-   unmeasured.
+   preview, through every hop.
+   - **claude.ai's limits:** a ~150,000-character tool result limit and a
+     240 s timeout (claude.com/docs/connectors/building).
+   - **What happens above the limit:** the MCP Apps troubleshooting page
+     describes it narrowly. With the code-execution sandbox active, an
+     oversized result is written to a file, and the view gets a pointer instead
+     of `structuredContent`.
+   - **What Claude recommends:** app-initiated tool calls to load more data,
+     with base64 payloads deferred to a separate tool.
+   - **Still undocumented:** whether the limit also applies to app-initiated
+     calls. It hasn't been measured either.
 2. **The view can't be cached.** A ~2 MB resource under a URI that never
    changes, rebuilt at import, re-read per open.
 3. **The viewer requires the vector index.** Geometry comes from Qdrant, so an
@@ -101,11 +123,22 @@ These differences, not the spec, decide what a view can rely on.
 - `viewer_tool(*scopes)` becomes `app_tool(view, *scopes, **kwargs)`. It keeps
   today's behaviour: enforce `@require_scopes`, publish
   `_meta["nextcloud-mcp/scopes"]`, and add the scopes to the view's union.
+  - It **requires** `annotations` with an explicit `read_only_hint`, and
+    raises at import time if one is missing. §4 classifies writes from that
+    hint, so a missing annotation must not silently turn a read into a write
+    or the reverse.
+  - The `BaseResponse` rule in `CLAUDE.md` still applies to the
+    structured content. App tools keep returning `CallToolResult` only where
+    they need both text and `structuredContent`.
 - One `register_view(name, html_path, *, csp=None)` builds every view's
   resource the same way:
   - inline vendored assets after the hash check;
   - set the `_meta.ui` block, the scopes union and a content version (§4);
-  - keep the registration-order guard that exists today.
+  - register the resource after every tool bound to it, so the scopes union is
+    complete. Today this is a "keep this last in the module" comment, guarded by
+    `test_the_viewer_resource_publishes_every_scope_its_tools_need`
+    (`tests/unit/server/test_document_viewer.py`). `register_view` should
+    enforce the ordering itself.
 - **Each view gates itself.** The global "only with vector sync" switch becomes
   a per-view requirement, evaluated like capability gating (fail-open, see
   `capabilities.py`). The document viewer gets a non-indexed mode (problem 3):
@@ -137,7 +170,7 @@ or a rejected request) and hides the matching UI when it is missing:
 **Self-contained.** A view makes **no network requests**. Every script, style,
 font and wasm module is inlined at serve time, and data arrives only through
 tool calls. `_meta.ui.csp.resourceDomains` may still be declared for hosts that
-honour it, but nothing may depend on it. This turns the #1913 workaround into a
+honour it, but nothing may depend on it. This turns the PR #1913 workaround into a
 rule.
 
 **Narrow-first layout.** Views are designed for ~360 px inline and grow into
@@ -160,9 +193,22 @@ server promises to keep.
 
 **Confirmation rule (server side):**
 
-- **Copy-only writes** may rely on host confirmation when elicitation is
-  unavailable. Example: `apply_changes`, which creates a new file and never
+- **Copy-only writes** may proceed without any confirmation when elicitation
+  is unavailable. Example: `apply_changes`, which creates a new file and never
   modifies the source.
+  - **Not every host confirms.** The 2026-01-26 spec only says hosts MAY
+    require approval. The draft adds non-normative guidance to approve tools
+    with `readOnlyHint: false`. claude.ai neither documents nor showed a
+    confirmation, so in claude.ai the user's
+    click on "Save copy" in the view is the only confirmation.
+  - **Why that's acceptable:**
+    - nothing existing is changed or lost;
+    - the copy lands beside the original, where the user can see it;
+    - saves are create-only, so they never overwrite. An unnamed copy steps
+      `-redacted`, `-v2`, `-v3`… up to a cap (`MAX_COPY_SUFFIX`), and a name the
+      user typed fails if it's taken.
+  - **What it limits:** repeated saves can produce several copies, but the cap
+    bounds how many.
 - **In-place writes** (anything that changes or deletes existing data) must
   **fail closed** without elicitation, whether or not a host confirmed. This
   covers the future views that edit data in place (Deck, Tables).
@@ -174,8 +220,16 @@ server promises to keep.
 - **Bulk content is paged.** Binary reads take a bounded range, for example
   `read_document_bytes(file_id, offset, length)` with a server-side cap per
   call. Previews return only the affected pages where the format allows it. This
-  is a **breaking change** to `read_document_bytes` and `preview_changes`,
-  version-gated.
+  is a **breaking change** to `read_document_bytes` and `preview_changes`. It
+  lands with a `BREAKING CHANGE:` commit footer, and its PR names the release
+  that carries it ("paged in 0.x.0").
+- **Pages are etag-guarded.** Each paged read takes the etag that the launch
+  tool returned. If the file changed between pages, the server returns the same
+  conflict error as `apply_changes` with a stale etag, and the view reloads from
+  `open_document`.
+- **Size budget for a view.** A view's `resources/read` stays under **3 MB**
+  (today ~2 MB). This provisional ceiling is checked in CI, and gets revisited
+  once host caps on `resources/read` are known.
 - **Before fixing the cap**, measure the effective result limit for
   app-initiated `tools/call` in claude.ai and Le Chat (§9).
 - **No sensitive content in URLs or link text.** Proposals are passed by id
@@ -189,8 +243,8 @@ Every launch tool returns:
 - an ADR-035 **deep link** to the same object in Nextcloud/Astrolabe;
 - **`structuredContent`** for the view.
 
-`client_supports_apps(ctx)` (python-sdk) may be used to trim the text when a
-view will render, but never to drop the deep link.
+`client_supports_apps(ctx)` (python-sdk 2.x, `mcp/server/apps.py`) may be used
+to trim the text when a view will render, but never to drop the deep link.
 
 ### 7. Astrolabe as a general host
 
@@ -202,6 +256,13 @@ view will render, but never to drop the deep link.
   file-specific checks (such as `withProposal`) are keyed on the tool name.
 - **Cache by version.** Cache the view by `(uri, nextcloud-mcp/version)`. Today
   every open costs a new MCP connection plus `resources/read`.
+- **Degrade against older servers.** Astrolabe ships on its own cadence, so it
+  must work with servers that predate this ADR:
+  - no `nextcloud-mcp/version` → don't cache, and read the view on every open
+    (today's behaviour);
+  - a `read_document_bytes` whose `inputSchema` has no `offset` → the view
+    falls back to a single unpaged read;
+  - an unknown tool → the existing 404/refusal path.
 - **Document `ui/message`.** The Assistant answers it with a separate agent.
   The ADR records this as an Astrolabe choice, not part of the contract. Views
   must not assume the message lands in the user's chat.
@@ -239,13 +300,50 @@ Provider states: "file N is an indexed PDF", "file N changed since etag E".
 1. **Authentication.** `tools/list` is filtered by token scopes, and the
    authenticated surface waits on ADR-029 phase 4 (the Bearer-token/provider-state
    hook). This is the critical dependency.
-2. **Session and streaming.** Streamable HTTP may answer with
-   `text/event-stream` and carries `Mcp-Session-Id`. Pact matches neither well.
-   Proposed: provider verification runs the server with JSON responses
-   (`Accept: application/json`), and session ids are matched by regex.
-   Alternative: a stateless provider mode for verification only.
-3. **Interaction order.** Pact replays interactions independently, so each one
-   must stand alone. An `initialize` per interaction is acceptable.
+   - **Interim:** verify against a provider started in single-user mode
+     (`NEXTCLOUD_USERNAME` / app password, no OAuth). There every tool is
+     visible, so the metadata keys (`_meta.ui.*`, `nextcloud-mcp/scopes`,
+     `readOnlyHint`) get pinned before phase 4 lands. Those are the keys most
+     likely to regress silently.
+   - **What the interim misses:** the scope filtering itself stays unverified
+     until phase 4.
+2. **Session and streaming.**
+   - **Today the provider always answers SSE.** It runs stateful, with
+     `Mcp-Session-Id`, because `app.py` passes neither option to
+     `streamable_http_app`.
+   - **Regex-matching session ids doesn't work.** A replayed id gets a 404
+     from a stateful server.
+   - **Proposed:** verify against a provider started with
+     `stateless_http=True, json_response=True` (python-sdk 2.3.0 app-factory
+     options), behind a verification-only environment flag. Each request then
+     stands alone, needs no `initialize`, and gets plain JSON. A stateless server
+     ignores `Mcp-Session-Id`.
+3. **Stateless mode loses client capabilities.** The stateless transport is
+   built without the client's `initialize` capabilities, so
+   `client_supports_apps()` is always false there.
+   - Nothing calls it today. Any path that branches on the client advertising
+     `io.modelcontextprotocol/ui` (§6) must be covered by e2e, not by Pact.
+   - The `initialize` exchange (extension and `protocolVersion`) is pinned as its
+     own interaction.
+4. **Interaction order is a non-issue once stateless.** Astrolabe's `mcp/sdk`
+   (0.10, protocol 2025-11-25) runs `initialize` → `notifications/initialized` →
+   one operation → `DELETE` (only if the server issued a session) for every
+   call. Each operation is recorded as its own interaction:
+   - the body is matched on `method` and the key params;
+   - the client's real `Accept: application/json, text/event-stream` is
+     recorded;
+   - `notifications/initialized` is a 202 with an empty body;
+   - `DELETE` stays out of the contract.
+5. **Bearer token.** One token is minted before verification and injected with
+   the verifier's custom-header option (`add_custom_header` in pact-python,
+   `CustomHeaders` in pact-php). The consumer side matches it with a regex,
+   `Bearer .+`, as `McpServerClientPactTest` already does. A per-state token
+   would need a custom state-change endpoint, because pact-python's built-in
+   handler discards the state handler's return value.
+
+Moving Astrolabe to protocol 2026-07-28 would remove the need for the
+stateless workaround. That protocol drops sessions and the handshake, so every
+request stands alone, and it adds an `Mcp-Method` header to match on.
 
 **B. View ↔ host postMessage: e2e, not Pact.** Two pieces, both tied to the
 apps spec version, so a spec bump fails both sides:
@@ -254,7 +352,9 @@ apps spec version, so a spec bump fails both sides:
   `sandbox="allow-scripts"` and claude.ai's restrictive CSP) loads each view in
   Playwright under Chromium and Firefox, answers Tier 1 only, and asserts the
   view renders. This proves the Tier 1 and self-contained rules. It is the
-  scratch technique from #1913, made permanent.
+  scratch technique from PR #1913, made permanent. It explicitly asserts that
+  a scanned (JPEG 2000 / JBIG2) page renders. That is the wasm-decoder path from
+  PR #1924, and it depends on the host CSP allowing wasm compilation.
 - **Astrolabe side**: `npm run test:e2e` drives `McpAppHost.vue` against the
   real view from the docker-compose stack.
 
@@ -294,8 +394,9 @@ Nextcloud (ADR-029, *Upstream Nextcloud apps*).
 ## Consequences
 
 - The document viewer moves package and its bulk tools change signature.
-  These are breaking, version-gated changes, and Astrolabe gates on
-  `nextcloud-mcp/version` and tool metadata rather than on deploy order.
+  These are breaking changes, recorded with `BREAKING CHANGE:` footers and
+  named release versions. Astrolabe adapts to what the server advertises
+  (§7, *Degrade against older servers*) rather than relying on deploy order.
 - Astrolabe loses its single-view assumptions. Each new view then needs no host
   change unless it uses a Nextcloud extension.
 - Pact coverage of the MCP JSON-RPC surface depends on ADR-029 phase 4. Until
@@ -312,8 +413,17 @@ Nextcloud (ADR-029, *Upstream Nextcloud apps*).
 2. Should `nextcloud-mcp/version` instead be a version component in the URI
    (`ui://nextcloud-mcp/document-viewer.html?v=<hash>`)? That makes caching
    automatic on every host, at the cost of tools pointing at a changing URI.
-3. Will the apps spec standardise per-tool scopes? If so,
-   `nextcloud-mcp/scopes` should be migrated to the spec's field.
-4. For views shown inline in the Assistant chat, should a newer `open_document`
+   Leaning towards: `_meta` is enough while Astrolabe is the only host known to
+   cache views. Switch to the URI form only if a host we can't modify is shown
+   to cache by URI. Decide before the first `register_view` PR.
+3. Will MCP standardise per-tool scopes? Neither the apps spec nor the core
+   draft has a field today. Core relies on `insufficient_scope` step-up, and a
+   tool-scopes working group exists (SEP-1302). Migrate
+   `nextcloud-mcp/scopes` if a standard field lands.
+4. Why did claude.ai block cdnjs despite `resourceDomains` on the content item
+   (PR #1913)? Its docs say the field is honoured. Re-test with a minimal view
+   before treating "views are self-contained" as a claude.ai workaround. The
+   rule stands regardless: it is the only form that works on every host.
+5. For views shown inline in the Assistant chat, should a newer `open_document`
    result update the existing widget in place (note 465798, 2026-11-24)? That is
    a host feature outside the spec, and it may belong in §7.
