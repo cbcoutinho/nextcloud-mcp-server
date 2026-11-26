@@ -294,7 +294,24 @@ class TestSetVersionLabel:
 
     async def test_refused_property_raises(self, mocker):
         client, _ = _client_with_response(mocker, _PROPPATCH_REFUSED)
-        with pytest.raises(VersionLabelRejected, match="403"):
+        with pytest.raises(VersionLabelRejected, match=r": 403 Forbidden$"):
+            await client.set_version_label("doc.txt", "17", "x", file_id=42)
+
+    @pytest.mark.parametrize(
+        "status",
+        [b"", b"garbage", None],
+        ids=["empty-status", "unparseable-status", "no-status-element"],
+    )
+    async def test_unconfirmed_success_is_not_success(self, mocker, status):
+        """A multistatus with no readable propstat status never reads as a
+        successful write."""
+        body = _PROPPATCH_OK.replace(b"<d:status>HTTP/1.1 200 OK</d:status>", b"")
+        if status is not None:
+            body = body.replace(
+                b"</d:prop>", b"</d:prop><d:status>" + status + b"</d:status>"
+            )
+        client, _ = _client_with_response(mocker, body)
+        with pytest.raises(VersionLabelRejected, match="unconfirmed"):
             await client.set_version_label("doc.txt", "17", "x", file_id=42)
 
     async def test_resolves_file_id_when_omitted(self, mocker):

@@ -3150,13 +3150,24 @@ class WebDAVClient(BaseNextcloudClient):
                 f"Nextcloud answered the label update of version {version_id!r} "
                 f"of {path!r} with a body that is not a DAV multistatus: {e}"
             ) from e
+        # Success must be affirmed: a multistatus with no readable status line
+        # says nothing about whether the write landed, so it is not a success.
+        confirmed = False
         for propstat in root.iter("{DAV:}propstat"):
             status = (propstat.findtext("{DAV:}status") or "").split()
-            if len(status) >= 2 and not status[1].startswith("2"):
+            if len(status) < 2:
+                continue
+            if not status[1].startswith("2"):
                 raise VersionLabelRejected(
                     f"Nextcloud refused to set the label of version {version_id!r} "
                     f"of {path!r}: {' '.join(status[1:])}"
                 )
+            confirmed = True
+        if not confirmed:
+            raise VersionLabelRejected(
+                f"Nextcloud's answer to the label update of version {version_id!r} "
+                f"of {path!r} carried no property status, so success is unconfirmed"
+            )
         return {"path": path, "version_id": version_id, "label": label}
 
     # -- File tags (systemtags) ---------------------------------------------

@@ -2135,6 +2135,8 @@ def configure_webdav_tools(mcp: MCPServer):
                 Surrounding whitespace is trimmed.
         """
         label = label.strip()
+        # The client re-checks and raises ValueError; checking here as well is
+        # deliberate, so the caller gets a ToolError before any round-trip.
         problem = xml_text_problem(label)
         if problem:
             raise ToolError(f"Invalid version label: {problem}.")
