@@ -10,6 +10,7 @@ from nextcloud_client.models.talk import (
     TalkParticipant,
 )
 from nextcloud_client.talk import TalkClient, _validate_token
+from pydantic import ValidationError
 
 from tests.client.conftest import (
     create_mock_error_response,
@@ -180,12 +181,13 @@ async def test_talk_list_conversations_federated_last_message(mocker):
     assert federated is not None
     assert federated.id is None
     assert federated.token is None
+    assert not isinstance(federated, TalkMessage)
     assert federated.message == "hello from afar"
 
 
 def test_talk_message_still_requires_id_and_token():
     """Chat history messages keep their strict id/token contract."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValidationError):
         TalkMessage.model_validate(
             {
                 "actorType": "users",

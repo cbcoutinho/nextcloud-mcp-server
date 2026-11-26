@@ -19,15 +19,13 @@ TalkRoomType = Literal[1, 2, 3]
 # Domain models
 
 
-class TalkMessage(BaseModel):
-    """A single chat message in a Talk conversation.
+class _TalkMessageBase(BaseModel):
+    """Fields shared by chat messages and a conversation's ``lastMessage``.
 
     See spreed docs/chat.md for the field definitions. We map only the
     fields that are useful to MCP consumers; spreed returns more.
     """
 
-    id: int
-    token: str
     actorType: str
     actorId: str
     actorDisplayName: str
@@ -56,7 +54,14 @@ class TalkMessage(BaseModel):
         return v
 
 
-class TalkLastMessage(TalkMessage):
+class TalkMessage(_TalkMessageBase):
+    """A single chat message in a Talk conversation."""
+
+    id: int
+    token: str
+
+
+class TalkLastMessage(_TalkMessageBase):
     """The ``lastMessage`` of a conversation in the room list.
 
     Same shape as :class:`TalkMessage`, except ``id`` and ``token`` may be
@@ -66,8 +71,8 @@ class TalkLastMessage(TalkMessage):
     messages keep the strict :class:`TalkMessage` contract.
     """
 
-    id: int | None = None  # type: ignore[assignment]  # ty: ignore[incompatible-attribute-override]
-    token: str | None = None  # type: ignore[assignment]  # ty: ignore[incompatible-attribute-override]
+    id: int | None = None
+    token: str | None = None
 
 
 class TalkConversation(BaseModel):
