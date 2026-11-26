@@ -5,6 +5,24 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.225.0 (2026-11-26)
+
+### Feat
+
+- **webdav**: name file versions as checkpoints
+- **webdav**: read historical file versions and richer version metadata
+
+### Fix
+
+- **webdav**: require an affirmed propstat status for a label write
+- **webdav**: refuse version labels XML cannot carry
+- **webdav**: tolerate minimal and malformed PROPPATCH success bodies
+- **webdav**: refuse an undeterminable current revision, normalize ETags in the race guard
+
+### Refactor
+
+- **webdav**: spell the XML Char ranges as code points
+
 ## v0.224.0 (2026-11-26)
 
 ### Feat
