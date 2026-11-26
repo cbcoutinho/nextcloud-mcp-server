@@ -19,15 +19,13 @@ TalkRoomType = Literal[1, 2, 3]
 # Domain models
 
 
-class TalkMessage(BaseModel):
-    """A single chat message in a Talk conversation.
+class _TalkMessageBase(BaseModel):
+    """Fields shared by chat messages and a conversation's ``lastMessage``.
 
     See spreed docs/chat.md for the field definitions. We map only the
     fields that are useful to MCP consumers; spreed returns more.
     """
 
-    id: int
-    token: str
     actorType: str
     actorId: str
     actorDisplayName: str
@@ -54,6 +52,27 @@ class TalkMessage(BaseModel):
         if isinstance(v, list) and not v:
             return {}
         return v
+
+
+class TalkMessage(_TalkMessageBase):
+    """A single chat message in a Talk conversation."""
+
+    id: int
+    token: str
+
+
+class TalkLastMessage(_TalkMessageBase):
+    """The ``lastMessage`` of a conversation in the room list.
+
+    Same shape as :class:`TalkMessage`, except ``id`` and ``token`` may be
+    absent: for a federated conversation spreed returns its cached copy of
+    the host's last message, which carries only actor, text, parameters,
+    timestamp and type (seen on Talk 25 / Nextcloud 35). Chat history
+    messages keep the strict :class:`TalkMessage` contract.
+    """
+
+    id: int | None = None
+    token: str | None = None
 
 
 class TalkConversation(BaseModel):
@@ -94,7 +113,7 @@ class TalkConversation(BaseModel):
     # message in the room yet — compare to ``None`` explicitly rather
     # than relying on truthiness, since `0` is falsy but valid.
     lastReadMessage: int | None = None
-    lastMessage: TalkMessage | None = None
+    lastMessage: TalkLastMessage | None = None
     readOnly: int | None = None
     isFavorite: bool | None = None
     notificationLevel: int | None = None
