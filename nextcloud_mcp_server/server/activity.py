@@ -134,7 +134,7 @@ def configure_activity_tools(mcp: MCPServer) -> None:
                 raise ToolError(
                     f"Unknown activity filter {filter!r}; see nc_activity_list_filters"
                 ) from e
-            if status == 403:
+            if status == 403 and since:
                 raise ToolError(
                     f"Activity cursor {since} is not valid for this user"
                 ) from e

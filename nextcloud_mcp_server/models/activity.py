@@ -69,7 +69,10 @@ class ListActivitiesResponse(BaseResponse):
         "expired) and restarted at the beginning of the stream. Changes between "
         "the old cursor and now may be missing; fall back to a full scan."
     )
-    etag: str | None = None
+    etag: str | None = Field(
+        default=None,
+        description="Informational: identifies the set of activities on this page",
+    )
     excluded_count: int = Field(
         default=0,
         description="Activities left out because they touch a file hidden by "

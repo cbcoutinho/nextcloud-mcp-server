@@ -132,6 +132,15 @@ async def test_http_errors_are_tool_errors(client, tools, status, message):
         await tools.nc_activity_list(SimpleNamespace(), filter="x", since=5)
 
 
+async def test_403_without_a_cursor_does_not_blame_the_cursor(client, tools):
+    response = httpx2.Response(403, request=httpx2.Request("GET", "http://x"))
+    client.activity.list_activities.side_effect = httpx2.HTTPStatusError(
+        "boom", request=response.request, response=response
+    )
+    with pytest.raises(ToolError, match="HTTP 403"):
+        await tools.nc_activity_list(SimpleNamespace())
+
+
 _json = st.recursive(
     st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
     lambda children: st.lists(children) | st.dictionaries(st.text(), children),
