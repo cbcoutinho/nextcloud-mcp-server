@@ -194,6 +194,11 @@ async def rerank_results(
     it actually returns, and can distinguish a routine skip from a real
     reranker failure — the two are indistinguishable through a bare boolean,
     which would make every 0-1 result query look like an outage.
+
+    Rows the reranker cannot score are never dropped. Image hits keep their
+    retrieval slot. Every other unscored row moves to the tail. An image hit
+    therefore survives only as far as its retrieval rank carries it: one ranked
+    beyond the caller's trim budget is still cut there.
     """
     client = await _get_client(settings)
     if client is None or len(results) < 2:
