@@ -8,6 +8,7 @@ being used in a URL, and that the tools return typed ``BaseResponse`` models.
 """
 
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -58,6 +59,7 @@ def mail_tools() -> dict:
 def fake_mail(mocker):
     """Install a mock mail client and hand back its ``mail`` namespace."""
     mail = AsyncMock()
+    mail.list_accounts.return_value = []
     client = SimpleNamespace(mail=mail)
 
     async def fake_get_client(ctx):
@@ -528,3 +530,183 @@ async def test_list_messages_does_not_blame_the_filter_for_other_value_errors(
     ctx = _ctx()
     with pytest.raises(json.JSONDecodeError):
         await list_messages(1, ctx, search_filter="start:2026-11-01")
+
+
+# --- GH #1933: editor mode and signature -----------------------------------
+
+
+def _account(editor_mode: str = "plaintext", signature: str | None = None) -> dict:
+    return {
+        "id": 1,
+        "emailAddress": "me@example.com",
+        "editorMode": editor_mode,
+        "signature": signature,
+    }
+
+
+@pytest.mark.parametrize(
+    ("editor_mode", "signature", "is_html", "expected_body", "expected_html"),
+    [
+        ("plaintext", None, None, "Hi", False),
+        ("richtext", None, None, "<p>Hi</p>", True),
+        # An explicit is_html wins over the editor mode.
+        ("richtext", None, False, "Hi", False),
+        ("plaintext", "Me\nACME", None, "Hi\n\n-- \nMe\nACME", False),
+        (
+            "plaintext",
+            "<p>Me <b>A&amp;B</b></p><p>ACME</p>",
+            None,
+            "Hi\n\n-- \nMe A&B\nACME",
+            False,
+        ),
+        # Link targets survive the HTML-to-text conversion.
+        (
+            "plaintext",
+            '<p><a href="https://acme.example">ACME</a></p>',
+            None,
+            "Hi\n\n-- \nACME (https://acme.example)",
+            False,
+        ),
+        # A link whose text is its address is not repeated.
+        (
+            "plaintext",
+            '<a href="https://acme.example">https://acme.example</a>',
+            None,
+            "Hi\n\n-- \nhttps://acme.example",
+            False,
+        ),
+        # A signature that carries its own separator does not get a second one.
+        ("plaintext", "-- \nMe", None, "Hi\n\n-- \nMe", False),
+        ("plaintext", "--\nMe", None, "Hi\n\n--\nMe", False),
+        # A plain signature with ">" is not mistaken for HTML.
+        (
+            "richtext",
+            "-> Me",
+            None,
+            '<p>Hi</p><br><div class="signature">-&gt; Me</div>',
+            True,
+        ),
+        (
+            "richtext",
+            "<p>Me</p>",
+            None,
+            '<p>Hi</p><br><div class="signature"><p>Me</p></div>',
+            True,
+        ),
+        (
+            "richtext",
+            "Me & co\nACME",
+            None,
+            '<p>Hi</p><br><div class="signature">Me &amp; co<br>ACME</div>',
+            True,
+        ),
+    ],
+)
+async def test_save_draft_follows_editor_mode_and_appends_signature(
+    mail_tools, fake_mail, editor_mode, signature, is_html, expected_body, expected_html
+):
+    fake_mail.list_accounts.return_value = [_account(editor_mode, signature)]
+    fake_mail.save_draft.return_value = _saved_draft()
+    body = "<p>Hi</p>" if expected_html else "Hi"
+    extra = {} if is_html is None else {"is_html": is_html}
+
+    await _call(
+        mail_tools["nc_mail_save_draft"],
+        account_id=1,
+        to=[],
+        subject="s",
+        body=body,
+        **extra,
+    )
+
+    kwargs = fake_mail.save_draft.await_args.kwargs
+    assert kwargs["body"] == expected_body
+    assert kwargs["is_html"] is expected_html
+
+
+async def test_send_message_signature_opt_out_skips_account_lookup(
+    mail_tools, fake_mail
+):
+    fake_mail.list_accounts.return_value = [_account("richtext", "Me")]
+
+    await _call(
+        mail_tools["nc_mail_send_message"],
+        account_id=1,
+        to=[{"email": "a@example.com"}],
+        subject="s",
+        body="Hi",
+        is_html=False,
+        include_signature=False,
+    )
+
+    fake_mail.list_accounts.assert_not_awaited()
+    kwargs = fake_mail.send_message.await_args.kwargs
+    assert kwargs["body"] == "Hi"
+    assert kwargs["is_html"] is False
+
+
+async def test_plain_body_is_converted_when_editor_mode_picks_html(
+    mail_tools, fake_mail
+):
+    """An agent that omits is_html on a richtext account keeps its line breaks."""
+    fake_mail.list_accounts.return_value = [_account("richtext")]
+    fake_mail.save_draft.return_value = _saved_draft()
+
+    await _call(
+        mail_tools["nc_mail_save_draft"],
+        account_id=1,
+        to=[],
+        subject="s",
+        body="Hi & bye\r\n\nMe",
+    )
+
+    kwargs = fake_mail.save_draft.await_args.kwargs
+    # CRLF and LF both become a single <br>, with no stray carriage return.
+    assert kwargs["body"] == "Hi &amp; bye<br><br>Me"
+    assert kwargs["is_html"] is True
+
+
+async def test_plain_body_with_angle_brackets_is_still_converted(mail_tools, fake_mail):
+    """``>`` in prose or a quoted line does not make a body HTML."""
+    fake_mail.list_accounts.return_value = [_account("richtext")]
+    fake_mail.save_draft.return_value = _saved_draft()
+
+    await _call(
+        mail_tools["nc_mail_save_draft"],
+        account_id=1,
+        to=[],
+        subject="s",
+        body="a > b\n> quoted",
+    )
+
+    assert fake_mail.save_draft.await_args.kwargs["body"] == "a &gt; b<br>&gt; quoted"
+
+
+async def test_send_message_appends_signature(mail_tools, fake_mail):
+    """The plain-text signature follows the RFC 3676 separator."""
+    fake_mail.list_accounts.return_value = [_account("plaintext", "Me")]
+
+    await _call(
+        mail_tools["nc_mail_send_message"],
+        account_id=1,
+        to=[{"email": "a@example.com"}],
+        subject="s",
+        body="Hi",
+    )
+
+    assert fake_mail.send_message.await_args.kwargs["body"] == "Hi\n\n-- \nMe"
+
+
+async def test_unknown_account_falls_back_with_a_warning(mail_tools, fake_mail, caplog):
+    """An account missing from the listing is logged, then sent plain."""
+    fake_mail.list_accounts.return_value = [{**_account("richtext", "Me"), "id": 2}]
+    fake_mail.save_draft.return_value = _saved_draft()
+    caplog.set_level(logging.WARNING, logger="nextcloud_mcp_server.server.mail")
+
+    await _call(
+        mail_tools["nc_mail_save_draft"], account_id=1, to=[], subject="s", body="Hi"
+    )
+
+    kwargs = fake_mail.save_draft.await_args.kwargs
+    assert (kwargs["body"], kwargs["is_html"]) == ("Hi", False)
+    assert "not in the account list" in caplog.text

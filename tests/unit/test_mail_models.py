@@ -20,6 +20,25 @@ def test_account_maps_is_delegated_alias():
     assert account.is_delegated is True
 
 
+@pytest.mark.parametrize(
+    ("signature", "expected"),
+    [(None, False), ("  ", False), (123, False), ("<p>Me</p>", True)],
+)
+def test_account_exposes_editor_mode_and_has_signature(signature, expected):
+    account = MailAccount(
+        **{
+            "id": 1,
+            "emailAddress": "a@example.com",
+            "editorMode": "richtext",
+            "signature": signature,
+        }
+    )
+    assert account.editor_mode == "richtext"
+    assert account.has_signature is expected
+    # The signature text itself is not part of the response.
+    assert "signature" not in account.model_dump()
+
+
 def test_mailbox_maps_camelcase_aliases():
     mailbox = MailMailbox(
         **{

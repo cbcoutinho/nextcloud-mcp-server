@@ -507,6 +507,70 @@ async def test_save_draft_lands_in_drafts_and_delivers_nothing(
         imap.logout()
 
 
+async def test_save_draft_follows_editor_mode_and_appends_signature(
+    nc_mcp_client, nc_client, provisioned_mail_account
+):
+    """GH #1933: with no is_html, a richtext account gets an HTML draft that
+    carries the account's signature, as the Mail composer would write it."""
+    token = uuid.uuid4().hex[:8]
+    account_id = await _first_account_id(nc_mcp_client)
+    await nc_client.mail._api_write(
+        "PATCH", f"/accounts/{account_id}", json_data={"editorMode": "richtext"}
+    )
+    await nc_client.mail._api_write(
+        "PUT",
+        f"/accounts/{account_id}/signature",
+        json_data={"signature": f"<p>Sig-{token}</p>"},
+    )
+    try:
+        accounts = _tool_payload(
+            await nc_mcp_client.call_tool("nc_mail_list_accounts", {})
+        )
+        account = next(a for a in accounts["results"] if a["id"] == account_id)
+        # Responses serialize by alias, as for ``emailAddress`` above.
+        assert account["editorMode"] == "richtext"
+        assert account["has_signature"] is True
+
+        _tool_payload(
+            await nc_mcp_client.call_tool(
+                "nc_mail_save_draft",
+                {
+                    "account_id": account_id,
+                    "to": [],
+                    "subject": f"Signature probe {token}",
+                    "body": "<p>Body text</p>",
+                },
+            )
+        )
+        mailboxes = await nc_client.mail.get_mailboxes(account_id)
+        accounts_raw = await nc_client.mail.list_accounts()
+        drafts_id = next(a for a in accounts_raw if a["id"] == account_id)[
+            "draftsMailboxId"
+        ]
+        drafts_name = next(m["name"] for m in mailboxes if m["databaseId"] == drafts_id)
+
+        imap = imaplib.IMAP4("localhost", 3143)
+        try:
+            imap.login(ADMIN_EMAIL, "greenmail-test-pw")
+            imap.select(drafts_name, readonly=True)
+            _, found = imap.search(None, "SUBJECT", token)
+            ids = found[0].split()
+            assert len(ids) == 1
+            _, raw = imap.fetch(ids[0], "(RFC822)")
+        finally:
+            imap.logout()
+        source = raw[0][1].decode(errors="replace")
+        assert "text/html" in source, "draft is not HTML"
+        assert f"Sig-{token}" in source, "signature missing from draft"
+    finally:
+        await nc_client.mail._api_write(
+            "PATCH", f"/accounts/{account_id}", json_data={"editorMode": "plaintext"}
+        )
+        await nc_client.mail._api_write(
+            "PUT", f"/accounts/{account_id}/signature", json_data={"signature": None}
+        )
+
+
 # --- Write operations -------------------------------------------------------
 #
 # These are the decisive CSRF evidence for the *mutating* routes: PUT/POST/DELETE
