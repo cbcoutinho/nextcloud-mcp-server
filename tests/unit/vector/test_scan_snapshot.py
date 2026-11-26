@@ -90,6 +90,7 @@ async def _check(points, monkeypatch):
             ),
             payload_fields=models.PayloadSelectorExclude(exclude=["excerpt"]),
         ),
+        "file",
         set(DOC_IDS),
     )
 
@@ -100,25 +101,33 @@ async def _check(points, monkeypatch):
             else {k: v for k, v in payload.items() if k != "excerpt"}
         )
 
-    for doc_id in DOC_IDS:
-        for etag in ETAGS:
-            assert strip(
-                await sharing_state.find_indexed_content(doc_id, "file", etag, IDENTITY)
-            ) == await sharing_state.find_indexed_content(
-                doc_id, "file", etag, IDENTITY, snapshot=snapshot
-            )
-            for tiers_sig in ("t1", "t2"):
-                assert await dead_letter.is_dead_lettered(
-                    doc_id, "file", etag, tiers_sig
-                ) == await dead_letter.is_dead_lettered(
-                    doc_id, "file", etag, tiers_sig, snapshot=snapshot
+    # "note" lookups must ignore the file-only snapshot and scroll instead.
+    for doc_type in ("file", "note"):
+        for doc_id in DOC_IDS:
+            for etag in ETAGS:
+                assert strip(
+                    await sharing_state.find_indexed_content(
+                        doc_id, doc_type, etag, IDENTITY
+                    )
+                ) == strip(
+                    await sharing_state.find_indexed_content(
+                        doc_id, doc_type, etag, IDENTITY, snapshot=snapshot
+                    )
                 )
-        for user_id in USERS:
-            assert strip(
-                await placeholder.query_document_metadata(doc_id, "file", user_id)
-            ) == await placeholder.query_document_metadata(
-                doc_id, "file", user_id, snapshot=snapshot
-            )
+                for tiers_sig in ("t1", "t2"):
+                    assert await dead_letter.is_dead_lettered(
+                        doc_id, doc_type, etag, tiers_sig
+                    ) == await dead_letter.is_dead_lettered(
+                        doc_id, doc_type, etag, tiers_sig, snapshot=snapshot
+                    )
+            for user_id in USERS:
+                assert strip(
+                    await placeholder.query_document_metadata(doc_id, doc_type, user_id)
+                ) == strip(
+                    await placeholder.query_document_metadata(
+                        doc_id, doc_type, user_id, snapshot=snapshot
+                    )
+                )
     await client.close()
 
 

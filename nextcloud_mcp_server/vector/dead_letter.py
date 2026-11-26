@@ -366,7 +366,7 @@ async def is_dead_lettered(
     """
     if not etag:
         return False
-    if snapshot is not None:
+    if snapshot is not None and snapshot.answers(doc_type):
         payload = snapshot.dead_letters.get(doc_id)
     else:
         try:

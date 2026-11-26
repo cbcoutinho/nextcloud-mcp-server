@@ -111,7 +111,7 @@ async def find_indexed_content(
     """
     if not etag:
         return None
-    if snapshot is not None:
+    if snapshot is not None and snapshot.answers(doc_type):
         found = snapshot.real_by_etag.get((doc_id, etag))
     else:
         qdrant_client = await get_qdrant_client()

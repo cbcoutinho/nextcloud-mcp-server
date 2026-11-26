@@ -213,7 +213,7 @@ async def query_document_metadata(
         settings = get_settings()
 
         async def _first(is_placeholder: bool) -> dict | None:
-            if snapshot is not None:
+            if snapshot is not None and snapshot.answers(doc_type):
                 found = snapshot.by_user.get((user_id, doc_id, is_placeholder))
                 return dict(found) if found is not None else None
             points, _ = await qdrant_client.scroll(

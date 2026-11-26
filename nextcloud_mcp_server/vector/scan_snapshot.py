@@ -15,6 +15,11 @@ saves.
 Each map keeps the FIRST point seen for its key. That equals what the replaced
 ``scroll(..., limit=1)`` returned, because both modes scroll in ascending
 point-id order.
+
+The snapshot is taken once, before the loop. The scanner's own writes for a
+file come after that file's lookups, so it never needs to see them. A
+processor worker that finishes a file mid-scan is not seen either; the worst
+case is one redundant enqueue, which the next scan corrects.
 """
 
 from __future__ import annotations
@@ -35,10 +40,11 @@ EXCLUDED_PAYLOAD_FIELDS = ["excerpt", "chunk_bbox", "bbox_source"]
 class IndexSnapshot:
     """Payloads of one doc type's points, keyed the way each lookup filters.
 
-    Holds a single doc type (the one the scanner's scroll filtered on), so no
-    key carries ``doc_type``.
+    Holds a single ``doc_type``, so no key carries it. A lookup for any other
+    doc type ignores the snapshot and scrolls (see :meth:`answers`).
     """
 
+    doc_type: str
     # (doc_id, etag) -> a real point: find_indexed_content (tenant-wide).
     real_by_etag: dict[tuple[str, str], dict] = field(default_factory=dict)
     # (user_id, doc_id, is_placeholder) -> a point: query_document_metadata.
@@ -46,20 +52,24 @@ class IndexSnapshot:
     # doc_id -> its terminal dead-letter marker: is_dead_lettered.
     dead_letters: dict[str, dict] = field(default_factory=dict)
 
+    def answers(self, doc_type: str) -> bool:
+        """Whether this snapshot can answer a lookup for ``doc_type``."""
+        return self.doc_type == doc_type
+
     @classmethod
     async def collect(
-        cls, points: AsyncIterable[Record], doc_ids: set[str]
+        cls, points: AsyncIterable[Record], doc_type: str, doc_ids: set[str]
     ) -> IndexSnapshot:
-        """Index ``points``, keeping only documents in ``doc_ids``.
+        """Index ``points`` of ``doc_type``, keeping only documents in ``doc_ids``.
 
         Matching is exact, like Qdrant's ``MatchValue``: a legacy integer
         ``doc_id`` or a non-bool ``is_placeholder`` matches nothing.
         """
-        snap = cls()
+        snap = cls(doc_type=doc_type)
         async for point in points:
             payload = dict(point.payload or {})
             doc_id = payload.get("doc_id")
-            if doc_id not in doc_ids:
+            if payload.get("doc_type") != doc_type or doc_id not in doc_ids:
                 continue
             is_placeholder = payload.get("is_placeholder")
             if not isinstance(is_placeholder, bool):

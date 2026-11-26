@@ -121,12 +121,13 @@ async def _iter_all_points(
     on a large corpus that alone pushed the always-on API Pod (which hosts
     this scanner in-process) past its memory limit into an OOM crashloop,
     taking query serving down with it. Every caller reduces the stream to a
-    ``set`` of doc_ids or a scalar, so nothing needs the full list. (The one
-    exception, ``_local_mode_file_snapshot``, keeps metadata payloads, but only
-    for tagged files and only in local mode, which qdrant-client warns against
-    past ~20k points.) Keep it
+    ``set`` of doc_ids or a scalar, so nothing needs the full list. Keep it
     that way: consume this in an ``async for`` and reduce as you go — do not
     re-add a ``list(...)`` around it.
+
+    ``_local_mode_file_snapshot`` is the one caller that keeps payloads: only
+    metadata, only for tagged files, and only in local mode, which
+    qdrant-client warns against past ~20k points.
     """
     offset = None
     while True:
@@ -152,9 +153,12 @@ async def _local_mode_file_snapshot(
     Local Qdrant has no payload indexes, so each per-file lookup in the
     tagged-file loop is a full Python pass over the collection. Returns None in
     network mode (indexed lookups are cheap there) and on any error, which
-    falls back to the per-file lookups. The snapshot is taken before the loop
-    writes anything; each file's own writes come after its lookups, so the
-    loop never needs to see them.
+    falls back to the per-file lookups. See ``scan_snapshot`` for why reading
+    it once before the loop is safe.
+
+    shortcut: read once per user scan, so N local-mode users cost N passes per
+    cycle (still O(points) each); hoist to the cycle and filter per user if
+    multi-user local deployments grow.
     """
     if not settings.qdrant_location or not file_ids:
         return None
@@ -171,6 +175,7 @@ async def _local_mode_file_snapshot(
                 ),
                 payload_fields=PayloadSelectorExclude(exclude=EXCLUDED_PAYLOAD_FIELDS),
             ),
+            "file",
             file_ids,
         )
     except Exception:  # noqa: BLE001 — optimisation only; per-file lookups still work
