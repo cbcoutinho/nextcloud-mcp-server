@@ -123,10 +123,15 @@ Rows marked "observed" come from our own runs, not from documentation (note
 - `viewer_tool(*scopes)` becomes `app_tool(view, *scopes, **kwargs)`. It keeps
   today's behaviour: enforce `@require_scopes`, publish
   `_meta["nextcloud-mcp/scopes"]`, and add the scopes to the view's union.
-  - It **requires** `annotations` with an explicit `read_only_hint`, and
-    raises at import time if one is missing. §4 classifies writes from that
-    hint, so a missing annotation must not silently turn a read into a write
-    or the reverse.
+  - It **requires** an explicit `effect="read" | "copy" | "in_place"` and
+    raises at import time without one.
+    - `effect` sets `annotations.read_only_hint` (true only for `"read"`), so
+      the hint hosts use to classify writes (§4) cannot drift from the
+      declaration.
+    - `effect` also selects the confirmation rule in §4: `"copy"` may proceed
+      without elicitation, while `"in_place"` fails closed.
+    - It is published as `_meta["nextcloud-mcp/effect"]` so a host can show the
+      difference.
   - The `BaseResponse` rule in `CLAUDE.md` still applies to the
     structured content. App tools keep returning `CallToolResult` only where
     they need both text and `structuredContent`.
@@ -137,8 +142,12 @@ Rows marked "observed" come from our own runs, not from documentation (note
   - register the resource after every tool bound to it, so the scopes union is
     complete. Today this is a "keep this last in the module" comment, guarded by
     `test_the_viewer_resource_publishes_every_scope_its_tools_need`
-    (`tests/unit/server/test_document_viewer.py`). `register_view` should
-    enforce the ordering itself.
+    (`tests/unit/server/test_document_viewer.py`).
+  - Instead, `register_view` records the view, and the resources are built
+    **lazily** when `_app_extensions()` assembles the extension at server
+    start. By then every `app_tool` has been imported, so the ordering cannot be
+    wrong, and the module-order comment goes away. The scope test stays as a
+    regression guard.
 - **Each view gates itself.** The global "only with vector sync" switch becomes
   a per-view requirement, evaluated like capability gating (fail-open, see
   `capabilities.py`). The document viewer gets a non-indexed mode (problem 3):
@@ -184,12 +193,21 @@ still work.
 | Key | On | Meaning |
 |---|---|---|
 | `nextcloud-mcp/scopes` | each app/launch tool; the view (union) | Scopes a proxy should request for that call (exists today) |
-| `nextcloud-mcp/version` | the view | Content hash of the served HTML. A host may cache the view keyed on `(uri, version)`. *New* |
+| `nextcloud-mcp/version` | the view **and** every tool bound to it | Content hash of the served HTML. *New* |
+| `nextcloud-mcp/effect` | each app/launch tool | `read`, `copy` or `in_place` (§2). Informational for hosts. *New* |
+
+**How a host checks freshness without the payload.**
+- Copying the version onto the bound tools puts it in `tools/list`, which a
+  host already reads (Astrolabe caches it in `ViewTools`) and which is small.
+- The host compares the launch tool's `version` against its cached
+  `(uri, version)` entry, and calls `resources/read` only on a miss.
+- Reading the version from `resources/read` itself would save nothing, so that
+  is not the mechanism.
 
 Write classification stays standard: a tool **without**
 `annotations.readOnlyHint: true` is a write, and a host should confirm it.
 Astrolabe does this today, and the rule becomes part of the contract the
-server promises to keep.
+server promises to keep. The server side of that promise is `effect` (§2).
 
 **Confirmation rule (server side):**
 
@@ -209,9 +227,11 @@ server promises to keep.
       user typed fails if it's taken.
   - **What it limits:** repeated saves can produce several copies, but the cap
     bounds how many.
-- **In-place writes** (anything that changes or deletes existing data) must
-  **fail closed** without elicitation, whether or not a host confirmed. This
-  covers the future views that edit data in place (Deck, Tables).
+- **In-place writes** (`effect="in_place"`: anything that changes or deletes
+  existing data) must **fail closed** without elicitation, whether or not a
+  host confirmed. `app_tool` enforces this itself, so the rule doesn't depend on
+  each tool author remembering it. This covers the future views that edit data
+  in place (Deck, Tables).
 
 ### 5. Payload rules
 
@@ -225,11 +245,15 @@ server promises to keep.
   that carries it ("paged in 0.x.0").
 - **Pages are etag-guarded.** Each paged read takes the etag that the launch
   tool returned. If the file changed between pages, the server returns the same
-  conflict error as `apply_changes` with a stale etag, and the view reloads from
-  `open_document`.
+  conflict error as `apply_changes` with a stale etag.
+  - The view reloads from `open_document` **at most once** automatically.
+  - On a second conflict it stops and tells the user that the file is changing
+    and to reopen it, instead of looping on a frequently edited file.
 - **Size budget for a view.** A view's `resources/read` stays under **3 MB**
-  (today ~2 MB). This provisional ceiling is checked in CI, and gets revisited
-  once host caps on `resources/read` are known.
+  (today ~2 MB). This provisional ceiling gets revisited once host caps on
+  `resources/read` are known. It is enforced by a unit test,
+  `test_views_stay_within_size_budget`, which builds each registered view and
+  checks its size; the harness card adds it.
 - **Before fixing the cap**, measure the effective result limit for
   app-initiated `tools/call` in claude.ai and Le Chat (§9).
 - **No sensitive content in URLs or link text.** Proposals are passed by id
@@ -254,8 +278,9 @@ to trim the text when a view will render, but never to drop the deep link.
 - **Validate arguments against the schema.** `callTool` checks arguments against
   the tool's `inputSchema` from `tools/list` instead of requiring `file_id`. Any
   file-specific checks (such as `withProposal`) are keyed on the tool name.
-- **Cache by version.** Cache the view by `(uri, nextcloud-mcp/version)`. Today
-  every open costs a new MCP connection plus `resources/read`.
+- **Cache by version.** Cache the view by `(uri, nextcloud-mcp/version)`, taking
+  the version from the launch tool's `_meta` in the cached `tools/list` (§4).
+  Today every open costs a new MCP connection plus `resources/read`.
 - **Degrade against older servers.** Astrolabe ships on its own cadence, so it
   must work with servers that predate this ADR:
   - no `nextcloud-mcp/version` → don't cache, and read the view on every open
@@ -288,7 +313,7 @@ provider (`test_mcp_provider_verification.py`). Interactions, all JSON-RPC over
 | Interaction | Pins |
 |---|---|
 | `initialize` advertising `io.modelcontextprotocol/ui` | Extension negotiation |
-| `tools/list` | For each app-bound tool: `_meta.ui.resourceUri`, `_meta.ui.visibility`, `_meta["nextcloud-mcp/scopes"]`, `annotations.readOnlyHint`, `inputSchema` shape (type matchers, not literal descriptions) |
+| `tools/list` | For each app-bound tool: `_meta.ui.resourceUri`, `_meta.ui.visibility`, `_meta["nextcloud-mcp/scopes"]`, `_meta["nextcloud-mcp/version"]`, `_meta["nextcloud-mcp/effect"]`, `annotations.readOnlyHint`, `inputSchema` shape (type matchers, not literal descriptions) |
 | `resources/read` `ui://…` | `mimeType`, `_meta.ui.csp`, `_meta["nextcloud-mcp/scopes"]`, `_meta["nextcloud-mcp/version"]`, non-empty `text` |
 | `tools/call open_document` | `structuredContent` keys the host reads (`file_id`, `etag`, staged changes) |
 | `tools/call apply_changes` with a stale etag | Error shape (`isError`, conflict text) |
@@ -315,9 +340,12 @@ Provider states: "file N is an indexed PDF", "file N changed since etag E".
      from a stateful server.
    - **Proposed:** verify against a provider started with
      `stateless_http=True, json_response=True` (python-sdk 2.3.0 app-factory
-     options), behind a verification-only environment flag. Each request then
-     stands alone, needs no `initialize`, and gets plain JSON. A stateless server
-     ignores `Mcp-Session-Id`.
+     options), behind a verification-only environment flag,
+     `MCP_PACT_STATELESS_VERIFICATION`.
+     - It is **off by default** and logs a warning at startup when on, because
+       it also makes `client_supports_apps()` false (item 3).
+     - With it on, each request stands alone, needs no `initialize`, and gets
+       plain JSON. A stateless server ignores `Mcp-Session-Id`.
 3. **Stateless mode loses client capabilities.** The stateless transport is
    built without the client's `initialize` capabilities, so
    `client_supports_apps()` is always false there.
@@ -368,11 +396,30 @@ Nextcloud (ADR-029, *Upstream Nextcloud apps*).
       case review, search-results map (PCA coordinates already exist), Deck
       board.
 - [ ] Both views pass the Tier 1 harness (§9B) and are checked by hand in
-      Astrolabe, claude.ai and Le Chat.
+      Astrolabe and claude.ai.
+  - Le Chat is **best-effort**, because Mistral doesn't document MCP Apps in
+    the chat UI.
+  - "Pass" there means the launch tool renders the view, or the text and
+    deep-link fallback (§6) if it doesn't.
+  - A Le Chat failure is recorded, not blocking.
 - [ ] Pact §9A green in both repos' CI (shadow mode is acceptable).
 - [ ] The app-initiated result limit measured per host, and the paging cap
       in §5 set from it.
 - [ ] §8 decided (shared bridge vs ext-apps SDK) and recorded here.
+
+### 11. Follow-up work (cards created once this ADR is reviewed)
+
+Listed so the gap between Proposed and Accepted is visible, not silent:
+
+| Work | Board | Covers |
+|---|---|---|
+| Pact: Astrolabe ⇄ MCP JSON-RPC surface (consumer + provider, stateless verification flag) | 11 | §9A |
+| View harness: sandboxed Playwright host, Tier 1 only, scanned-page case, size-budget test | 11 | §9B, §5 |
+| `app_tool` / `register_view` + `effect` + `nextcloud-mcp/version` | 12 | §2, §4 |
+| Paged, etag-guarded `read_document_bytes` / `preview_changes` (breaking) | 12 | §5 |
+| Viewer without the index (no chunk geometry) | 12 | §2, problem 3 |
+| Astrolabe general host (per-URI, schema validation, version cache, degradation) | 12 | §7 |
+| Re-test claude.ai `resourceDomains` with a minimal view | 12 | Open question 4 |
 
 ## Alternatives considered
 
