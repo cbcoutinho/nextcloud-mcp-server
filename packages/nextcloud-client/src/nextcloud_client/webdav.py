@@ -3109,10 +3109,20 @@ class WebDAVClient(BaseNextcloudClient):
 
         # A PROPPATCH succeeds at the HTTP level (207) even when the property
         # update itself was refused; the verdict is in the propstat status.
-        root = ET.fromstring(response.content)
+        # An empty 2xx body is RFC 8144's minimal success (204), with no
+        # propstat to read; _make_request has already raised on a non-2xx.
+        if not response.content.strip():
+            return {"path": path, "version_id": version_id, "label": label}
+        try:
+            root = ET.fromstring(response.content)
+        except ET.ParseError as e:
+            raise VersionLabelRejected(
+                f"Nextcloud answered the label update of version {version_id!r} "
+                f"of {path!r} with a body that is not a DAV multistatus: {e}"
+            ) from e
         for propstat in root.iter("{DAV:}propstat"):
             status = (propstat.findtext("{DAV:}status") or "").split()
-            if len(status) >= 2 and status[1] != "200":
+            if len(status) >= 2 and not status[1].startswith("2"):
                 raise VersionLabelRejected(
                     f"Nextcloud refused to set the label of version {version_id!r} "
                     f"of {path!r}: {' '.join(status[1:])}"

@@ -2136,6 +2136,9 @@ def configure_webdav_tools(mcp: MCPServer):
         label = label.strip()
         client = await get_client(ctx)
         info = await _resolve_file_info(client, path)
+        # Listing first refuses an unknown id before anything is written and
+        # supplies previous_label. That label is a snapshot: a concurrent
+        # rename between this call and the PROPPATCH is not reflected in it.
         data = await client.webdav.list_versions(path, file_id=info["id"])
         match = next(
             (v for v in data.get("versions", []) if v["version_id"] == version_id),

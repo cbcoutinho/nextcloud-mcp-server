@@ -231,6 +231,17 @@ class TestSetVersionLabel:
         assert call.args[1].endswith("/remote.php/dav/versions/testuser/versions/42/17")
         return call.kwargs["content"]
 
+    async def test_empty_success_body_is_accepted(self, mocker):
+        """A 204-style minimal success carries no multistatus to inspect."""
+        client, _ = _client_with_response(mocker, b"")
+        result = await client.set_version_label("doc.txt", "17", "x", file_id=42)
+        assert result["label"] == "x"
+
+    async def test_non_xml_body_is_a_clear_rejection(self, mocker):
+        client, _ = _client_with_response(mocker, b"<html>proxy page")
+        with pytest.raises(VersionLabelRejected, match="not a DAV multistatus"):
+            await client.set_version_label("doc.txt", "17", "x", file_id=42)
+
     async def test_sets_the_label(self, mocker):
         body = await self._sent_body(mocker, "checkpoint")
         assert "<nc:version-label>checkpoint</nc:version-label>" in body
