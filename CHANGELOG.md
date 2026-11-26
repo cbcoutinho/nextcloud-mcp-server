@@ -5,6 +5,19 @@ All notable changes to the Nextcloud MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/).
 
+## v0.223.0 (2026-11-26)
+
+### Feat
+
+- **mail**: follow the account's editor mode and append its signature
+
+### Fix
+
+- **mail**: linear link regex, document is_html for literal tags
+- **mail**: no doubled signature separator, CRLF and self-linking URLs
+- **mail**: log unknown-account fallback, keep links and spacing in signatures
+- **mail**: drop markdownify from signature conversion, stricter HTML sniff
+
 ## v0.222.0 (2026-11-26)
 
 ### Feat
