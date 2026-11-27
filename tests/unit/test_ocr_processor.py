@@ -14,6 +14,7 @@ from nextcloud_mcp_server.document_processors import ocr
 from nextcloud_mcp_server.document_processors.base import ProcessorError
 from nextcloud_mcp_server.providers.gateway_batch import BatchPollResult
 from nextcloud_mcp_server.vector import batch_ocr_store as _bos
+from tests.strategies import json_values
 
 pytestmark = pytest.mark.unit
 
@@ -189,6 +190,42 @@ def test_normalize_bbox_shape_and_range():
     assert ocr._normalize_bbox([0.0, 0.0, 0.0, 0.0]) is None
     assert ocr._normalize_bbox([0.5, 0.5, 0.5, 0.6]) is None  # zero width
     assert ocr._normalize_bbox([0.4, 0.5, 0.3, 0.6]) is None  # x1 < x0
+
+
+_unit = st.floats(0, 1) | st.sampled_from([0, 1])
+
+
+@st.composite
+def normalized_bboxes(draw):
+    """A well-formed gateway bbox: ints or floats in [0, 1], positive area."""
+    x0, x1 = sorted(draw(st.lists(_unit, min_size=2, max_size=2, unique=True)))
+    y0, y1 = sorted(draw(st.lists(_unit, min_size=2, max_size=2, unique=True)))
+    container = draw(st.sampled_from([list, tuple]))
+    return container([x0, y0, x1, y1])
+
+
+@given(normalized_bboxes())
+def test_normalized_bbox_round_trips(raw):
+    assert ocr._normalize_bbox(raw) == [float(v) for v in raw]
+
+
+# Booleans on purpose: float(True) is in range, so only the bool check drops them.
+_coord = st.floats() | st.integers() | st.booleans() | st.text(max_size=2)
+
+
+@given(json_values | st.lists(_coord, min_size=4, max_size=4) | normalized_bboxes())
+@example([0.1, 0.2, 0.3, float("nan")])
+def test_normalize_bbox_yields_a_valid_box_or_none(raw):
+    """Never raises; a result is a positive-area box in [0, 1] that normalizes
+    to itself, so a stored bbox survives being read back through it."""
+    out = ocr._normalize_bbox(raw)
+    event(f"bbox kept: {out is not None}")
+    if out is None:
+        return
+    x0, y0, x1, y1 = out
+    assert all(type(v) is float and 0.0 <= v <= 1.0 for v in out)
+    assert x0 < x1 and y0 < y1
+    assert ocr._normalize_bbox(out) == out
 
 
 _tags = st.from_regex(r'</?[a-z][a-z0-9]{0,4}( [a-z]+="[^"<>]*")?>', fullmatch=True)

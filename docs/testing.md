@@ -205,7 +205,10 @@ round-trip: `parse(create(x)) == x`. Examples are the iCal round-trip in
 `tests/unit/client/test_calendar_ical_roundtrip.py` and the PROPFIND listing
 in `tests/unit/client/test_webdav.py`. Once a parsing check lives here, the
 integration test only needs to prove the wiring. Shared strategies
-(`json_values`, `wire_json_values`, `header_text`) are in `tests/strategies.py`.
+(`json_values`, `comparable_json_values`, `wire_json_values`, `header_text`)
+are in `tests/strategies.py`. Import them rather than writing another
+`st.recursive` JSON strategy; a local one needs a comment saying why the
+shared ones do not fit.
 
 **Pure functions:**
 - **A rule that ANDs several conditions** (all keys required, every segment

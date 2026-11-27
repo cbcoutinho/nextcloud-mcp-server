@@ -394,6 +394,38 @@ def test_stitch_drops_overlap_and_marks_gaps():
     assert sar_export.stitch(chunks) == "abcdefghijklmno\nuvw"
 
 
+@st.composite
+def chunked_documents(draw):
+    """``(chunks in any order, the text stitch must rebuild)``.
+
+    The document is runs of text separated by gaps no chunk covers. Each run is
+    cut into chunks that may overlap the previous one (the chunker's repeated
+    tail) without starting before it. Rebuilt, the runs join with line breaks.
+    """
+    runs = draw(st.lists(st.text(min_size=1, max_size=20), min_size=1, max_size=4))
+    chunks: list[tuple[int, str]] = []
+    offset = 0
+    for run in runs:
+        cuts = sorted(
+            draw(st.sets(st.integers(0, len(run)), max_size=4)) - {0, len(run)}
+        )
+        bounds = [0, *cuts, len(run)]
+        prev_start = 0
+        for i in range(len(bounds) - 1):
+            start = bounds[i] - draw(st.integers(0, bounds[i] - prev_start))
+            chunks.append((offset + start, run[start : bounds[i + 1]]))
+            prev_start = start
+        offset += len(run) + draw(st.integers(1, 5))
+    event(f"overlap: {sum(len(t) for _, t in chunks) > sum(map(len, runs))}")
+    return draw(st.permutations(chunks)), "\n".join(runs)
+
+
+@given(chunked_documents())
+def test_stitch_rebuilds_the_chunked_text(case):
+    chunks, text = case
+    assert sar_export.stitch(chunks) == text
+
+
 def test_item_page_range_validation():
     with pytest.raises(ValueError):
         SarItem(doc_type="file", doc_id="1", reason="r", page_start=5, page_end=2)
