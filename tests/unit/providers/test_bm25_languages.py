@@ -10,7 +10,7 @@ import pickle
 
 import pytest
 from fastembed.sparse.bm25 import supported_languages
-from hypothesis import given
+from hypothesis import event, example, given
 from hypothesis import strategies as st
 
 from nextcloud_mcp_server.config import (
@@ -39,7 +39,7 @@ def test_parse_normalises_case_order_whitespace_and_duplicates():
     )
 
 
-@pytest.mark.parametrize("raw", ["", " , ", None])
+@given(st.none() | st.text(" ,\t", max_size=6))
 def test_parse_rejects_empty(raw):
     with pytest.raises(ValueError, match="at least one language"):
         parse_bm25_languages(raw)
@@ -84,20 +84,46 @@ def test_parse_is_order_insensitive(languages, data):
     assert parse_bm25_languages(",".join(shuffled)) == tuple(sorted(languages))
 
 
-@pytest.mark.parametrize(
-    ("word", "script"),
-    [
-        ("контекста", "CYRILLIC"),
-        ("running", "LATIN"),
-        ("straße", "LATIN"),
-        ("λόγος", "GREEK"),
-        ("2026x", "LATIN"),
-        ("file_id", "LATIN"),
-        ("2026", None),
-        ("__", None),
-    ],
+#: Letters per script, named as ``unicodedata`` names their first word.
+_LETTERS = {
+    "LATIN": "azAZßéÅœ",
+    "CYRILLIC": "абвЖя",
+    "GREEK": "αλόςΩ",
+    "ARABIC": "عرب",
+    "HEBREW": "אבג",
+    "CJK": "中文字",
+    "HIRAGANA": "あい",
+}
+#: Digits, connectors, punctuation, spaces and symbols: never a letter.
+_no_letters = st.text(
+    st.characters(codec="utf-8", categories=["Nd", "Pc", "Pd", "Po", "Zs", "Sm"]),
+    max_size=5,
 )
-def test_script_of(word, script):
+
+
+@st.composite
+def words(draw) -> tuple[str, str | None]:
+    """A word and the script of its first letter (None: it has no letters)."""
+    prefix = draw(_no_letters)
+    if not draw(st.integers(0, 4)):
+        event("no letter")
+        return prefix, None
+    script = draw(st.sampled_from(sorted(_LETTERS)))
+    event(script)
+    letter = draw(st.sampled_from(_LETTERS[script]))
+    return prefix + letter + draw(st.text(st.characters(codec="utf-8"))), script
+
+
+@given(words())
+@example(("контекста", "CYRILLIC"))
+@example(("straße", "LATIN"))
+@example(("2026x", "LATIN"))
+@example(("file_id", "LATIN"))
+@example(("2026", None))
+@example(("__", None))
+def test_script_of(case):
+    """A word is stemmed by its first letter's script, whatever comes after it."""
+    word, script = case
     assert _script_of(word) == script
 
 

@@ -5,6 +5,7 @@ so they cover the issue #716 regression surface and the edge cases flagged in
 PR #719 review without standing up the compose stack.
 """
 
+import re
 from datetime import date
 
 import pytest
@@ -1215,6 +1216,41 @@ def _merge(raw: str, data: dict) -> str:
     return client._merge_vcard_properties(raw, _normalize_contact_data(data))
 
 
+_param_token = st.from_regex(r"[A-Za-z0-9-]{1,8}", fullmatch=True)
+_not_a_token = st.one_of(
+    st.integers(),
+    st.booleans(),
+    st.floats(),
+    st.none(),
+    st.dictionaries(_param_token, st.integers(), max_size=2),
+    st.tuples(
+        _param_token,
+        st.characters(codec="utf-8").filter(
+            lambda c: not re.fullmatch(r"[A-Za-z0-9-]", c)
+        ),
+        _param_token,
+    ).map("".join),  # a token with one foreign character
+    st.just(""),
+)
+
+
+@st.composite
+def adr_types(draw) -> tuple[object, list[str]]:
+    """An ADR ``type`` as a caller may send it, and the tokens that survive."""
+    if draw(st.booleans()):  # one scalar value
+        if draw(st.booleans()):
+            token = draw(_param_token)
+            return token, [token]
+        value = draw(_not_a_token.filter(lambda v: v is not None))
+        return value, []
+    items = draw(
+        st.lists(st.tuples(st.booleans(), _param_token, _not_a_token), max_size=4)
+    )
+    values = [token if keep else junk for keep, token, junk in items]
+    expected = [token for keep, token, _ in items if keep]
+    return draw(st.sampled_from([list, tuple]))(values), expected
+
+
 class TestAddress:
     """GH #1814: write vCard ADR on create and update."""
 
@@ -1255,15 +1291,19 @@ class TestAddress:
         card = _vcard(fn="Jane", adr={"street": "Main St; Apt 2", "locality": "A,B"})
         assert "ADR:;;Main St\\; Apt 2;A\\,B;;;" in card
 
-    @pytest.mark.parametrize("bad_type", [5, True, {"work": 1}, 1.5], ids=repr)
-    def test_non_str_type_is_rejected_not_raised(self, bad_type, caplog):
-        """A non-iterable type used to raise; a dict wrote its keys as TYPE."""
+    @given(adr_types())
+    @example((5, []))
+    @example((True, []))
+    @example(({"work": 1}, []))  # a dict used to write its keys as TYPE
+    @example((1.5, []))
+    def test_type_keeps_exactly_its_param_tokens(self, case):
+        """A non-iterable type used to raise; anything not a param token is dropped."""
+        types, expected = case
         existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
-        adr = {"street": "S", "type": bad_type}
-        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
-            for card in (_vcard(fn="J", adr=adr), _merge(existing, {"adr": adr})):
-                assert "ADR:;;S;;;;" in card
-        assert "invalid ADR type" in caplog.text
+        adr = {"street": "S", "type": types}
+        params = f";TYPE={','.join(expected)}" if expected else ""
+        for card in (_vcard(fn="J", adr=adr), _merge(existing, {"adr": adr})):
+            assert f"\r\nADR{params}:;;S;;;;\r\n" in card
 
     def test_type_cannot_inject_a_property(self):
         adr = {"street": "S", "type": ["home", "work\nEMAIL:evil@x"]}

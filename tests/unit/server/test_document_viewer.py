@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pymupdf
 import pytest
+from hypothesis import HealthCheck, event, example, given, settings
+from hypothesis import strategies as st
 from mcp.server.elicitation import AcceptedElicitation, DeclinedElicitation
 from pydantic import ValidationError
 
@@ -139,16 +141,70 @@ def test_redacted_copy_drops_metadata_and_attachments():
         assert doc.embfile_names() == []
 
 
-@pytest.mark.parametrize(
-    "bbox",
-    [
-        (0.5, 0.1, 0.4, 0.2),  # inverted x
-        (0.1, 0.2, 0.5, 0.2),  # zero height
-        (float("nan"), 0.1, 0.5, 0.2),
-        (0.1, 0.1, float("inf"), 0.2),
-        (1.2, 0.1, 1.5, 0.2),  # entirely off the page once clamped
-    ],
-)
+_unit = st.floats(0.0, 1.0)
+
+
+@st.composite
+def _axis(draw) -> tuple[float, float, float, float]:
+    """``(lo, hi, expected_lo, expected_hi)`` for one axis of a box on the page.
+
+    An edge at 0 or 1 may arrive overshot, as a drag past the edge does."""
+    lo, hi = sorted(
+        draw(
+            st.lists(
+                st.one_of(st.just(0.0), st.just(1.0), _unit),
+                min_size=2,
+                max_size=2,
+                unique=True,
+            )
+        )
+    )
+    raw_lo = (
+        draw(st.floats(max_value=0.0, allow_nan=False, allow_infinity=False))
+        if lo == 0.0 and draw(st.booleans())
+        else lo
+    )
+    raw_hi = (
+        draw(st.floats(min_value=1.0, allow_nan=False, allow_infinity=False))
+        if hi == 1.0 and draw(st.booleans())
+        else hi
+    )
+    return raw_lo, raw_hi, lo, hi
+
+
+@given(_axis(), _axis())
+@example((-0.01, 1.02, 0.0, 1.0), (0.1, 0.2, 0.1, 0.2))
+def test_region_clamps_a_box_on_the_page(x, y):
+    """A box with area on the page is kept, clamped to its edges."""
+    region = dv.Region(page=1, bbox=(x[0], y[0], x[1], y[1]))
+    assert region.bbox == (x[2], y[2], x[3], y[3])
+
+
+@st.composite
+def _boxes_off_the_page(draw) -> tuple[float, float, float, float]:
+    """A box with no area on the page: inverted, flat, non-finite, or off an edge."""
+    coords = draw(st.lists(st.floats(-2.0, 3.0), min_size=4, max_size=4))
+    axis = draw(st.sampled_from([0, 1]))
+    kind = draw(st.sampled_from(["inverted", "nonfinite", "off_edge"]))
+    if kind == "inverted":  # hi <= lo, including a flat box
+        coords[axis + 2] = draw(st.floats(-2.0, coords[axis]))
+    elif kind == "nonfinite":
+        coords[draw(st.integers(0, 3))] = draw(
+            st.sampled_from([float("nan"), float("inf"), float("-inf")])
+        )
+    else:  # both edges past the same side of the page: nothing left once clamped
+        side = draw(st.sampled_from([(-2.0, 0.0), (1.0, 3.0)]))
+        coords[axis], coords[axis + 2] = sorted(
+            draw(st.lists(st.floats(*side), min_size=2, max_size=2))
+        )
+    event(kind)
+    return tuple(coords)
+
+
+@given(_boxes_off_the_page())
+@example((0.5, 0.1, 0.4, 0.2))  # inverted x
+@example((0.1, 0.2, 0.5, 0.2))  # zero height
+@example((1.2, 0.1, 1.5, 0.2))  # entirely off the page once clamped
 def test_region_refuses_boxes_that_are_not_on_the_page(bbox):
     with pytest.raises(ValidationError):
         dv.Region(page=1, bbox=bbox)
@@ -170,9 +226,35 @@ def test_redact_term_refuses_extra_fields_and_overlong_text():
 # --- copy naming ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "bad", ["../escape.pdf", "a/../../b.pdf", "dir/", "a\\b.pdf", "  "]
-)
+_name_segment = st.text(
+    st.characters(codec="utf-8", exclude_characters="/\\"), min_size=1, max_size=8
+).filter(lambda s: s.strip() and s not in (".", ".."))
+
+
+@st.composite
+def _bad_names(draw) -> str:
+    """A copy name that is empty, a folder, Windows-separated, or climbs out."""
+    segments = draw(st.lists(_name_segment, max_size=3))
+    kind = draw(st.sampled_from(["dotdot", "backslash", "folder", "blank"]))
+    event(kind)
+    if kind == "dotdot":
+        segments.insert(draw(st.integers(0, len(segments))), "..")
+        return "/".join(segments)
+    if kind == "backslash":
+        name = "/".join(segments)
+        at = draw(st.integers(0, len(name)))
+        return name[:at] + "\\" + name[at:]
+    if kind == "folder":
+        return "/".join(segments) + "/"
+    return draw(st.text(" \t\n", max_size=3))
+
+
+@given(_bad_names())
+@example("../escape.pdf")
+@example("a/../../b.pdf")
+@example("dir/")
+@example("a\\b.pdf")
+@example("  ")
 def test_target_path_refuses_names_that_escape_or_are_empty(bad):
     with pytest.raises(ValueError):
         dv._target_path("/Docs/report.pdf", bad)
@@ -768,12 +850,27 @@ def test_sync_script_reads_pins_exactly_like_the_server():
         assert sync.sri_digest(alg, b"pdf.js") == dv.sri_digest(alg, b"pdf.js")
 
 
-@pytest.mark.parametrize(
-    "data", [b"var s = '</SCRIPT><script>alert(1)';", b"var s = '<!-- <script>';"]
-)
+@st.composite
+def _script_enders(draw) -> bytes:
+    """JavaScript holding ``</script`` (any case) or ``<!--`` somewhere."""
+    marker = draw(
+        st.sampled_from(["</script", "<!--"]).flatmap(
+            lambda m: st.tuples(*[st.sampled_from([c.lower(), c.upper()]) for c in m])
+        )
+    )
+    text = draw(st.text(st.characters(codec="utf-8"), max_size=20))
+    at = draw(st.integers(0, len(text)))
+    return (text[:at] + "".join(marker) + text[at:]).encode()
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(data=_script_enders())
+@example(data=b"var s = '</SCRIPT><script>alert(1)';")
+@example(data=b"var s = '<!-- <script>';")
 def test_a_vendored_file_that_would_end_the_script_is_not_inlined(
     tmp_path, monkeypatch, data
 ):
+    """The vendored file is rewritten per example, so the shared tmp_path is safe."""
     (tmp_path / "x.min.js").write_bytes(data)
     monkeypatch.setattr(dv, "_VENDOR_DIR", tmp_path)
     tag = (

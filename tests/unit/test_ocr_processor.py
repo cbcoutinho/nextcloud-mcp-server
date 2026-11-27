@@ -1,11 +1,14 @@
 """Unit tests for the OCR tier processor + backend selection."""
 
+import html
 from types import SimpleNamespace
 from typing import Any
 
 import anyio
 import httpx2
 import pytest
+from hypothesis import event, example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.document_processors import ocr
 from nextcloud_mcp_server.document_processors.base import ProcessorError
@@ -188,19 +191,29 @@ def test_normalize_bbox_shape_and_range():
     assert ocr._normalize_bbox([0.4, 0.5, 0.3, 0.6]) is None  # x1 < x0
 
 
-@pytest.mark.parametrize(
-    "html, expected",
-    [
-        ("<h1>Heading</h1>", "Heading"),
-        ("<p>Total due: 42.00 USD</p>", "Total due: 42.00 USD"),
-        ("<p>a <b>bold</b> word</p>", "a bold word"),  # nested tags stripped
-        ("AT&amp;T &lt;x&gt;", "AT&T <x>"),  # entities unescaped
-        ("  <p>  trim  </p>  ", "trim"),  # outer whitespace stripped
-        ("", ""),
-    ],
-)
-def test_strip_html(html, expected):
-    assert ocr._strip_html(html) == expected
+_tags = st.from_regex(r'</?[a-z][a-z0-9]{0,4}( [a-z]+="[^"<>]*")?>', fullmatch=True)
+
+
+@st.composite
+def block_html(draw) -> tuple[str, str]:
+    """A block's text, escaped and with tags dropped anywhere, as surya emits it."""
+    text = draw(st.text(st.characters(codec="utf-8"), max_size=30))
+    escaped = html.escape(text)
+    cuts = sorted(draw(st.lists(st.integers(0, len(escaped)), max_size=4)))
+    pieces = [escaped[i:j] for i, j in zip([0, *cuts], [*cuts, len(escaped)])]
+    marked = "".join(p + draw(_tags) for p in pieces[:-1]) + pieces[-1]
+    pad = st.text(" \n\t", max_size=3)
+    return draw(pad) + marked + draw(pad), text.strip()
+
+
+@given(block_html())
+@example(("<h1>Heading</h1>", "Heading"))
+@example(("<p>a <b>bold</b> word</p>", "a bold word"))
+@example(("AT&amp;T &lt;x&gt;", "AT&T <x>"))
+@example(("  <p>  trim  </p>  ", "trim"))
+def test_strip_html(case):
+    raw, expected = case
+    assert ocr._strip_html(raw) == expected
 
 
 def test_pages_to_text_drops_unnormalized_block_bbox():
@@ -653,19 +666,39 @@ def test_supported_mime_types_claims_images_only_when_opted_in(
 # --- batch mode (Deck #332) --------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "options",
-    [
-        None,
-        {},
-        {"doc_id": "d", "doc_type": "file"},  # missing user_id
-        {"user_id": "u", "doc_type": "file"},  # missing doc_id
-        {"user_id": "u", "doc_id": "d"},  # missing doc_type
-        {"user_id": "u", "doc_id": "d", "doc_type": ""},  # empty doc_type
-    ],
-)
-def test_batch_identity_returns_none_without_full_identity(options):
-    assert ocr._batch_identity(options) is None
+_IDENTITY_KEYS = ("user_id", "doc_id", "doc_type")
+_present = st.one_of(st.text(min_size=1, max_size=5), st.integers(min_value=1))
+_absent = st.sampled_from(["missing", None, "", 0])
+
+
+@st.composite
+def batch_options(draw) -> tuple[dict[str, Any] | None, tuple | None]:
+    """Processor options and the identity they carry (``None``: not all of it)."""
+    complete = draw(st.booleans())
+    event("complete" if complete else "incomplete")
+    # One key short is the case that pins each condition on its own.
+    missing = set() if complete else {draw(st.sampled_from(_IDENTITY_KEYS))}
+    options: dict[str, Any] = {}
+    for key in _IDENTITY_KEYS:
+        value = draw(_absent if key in missing else _present)
+        if value != "missing":
+            options[key] = value
+    etag = draw(st.one_of(_absent, st.text(max_size=5)))
+    if etag != "missing":
+        options["etag"] = etag
+    if not complete:
+        return draw(st.sampled_from([options, None])), None
+    expected = tuple(str(options[k]) for k in _IDENTITY_KEYS)
+    return options, (*expected, str(options.get("etag") or ""))
+
+
+@given(batch_options())
+@example(({"doc_id": "d", "doc_type": "file"}, None))  # missing user_id
+@example(({"user_id": "u", "doc_id": "d", "doc_type": ""}, None))  # empty doc_type
+def test_batch_identity_needs_all_three_keys(case):
+    """No identity without user_id, doc_id and doc_type; etag defaults to ""."""
+    options, expected = case
+    assert ocr._batch_identity(options) == expected
 
 
 def test_batch_identity_extracts_tuple_and_defaults_etag():

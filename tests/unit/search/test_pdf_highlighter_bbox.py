@@ -7,10 +7,13 @@ normalized bounding boxes only.
 
 from __future__ import annotations
 
+import functools
 import logging
 
 import pymupdf
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.search.pdf_highlighter import PDFHighlighter
 
@@ -414,26 +417,40 @@ def _many_page_fixture(n_pages: int) -> tuple[bytes, list[dict], str, list[tuple
     return pdf_bytes, boundaries, full_text, chunks
 
 
+@functools.cache
+def _many_page_pdf(n_pages: int) -> tuple[bytes, list[dict], str, list[tuple]]:
+    return _many_page_fixture(n_pages)
+
+
+@st.composite
+def windowed_chunks(draw) -> tuple[int, list[int], int]:
+    """A page count, the pages carrying a chunk, and a window over those pages:
+    dividing their number, leaving a remainder, or larger than it."""
+    n_pages = draw(st.integers(1, 13))
+    pages = sorted(draw(st.sets(st.integers(0, n_pages - 1), min_size=1)))
+    return n_pages, pages, draw(st.integers(1, len(pages) + 3))
+
+
 @pytest.mark.unit
-@pytest.mark.parametrize("window", [1, 2, 3, 5, 12, 13, 100])
-def test_windowed_bboxes_identical_to_unwindowed(window):
+@given(windowed_chunks())
+@example((12, list(range(12)), 5))  # a remainder
+@example((12, list(range(12)), 13))  # larger than the document
+def test_windowed_bboxes_identical_to_unwindowed(case):
     """Windowing bounds MuPDF page retention; it must NOT change results.
 
     MuPDF keeps parsed page objects alive for the lifetime of the Document, so
     a single open across a long document accumulates ~0.154 MB/page (+617 MB
     measured on a real 4003-page file, which OOMKilled the ingest workers).
     Reopening every `page_window` pages fixes that, but only if the output is
-    identical -- otherwise it silently moves highlight rectangles.
-
-    12 pages exercises windows that divide the count exactly (1, 2, 3, 12), one
-    that leaves a remainder (5), and ones larger than the document (13, 100).
-    Off-by-one at the window boundary is the obvious failure mode.
+    identical -- otherwise it silently moves highlight rectangles. Off-by-one at
+    the window boundary is the obvious failure mode.
     """
-    pdf_bytes, boundaries, full_text, chunks = _many_page_fixture(12)
+    n_pages, pages, window = case
+    pdf_bytes, boundaries, full_text, chunks = _many_page_pdf(n_pages)
 
     kwargs = {
         "pdf_bytes": pdf_bytes,
-        "chunks": chunks,
+        "chunks": [chunks[p] for p in pages],
         "page_boundaries": boundaries,
         "full_text": full_text,
     }
@@ -442,7 +459,7 @@ def test_windowed_bboxes_identical_to_unwindowed(window):
 
     assert windowed == unwindowed
     # Guard against the degenerate pass where both are empty and "identical".
-    assert len(unwindowed) == 12
+    assert len(unwindowed) == len(pages)
 
 
 @pytest.mark.unit

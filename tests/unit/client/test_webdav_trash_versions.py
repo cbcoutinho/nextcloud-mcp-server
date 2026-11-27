@@ -6,12 +6,14 @@ otherwise it would be reported as a deleted file or a stored version.
 """
 
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from unittest.mock import AsyncMock
 from xml.sax.saxutils import escape as xml_escape
 
 import pytest
 from httpx2 import AsyncClient
-from hypothesis import example, given
+from hypothesis import event, example, given
 from hypothesis import strategies as st
 from nextcloud_client.webdav import (
     VersionLabelRejected,
@@ -204,10 +206,50 @@ class TestListVersionsMetadata:
         assert {v["is_current"] for v in result["versions"]} == {None}
 
 
+def _field(valid_lo: int, valid_hi: int, wide_hi: int) -> st.SearchStrategy[int]:
+    """Usually in range, sometimes not, so both outcomes are common."""
+    return st.integers(valid_lo, valid_hi) | st.integers(-1, wide_hi)
+
+
+#: RFC 1123-shaped strings whose fields may each be out of range.
+_date_shaped = st.builds(
+    "{}, {} {} {} {}:{}:{} {}".format,
+    st.sampled_from(["Tue", "Xyz", ""]),
+    _field(1, 28, 99),
+    st.sampled_from(["Nov", "Feb", "Foo"]),
+    _field(1900, 9999, 100_000),
+    _field(0, 23, 99),
+    _field(0, 59, 99),
+    _field(0, 59, 99),
+    st.sampled_from(["GMT", "-0000", "UT", "EST", "XYZ"])
+    | st.from_regex(r"[+-][0-9]{4}", fullmatch=True),
+)
+
+
 class TestHttpDate:
-    @pytest.mark.parametrize("value", [None, "", "not a date"])
-    def test_unusable_values_are_none(self, value):
-        assert _http_date(value) is None
+    @given(st.none() | st.text(st.characters(codec="utf-8")) | _date_shaped)
+    @example(None)
+    @example("")
+    @example("not a date")
+    @example("Tue, 14 Nov 99999 22:15:00 GMT")  # year out of range
+    @example("Tue, 14 Nov 2023 22:15:00 -0000")  # parses naive
+    def test_any_value_parses_to_an_aware_datetime_or_none(self, value):
+        """A server-supplied string: never raises, never yields a naive datetime
+        (sorting must not mix naive and aware)."""
+        parsed = _http_date(value)
+        event("parsed" if parsed else "unusable")
+        assert parsed is None or parsed.tzinfo is not None
+
+    @given(
+        st.datetimes(datetime(1900, 1, 2), datetime(9998, 12, 30)),
+        st.integers(-23 * 60 - 59, 23 * 60 + 59),
+    )
+    def test_an_rfc_1123_date_round_trips(self, utc, offset_minutes):
+        offset = timedelta(minutes=offset_minutes)
+        instant = utc.replace(microsecond=0, tzinfo=timezone.utc)
+        assert (
+            _http_date(format_datetime(instant.astimezone(timezone(offset)))) == instant
+        )
 
     def test_naive_zone_is_treated_as_utc(self):
         assert _http_date("Tue, 14 Nov 2023 22:15:00 -0000") == _http_date(

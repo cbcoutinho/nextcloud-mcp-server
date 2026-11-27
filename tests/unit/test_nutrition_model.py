@@ -1,6 +1,8 @@
 """Unit tests for Nutrition model numeric coercion (issue #708)."""
 
 import pytest
+from hypothesis import event, example, given
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from nextcloud_mcp_server.models.cookbook import Nutrition
@@ -21,44 +23,31 @@ NUTRITION_FIELDS = [
 ]
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize("field", NUTRITION_FIELDS)
-def test_nutrition_field_accepts_string(field: str):
-    """String values should be accepted as-is for every nutrition field."""
-    n = Nutrition(**{field: "650 kcal"})
-    assert getattr(n, field) == "650 kcal"
+@st.composite
+def nutrition_values(draw) -> tuple[object, str | None]:
+    """A value as Cookbook may store it (schema.org allows text or a number),
+    and what the model holds."""
+    value = draw(st.text() | st.integers() | st.floats() | st.none())
+    event(type(value).__name__)
+    return value, value if value is None or isinstance(value, str) else str(value)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("field", NUTRITION_FIELDS)
-def test_nutrition_field_coerces_int(field: str):
-    """Integer values should be coerced to strings for every nutrition field."""
-    n = Nutrition(**{field: 260})
-    assert getattr(n, field) == "260"
+@given(st.sampled_from(NUTRITION_FIELDS), nutrition_values())
+@example("calories", ("650 kcal", "650 kcal"))
+@example("calories", (260, "260"))
+@example("calories", (260.5, "260.5"))
+def test_nutrition_field_keeps_text_and_numbers_as_text(field: str, case):
+    value, expected = case
+    assert getattr(Nutrition(**{field: value}), field) == expected
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("field", NUTRITION_FIELDS)
-def test_nutrition_field_coerces_float(field: str):
-    """Float values should be coerced to strings for every nutrition field."""
-    n = Nutrition(**{field: 260.5})
-    assert getattr(n, field) == "260.5"
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("field", NUTRITION_FIELDS)
-def test_nutrition_field_accepts_none(field: str):
-    """None should remain None for every nutrition field."""
-    n = Nutrition(**{field: None})
-    assert getattr(n, field) is None
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("field", NUTRITION_FIELDS)
-def test_nutrition_field_rejects_bool(field: str):
+@given(st.sampled_from(NUTRITION_FIELDS), st.booleans())
+def test_nutrition_field_rejects_bool(field: str, value: bool):
     """Boolean values should not be silently coerced to strings."""
     with pytest.raises(ValidationError):
-        Nutrition(**{field: True})
+        Nutrition(**{field: value})
 
 
 @pytest.mark.unit

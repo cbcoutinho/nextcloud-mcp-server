@@ -9,8 +9,12 @@ These assert the request body directly — the existing integration tests only
 checked fields they had just set, which is why the bug survived.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import httpx2
 import pytest
+from hypothesis import event, example, given
+from hypothesis import strategies as st
 from nextcloud_client.deck import (
     DeckClient,
     _normalize_color,
@@ -139,22 +143,50 @@ async def test_create_card_normalizes_duedate(mocker):
     assert body["duedate"] == "2030-06-01T18:00:00Z"
 
 
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("2030-06-01T14:00:00-04:00", "2030-06-01T18:00:00Z"),
-        ("2030-06-01T18:00:00Z", "2030-06-01T18:00:00Z"),  # idempotent
-        ("2030-06-01T18:00:00+00:00", "2030-06-01T18:00:00Z"),
-        ("2030-06-01T18:00:00.123456+00:00", "2030-06-01T18:00:00Z"),  # no micros
-        ("2030-06-01T18:00:00", "2030-06-01T18:00:00"),  # naive stays naive
-        ("2030-06-01", "2030-06-01"),
-        ("not a date", "not a date"),  # passed through, never raises
-        ("", None),
-        (None, None),
-    ],
-)
-def test_normalize_duedate(raw, expected):
+_instants = st.datetimes(datetime(1900, 1, 2), datetime(2100, 12, 30))
+
+
+@st.composite
+def duedates(draw) -> tuple[str | None, str | None]:
+    """A due date as a caller may send it, and what Deck should receive."""
+    kind = draw(st.sampled_from(["aware", "naive", "blank", "unparseable"]))
+    event(kind)
+    if kind == "aware":  # the same instant in UTC, whole seconds, ``Z``
+        utc = draw(_instants)
+        offset = timedelta(minutes=draw(st.integers(-23 * 60 - 59, 23 * 60 + 59)))
+        local = (utc + offset).replace(tzinfo=timezone(offset))
+        raw = local.isoformat()
+        if not offset and draw(st.booleans()):
+            raw = raw.replace("+00:00", "Z")
+        return raw, utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if kind == "naive":  # Deck reads it in its own zone; not ours to guess
+        raw = draw(st.one_of(_instants.map(datetime.isoformat), st.dates().map(str)))
+        return raw, raw
+    if kind == "blank":  # clears the date
+        return draw(st.none() | st.text(" \t\n", max_size=3)), None
+    # Passed through, never raised on: normalising is not validating.
+    raw = draw(st.text(st.characters(codec="utf-8"), min_size=1).filter(_unparseable))
+    return raw, raw
+
+
+def _unparseable(raw: str) -> bool:
+    if not raw.strip():
+        return False
+    try:
+        datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return False
+
+
+@given(duedates())
+@example(("2030-06-01T14:00:00-04:00", "2030-06-01T18:00:00Z"))
+@example(("2030-06-01T18:00:00.123456+00:00", "2030-06-01T18:00:00Z"))  # no micros
+@example(("not a date", "not a date"))
+def test_normalize_duedate(case):
+    raw, expected = case
     assert _normalize_duedate(raw) == expected
+    assert _normalize_duedate(expected) == expected  # idempotent
 
 
 async def test_title_only_update_preserves_startdate(mocker):
@@ -211,7 +243,31 @@ async def test_create_card_sends_startdate_and_color(mocker):
     assert body["color"] == "FF0000"
 
 
-@pytest.mark.parametrize("bad", ["red", "#", "FF00", "#GG0000"])
+_hex = "0123456789abcdefABCDEF"
+
+
+@st.composite
+def bad_colors(draw) -> str:
+    """Not six hex digits: wrong length, or one foreign character."""
+    if draw(st.booleans()):
+        event("wrong length")
+        digits = draw(
+            st.text(_hex, max_size=5) | st.text(_hex, min_size=7, max_size=12)
+        )
+    else:
+        event("foreign character")
+        digits = draw(st.text(_hex, min_size=6, max_size=6))
+        at = draw(st.integers(0, 5))
+        foreign = draw(st.characters(codec="utf-8", exclude_characters=_hex))
+        digits = digits[:at] + foreign + digits[at + 1 :]
+    # "" is the documented "clear the color", so a bare empty value gets its "#".
+    return (draw(st.sampled_from(["", "#"])) if digits else "#") + digits
+
+
+@given(bad_colors())
+@example("red")
+@example("#")
+@example("#GG0000")
 def test_invalid_color_is_rejected(bad):
     """Deck stores any string verbatim, so non-hex input is refused up front."""
     with pytest.raises(ValueError, match="6-digit hex"):
