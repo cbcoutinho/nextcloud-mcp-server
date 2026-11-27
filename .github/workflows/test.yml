@@ -385,6 +385,12 @@ jobs:
           done
           echo "MCP service is ready on port ${{ matrix.wait-port }}."
 
+      # Which Nextcloud credential the single-user server ended up with: an app
+      # password, or the login password after a failed exchange (slower).
+      - name: Show MCP auth mode
+        if: matrix.mode == 'single-user'
+        run: docker compose --profile single-user logs mcp 2>&1 | grep "dev entrypoint" || echo "no dev entrypoint line"
+
       # user_ldap is configured automatically by the app-hook
       # app-hooks/post-installation/15-setup-ldap-backend.sh (gated on the
       # openldap service). This step just surfaces the resulting config for
