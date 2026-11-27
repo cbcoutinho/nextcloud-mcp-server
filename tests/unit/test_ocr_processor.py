@@ -209,6 +209,7 @@ def test_normalized_bbox_round_trips(raw):
     assert ocr._normalize_bbox(raw) == [float(v) for v in raw]
 
 
+# Booleans on purpose: float(True) is in range, so only the bool check drops them.
 _coord = st.floats() | st.integers() | st.booleans() | st.text(max_size=2)
 
 

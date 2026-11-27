@@ -416,13 +416,13 @@ def chunked_documents(draw):
             chunks.append((offset + start, run[start : bounds[i + 1]]))
             prev_start = start
         offset += len(run) + draw(st.integers(1, 5))
+    event(f"overlap: {sum(len(t) for _, t in chunks) > sum(map(len, runs))}")
     return draw(st.permutations(chunks)), "\n".join(runs)
 
 
 @given(chunked_documents())
 def test_stitch_rebuilds_the_chunked_text(case):
     chunks, text = case
-    event(f"overlap: {sum(len(t) for _, t in chunks) > len(text.replace(chr(10), ''))}")
     assert sar_export.stitch(chunks) == text
 
 
