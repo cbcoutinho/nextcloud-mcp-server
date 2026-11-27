@@ -28,7 +28,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from anyio.from_thread import BlockingPortal, start_blocking_portal
@@ -83,7 +83,8 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
 
     class FakeDatetime(datetime):
         @classmethod
-        def now(cls, tz: Any = None) -> FakeDatetime:  # type: ignore[override]
+        def now(cls, tz: Any = None) -> FakeDatetime:
+            # Aware even for tz=None: token_broker always calls now(timezone.utc).
             return cls.fromtimestamp(c.now, tz or timezone.utc)
 
     monkeypatch.setattr(token_broker, "datetime", FakeDatetime)
@@ -102,7 +103,11 @@ def sqlite_storage(portal: BlockingPortal) -> Iterator[RefreshTokenStorage]:
         portal.call(storage.close)
 
 
-def _wipe(portal: BlockingPortal, storage: RefreshTokenStorage, table: str) -> None:
+def _wipe(
+    portal: BlockingPortal,
+    storage: RefreshTokenStorage,
+    table: Literal["refresh_tokens", "batch_ocr_jobs"],
+) -> None:
     async def run() -> None:
         async with storage.acquire() as db:
             await db.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed names
@@ -126,7 +131,7 @@ def test_token_cache_state_machine(portal: BlockingPortal, clock: Clock) -> None
     class TokenCacheMachine(RuleBasedStateMachine):
         def __init__(self) -> None:
             super().__init__()
-            clock.now = 1_000_000
+            clock.now = 1_000_000  # the fixture outlives each run; restart time
             self.cache = TokenCache(ttl_seconds=_TTL, early_refresh_seconds=_EARLY)
             self.model: dict[str, tuple[str, int]] = {}  # user -> (token, expiry)
             self.serial = 0
@@ -171,6 +176,7 @@ def test_token_cache_state_machine(portal: BlockingPortal, clock: Clock) -> None
         def entries_match_model(self) -> None:
             # Lazy deletion: an expired entry lingers until it is read, so the
             # key set must track the model's (which mirrors that) exactly.
+            # Reading _cache is deliberate: it is the only way to see that.
             assert set(self.cache._cache) == set(self.model)
 
     run_state_machine_as_test(TokenCacheMachine, settings=_MEMORY_SETTINGS)
@@ -215,7 +221,7 @@ def test_refresh_token_storage_state_machine(
     class RefreshTokenMachine(RuleBasedStateMachine):
         def __init__(self) -> None:
             super().__init__()
-            clock.now = 1_000_000
+            clock.now = 1_000_000  # the fixture outlives each run; restart time
             _wipe(portal, storage, "refresh_tokens")
             # user -> row as the store should hold it (incl. expired-but-unread)
             self.rows: dict[str, dict[str, Any]] = {}
@@ -271,7 +277,8 @@ def test_refresh_token_storage_state_machine(
         @rule(user=_USERS)
         def get(self, user: str) -> None:
             row = self.rows.get(user)
-            # The profile read ignores expiry, so check it before get() can delete.
+            # NOTE: pins current behaviour. The profile read ignores expiry,
+            # so check it before get() can delete the row.
             profile = portal.call(storage.get_user_profile, user)
             assert profile == (row["profile"] if row else None)
             got = portal.call(storage.get_refresh_token, user)
