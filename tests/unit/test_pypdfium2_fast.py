@@ -80,7 +80,7 @@ def _numbered_pdf(pages: int) -> bytes:
     return data
 
 
-@functools.cache
+@functools.cache  # shared across examples: callers must not mutate the result
 def _unwindowed(pages: int) -> tuple[str, dict]:
     return _extract(_numbered_pdf(pages), 0)
 

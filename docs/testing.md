@@ -167,7 +167,9 @@ integration test only needs to prove the wiring. Shared strategies
   property of the pure helper, and keep one tool-level case for the wiring.
 - **A property that needs `tmp_path` or `monkeypatch`:** suppress
   `HealthCheck.function_scoped_fixture`, but only when every example
-  overwrites the shared state it uses, and say so in the docstring.
+  overwrites the shared state it uses, and say so in the docstring. A
+  `monkeypatch.setattr` in each example is undone only once, at teardown, so it
+  must set the same value every time.
 
 **Mutation-check every property.** Break the code under test, see the property
 fail, then restore the source. A mutant that survives means either a starved

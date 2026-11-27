@@ -265,7 +265,8 @@ async def test_list_refuses_an_excluded_folder(client, excluded, tools):
 
 
 async def test_list_refuses_traversal(client, tools):
-    """A folder path stays within the user's files, like a file path."""
+    """A folder path stays within the user's files, like a file path. Other
+    spellings are covered by test_only_a_whole_dotdot_segment_is_traversal."""
     with pytest.raises(ToolError, match="segments"):
         await tools.list(ctx=CTX, path="/../other")
     client.webdav.find_all_by_type.assert_not_called()

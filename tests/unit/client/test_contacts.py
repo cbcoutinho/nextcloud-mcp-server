@@ -1305,6 +1305,16 @@ class TestAddress:
         for card in (_vcard(fn="J", adr=adr), _merge(existing, {"adr": adr})):
             assert f"\r\nADR{params}:;;S;;;;\r\n" in card
 
+    def test_a_dropped_type_is_logged(self, caplog):
+        """The property above pins the output; this pins the warning that a
+        dropped value must leave (CLAUDE.md, Error Handling)."""
+        existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"
+        adr = {"street": "S", "type": 5}
+        with caplog.at_level("WARNING", logger="nextcloud_client.contacts"):
+            for card in (_vcard(fn="J", adr=adr), _merge(existing, {"adr": adr})):
+                assert "ADR:;;S;;;;" in card
+        assert "invalid ADR type" in caplog.text
+
     def test_type_cannot_inject_a_property(self):
         adr = {"street": "S", "type": ["home", "work\nEMAIL:evil@x"]}
         existing = "BEGIN:VCARD\nVERSION:3.0\nUID:u\nFN:J\nEND:VCARD\n"

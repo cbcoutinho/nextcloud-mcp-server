@@ -237,7 +237,7 @@ class TestHttpDate:
         """A server-supplied string: never raises, never yields a naive datetime
         (sorting must not mix naive and aware)."""
         parsed = _http_date(value)
-        event("parsed" if parsed else "unusable")
+        event("parsed" if parsed is not None else "unusable")
         assert parsed is None or parsed.tzinfo is not None
 
     @given(
