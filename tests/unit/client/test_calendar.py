@@ -9,8 +9,11 @@ caldav build whichever auth its backend needs.
 
 import logging
 from datetime import timedelta
+from urllib.parse import quote, unquote
 
 import pytest
+from hypothesis import event, example, given
+from hypothesis import strategies as st
 
 pytestmark = pytest.mark.unit
 
@@ -262,23 +265,27 @@ def test_a_calendar_name_containing_a_hash_is_not_truncated():
     )
 
 
-@pytest.mark.parametrize(
-    "decoded, encoded",
-    [
-        ("personal_shared_by_Ada Lovelace", "personal_shared_by_Ada%20Lovelace"),
-        ("Müller", "M%C3%BCller"),
-    ],
+#: Calendar names as Nextcloud shows them. A literal ``%`` never occurs in a
+#: calendar URI (see ``_get_calendar_url``), and ``/`` would be a path.
+_calendar_names = st.text(
+    st.characters(codec="utf-8", exclude_characters="%/"), min_size=1, max_size=20
 )
-def test_a_percent_encoded_calendar_name_is_not_encoded_twice(decoded, encoded):
+
+
+@given(_calendar_names)
+@example("personal_shared_by_Ada Lovelace")
+@example("Müller")
+def test_a_percent_encoded_calendar_name_is_not_encoded_twice(decoded):
     """Names are passed as they appear in hrefs; ``%20`` must not become ``%2520``,
     which silently REPORTs an empty calendar instead of failing."""
     from nextcloud_client.calendar import CalendarClient
 
     client = CalendarClient("https://cloud.example.org", "alice")
+    home = "https://cloud.example.org/remote.php/dav/calendars/alice/"
 
     url = client._get_calendar_url(decoded)
-    assert client._get_calendar_url(encoded) == url
-    assert url.endswith(f"/alice/{encoded}/")
+    assert client._get_calendar_url(quote(decoded, safe="")) == url
+    assert unquote(url) == f"{home}{decoded}/"
     assert "%25" not in url
 
 
@@ -1278,38 +1285,61 @@ def _todo_with_alarm(alarm_body: str) -> str:
     )
 
 
-@pytest.mark.parametrize(
-    "alarm_body",
-    [
-        "ACTION:PROCEDURE\nTRIGGER:-PT30M\nDESCRIPTION:Legacy",
-        "ACTION:X-CUSTOM-THING\nTRIGGER:-PT30M",
-        "ACTION:DISPLAY\nTRIGGER;RELATED=PARENT:-PT30M",
-        "ACTION:DISPLAY\nDESCRIPTION:No trigger at all",
-        "ACTION:DISPLAY",
-    ],
-    ids=[
-        "legacy-procedure-action",
-        "x-prefixed-action",
-        "foreign-related-param",
-        "missing-trigger",
-        "bare-action-only",
-    ],
-)
-def test_no_stored_alarm_shape_can_break_a_listing(alarm_body):
+_ical_token = st.from_regex(r"(X-)?[A-Za-z][A-Za-z0-9-]{0,10}", fullmatch=True)
+_ical_text = st.from_regex(r"[A-Za-z0-9 ]{0,12}", fullmatch=True)
+
+
+@st.composite
+def stored_alarms(draw) -> tuple[str, bool]:
+    """A VALARM body any CalDAV client might have stored, and whether it has a
+    TRIGGER (without one there is nothing to report)."""
+    lines = []
+    if draw(st.booleans()):
+        action = draw(st.sampled_from(["DISPLAY", "EMAIL", "AUDIO"]) | _ical_token)
+        lines.append(f"ACTION:{action}")
+    trigger = draw(st.sampled_from(["none", "relative", "absolute"]))
+    event(f"trigger: {trigger}")
+    if trigger == "relative":
+        sign = draw(st.sampled_from(["", "+", "-"]))
+        amount = draw(st.integers(0, 10_000))
+        unit = draw(st.sampled_from(["TS", "TM", "TH", "D", "W"]))
+        duration = f"{sign}P{'T' if unit.startswith('T') else ''}{amount}{unit[-1]}"
+        params = ""
+        if draw(st.booleans()):
+            related = draw(st.sampled_from(["START", "END", "start"]) | _ical_token)
+            params = f";RELATED={related}"
+        lines.append(f"TRIGGER{params}:{duration}")
+    elif trigger == "absolute":
+        lines.append("TRIGGER;VALUE=DATE-TIME:20260101T090000Z")
+    for name in ("DESCRIPTION", "SUMMARY"):
+        if draw(st.booleans()):
+            lines.append(f"{name}:{draw(_ical_text)}")
+    lines = draw(st.permutations(lines))
+    return "\n".join(lines) or "ACTION:DISPLAY", trigger != "none"
+
+
+@given(stored_alarms())
+@example(("ACTION:PROCEDURE\nTRIGGER:-PT30M\nDESCRIPTION:Legacy", True))
+@example(("ACTION:X-CUSTOM-THING\nTRIGGER:-PT30M", True))
+@example(("ACTION:DISPLAY\nTRIGGER;RELATED=PARENT:-PT30M", True))
+@example(("ACTION:DISPLAY\nDESCRIPTION:No trigger at all", False))
+@example(("ACTION:DISPLAY", False))
+def test_no_stored_alarm_shape_can_break_a_listing(case):
     """Whatever another CalDAV client wrote, one alarm costs at most itself.
 
     ``Todo(**todo_data)`` is built in a plain list comprehension, so a
     ValidationError from any nested Reminder fails the entire
     ``nc_calendar_list_todos`` call rather than the single item. Every field the
     model constrains — the action Literal, the related Literal, the exactly-one
-    trigger rule — is therefore normalised or dropped on the way out of the iCal,
-    and this covers each of those shapes rather than the one that was reported.
+    trigger rule — is therefore normalised or dropped on the way out of the iCal.
     """
     from nextcloud_mcp_server.models.calendar import Todo
 
+    alarm_body, has_trigger = case
     todo_data = _pure_client()._parse_ical_todo(_todo_with_alarm(alarm_body))
 
     todo = Todo(**todo_data)
+    assert len(todo.reminders) == has_trigger
     for reminder in todo.reminders:
         assert reminder.action in ("DISPLAY", "EMAIL", "AUDIO")
         assert reminder.related in (None, "START", "END")

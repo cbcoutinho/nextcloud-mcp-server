@@ -97,6 +97,9 @@ Use the authenticated **SonarQube CLI** (`sonar`, on `PATH` via
   uses legacy `httpx`, and qdrant wraps it in `ResponseHandlingException`.
 
 ### Testing Patterns
+- **Read `docs/testing.md` before adding tests.** It has the tier costs, the
+  rule for which tier a test belongs in (push checks to the cheapest tier that
+  catches the bug), unit-tier speed rules, and how to benchmark the suite.
 - **Use existing fixtures** from `tests/conftest.py` (2888 lines of test infrastructure)
 - **Session-scoped fixtures** handle anyio/pytest-asyncio incompatibility
 - **Mocked unit tests** use `mocker.AsyncMock(spec=httpx2.AsyncClient)`
@@ -339,8 +342,8 @@ clients live under `providers/` (`bm25.py`, `gateway.py`, `gateway_batch.py`).
 # Select unit tests by MARKER, not by directory: ~250 unit-marked tests live
 # outside tests/unit/ (tests/client/, tests/test_models.py, ...), so
 # `pytest tests/unit/` silently skips them.
-uv run pytest -m unit -q                        # Unit tests (~5min)
-uv run pytest -m unit -n auto -q                # Same, across all cores (~2min)
+uv run pytest -m unit -q                        # Unit tests (~3min)
+uv run pytest -m unit -n auto -q                # Same, across all cores (~1.5min)
 uv run pytest -m smoke -v                       # Smoke tests (~30-60s)
 
 # Integration tests

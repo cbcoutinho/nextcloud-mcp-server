@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock
 import anyio
 import httpx2
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from nextcloud_client.models.whiteboard import WHITEBOARD_MIME_TYPE
@@ -18,6 +20,7 @@ from nextcloud_client.webdav import OversizeDownload, UnexpectedContentType
 from nextcloud_mcp_server.server.whiteboard import (
     MAX_BOARD_BYTES,
     MAX_PAGE_CHARS,
+    _refuse_traversal,
     configure_whiteboard_tools,
 )
 
@@ -187,11 +190,11 @@ async def test_get_reports_a_server_error(client, tools):
         await tools.get(path="a.whiteboard", ctx=CTX)
 
 
-@pytest.mark.parametrize("path", ["../a.whiteboard", "Work/../../a", "Work\\..\\a"])
-async def test_get_refuses_traversal(client, tools, path):
-    """Refused with a clear message, before any request."""
+async def test_get_refuses_traversal(client, tools):
+    """Refused with a clear message, before any request. Which paths are
+    traversal is ``test_only_a_whole_dotdot_segment_is_traversal``."""
     with pytest.raises(ToolError, match="segments"):
-        await tools.get(path=path, ctx=CTX)
+        await tools.get(path="Work\\..\\a", ctx=CTX)
     client.webdav.stream_to_file.assert_not_called()
 
 
@@ -261,20 +264,47 @@ async def test_list_refuses_an_excluded_folder(client, excluded, tools):
     client.webdav.find_all_by_type.assert_not_called()
 
 
-@pytest.mark.parametrize("path", ["..", "Work/../..", "Work\\..\\..", "/../other"])
-async def test_list_refuses_traversal(client, tools, path):
-    """A folder path stays within the user's files, like a file path."""
+async def test_list_refuses_traversal(client, tools):
+    """A folder path stays within the user's files, like a file path. Other
+    spellings are covered by test_only_a_whole_dotdot_segment_is_traversal."""
     with pytest.raises(ToolError, match="segments"):
-        await tools.list(ctx=CTX, path=path)
+        await tools.list(ctx=CTX, path="/../other")
     client.webdav.find_all_by_type.assert_not_called()
 
 
-@pytest.mark.parametrize("path", ["a..b", "..hidden", "Work..."])
-async def test_list_allows_dots_in_names(client, tools, path):
-    """Only a whole '..' segment is traversal."""
+async def test_list_allows_dots_in_names(client, tools):
     client.webdav.find_all_by_type.return_value = []
-    result = await tools.list(ctx=CTX, path=path)
+    result = await tools.list(ctx=CTX, path="a..b")
     assert result.total_found == 0
+
+
+#: Dot-heavy segments, so "..", "...", "." and "a..b" all turn up.
+_segment = st.text(alphabet="a.", min_size=1, max_size=4)
+
+
+@st.composite
+def _paths(draw) -> tuple[str, bool]:
+    """A path in ``/`` or ``\\`` spelling, and whether it has a ``..`` segment."""
+    traverses = draw(st.booleans())
+    segments = draw(st.lists(_segment.filter(lambda s: s != ".."), max_size=4))
+    if traverses:
+        segments.insert(draw(st.integers(0, len(segments))), "..")
+    path = "".join(s + draw(st.sampled_from("/\\")) for s in segments)
+    return draw(st.sampled_from(["", "/"])) + path[:-1], traverses
+
+
+@given(_paths())
+@example(("Work/../../a", True))
+@example(("Work\\..\\..", True))
+@example(("..hidden", False))
+@example(("Work...", False))
+def test_only_a_whole_dotdot_segment_is_traversal(case):
+    path, traverses = case
+    if traverses:
+        with pytest.raises(ToolError, match="segments"):
+            _refuse_traversal(path)
+    else:
+        _refuse_traversal(path)
 
 
 @pytest.mark.parametrize(

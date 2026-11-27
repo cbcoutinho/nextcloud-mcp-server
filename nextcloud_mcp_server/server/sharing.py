@@ -33,12 +33,16 @@ def _compute_link_expiry(expires_in_minutes: int, now: datetime) -> tuple[str, s
 
     Raises:
         ToolError: If ``expires_in_minutes`` is not positive — this tool only
-            creates short-lived links, never a permanent (non-expiring) one.
+            creates short-lived links, never a permanent (non-expiring) one —
+            or so large the expiry falls past ``datetime.max``.
     """
     if expires_in_minutes <= 0:
         raise ToolError("expires_in_minutes must be a positive number of minutes")
-    target = now + timedelta(minutes=expires_in_minutes)
-    expire_date = (target.date() + timedelta(days=1)).isoformat()
+    try:
+        target = now + timedelta(minutes=expires_in_minutes)
+        expire_date = (target.date() + timedelta(days=1)).isoformat()
+    except OverflowError as e:
+        raise ToolError("expires_in_minutes is too large") from e
     # Match BaseResponse.serialize_timestamp: only collapse a *trailing* UTC
     # offset to "Z", rather than replacing any "+00:00" occurrence.
     iso = target.isoformat()

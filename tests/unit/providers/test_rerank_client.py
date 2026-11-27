@@ -10,7 +10,7 @@ import math
 
 import httpx2
 import pytest
-from hypothesis import given
+from hypothesis import event, example, given
 from hypothesis import strategies as st
 
 from nextcloud_mcp_server.providers.rerank import (
@@ -20,6 +20,12 @@ from nextcloud_mcp_server.providers.rerank import (
 )
 
 pytestmark = pytest.mark.unit
+
+_json = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
+    max_leaves=10,
+)
 
 
 def _patch_transport(monkeypatch, handler):
@@ -326,15 +332,37 @@ class TestResponseParsing:
                 math.isnan(score) and math.isnan(entry.score)
             )
 
-    @pytest.mark.parametrize(
-        "body",
-        [
-            {"results": "nope"},
-            {},
-            [],
-            "not-an-object",
-        ],
+    @given(
+        _json
+        | st.fixed_dictionaries(
+            {
+                "results": st.lists(
+                    st.fixed_dictionaries(
+                        {
+                            "index": st.integers(-1, 6) | st.booleans(),
+                            "relevance_score": st.floats() | st.integers(),
+                        }
+                    )
+                    | _json,
+                    max_size=6,
+                )
+            }
+        ),
+        st.integers(1, 5),
     )
-    def test_unusable_bodies_raise(self, body):
-        with pytest.raises(RerankError):
-            RerankClient._parse(body, 2)
+    @example({"results": "nope"}, 2)
+    @example({}, 2)
+    @example([], 2)
+    @example("not-an-object", 2)
+    def test_parse_raises_only_rerank_error(self, body, sent):
+        """Any body: a RerankError, or a non-empty ranking of valid, unique indices."""
+        try:
+            ranked = RerankClient._parse(body, sent)
+        except RerankError:
+            event("rejected")
+            return
+        event("ranked")
+        indices = [r.index for r in ranked]
+        assert indices
+        assert len(set(indices)) == len(indices)
+        assert all(0 <= i < sent for i in indices)

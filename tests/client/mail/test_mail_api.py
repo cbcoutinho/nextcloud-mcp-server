@@ -23,21 +23,25 @@ the GreenMail integration suite.
 """
 
 import base64
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx2
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
+from nextcloud_client.http import nextcloud_httpx_client
 from nextcloud_client.mail import (
     InvalidSearchFilter,
     MailClient,
     normalize_date_bounds,
 )
+from nextcloud_client.mail import _ocs_response as _unwrap_ocs
 
 from tests.client.conftest import create_mock_response
+from tests.strategies import json_values
 
 logger = logging.getLogger(__name__)
 
@@ -953,3 +957,134 @@ async def test_save_draft_reports_the_move_error_when_cleanup_also_fails(
 
     assert exc_info.value is move_error
     assert "Could not discard staged mail draft 42" in caplog.text
+
+
+# ── Response parsing properties ─────────────────────────────────────────
+
+
+def _raw(content: bytes, headers: dict | None = None) -> httpx2.Response:
+    return httpx2.Response(
+        200,
+        content=content,
+        headers=headers,
+        request=httpx2.Request("GET", "https://nc.example.com/ocs"),
+    )
+
+
+_ocs_envelopes = st.fixed_dictionaries(
+    {
+        "ocs": st.fixed_dictionaries(
+            {}, optional={"meta": json_values, "data": json_values}
+        )
+        | json_values
+    }
+)
+
+
+@given(st.binary() | (json_values | _ocs_envelopes).map(json.dumps).map(str.encode))
+@example(b"<html>not found</html>")
+@example(b'{"ocs": {"meta": {"statuscode": Infinity}}}')
+def test_ocs_body_raises_only_the_documented_errors(content):
+    """Whatever a misbehaving server sends, callers see RequestError (not OCS)
+    or HTTPStatusError (OCS said no), never a KeyError or TypeError."""
+    try:
+        _unwrap_ocs(_raw(content))
+    except (httpx2.RequestError, httpx2.HTTPStatusError):
+        pass
+
+
+#: JSON values without NaN, so a parsed payload can be compared with ``==``.
+_comparable_json = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats(allow_nan=False) | st.text(),
+    lambda inner: (
+        st.lists(inner, max_size=3) | st.dictionaries(st.text(), inner, max_size=3)
+    ),
+    max_leaves=8,
+)
+
+
+@st.composite
+def ocs_outcomes(draw):
+    """``(statuscode as sent, the HTTP status a failure is raised with or None)``.
+
+    A missing or falsy statuscode is success; below 400 is success (mail's own
+    rule, looser than the shared ``is_success``); 400 and above raise.
+    """
+    if draw(st.booleans()):
+        return draw(st.sampled_from([None, 0, "", 100, 200])), None
+    if draw(st.booleans()):
+        return draw(st.integers(1, 399)), None
+    code = draw(st.integers(400, 599))
+    return draw(st.sampled_from([code, str(code)])), code
+
+
+@given(ocs_outcomes(), _comparable_json, st.text())
+def test_ocs_envelope_yields_its_data_or_raises_its_code(outcome, data, message):
+    statuscode, failure = outcome
+    body = {"ocs": {"meta": {"statuscode": statuscode, "message": message}}}
+    body["ocs"]["data"] = data
+    response = _raw(json.dumps(body).encode())
+    if failure is None:
+        assert _unwrap_ocs(response) == data
+        return
+    with pytest.raises(httpx2.HTTPStatusError) as excinfo:
+        _unwrap_ocs(response)
+    assert excinfo.value.response.status_code == failure
+
+
+#: Filenames that survive a quoted-string Content-Disposition unchanged.
+_filenames = st.text(
+    st.characters(min_codepoint=0x20, max_codepoint=0x7E, exclude_characters='"\\'),
+    min_size=1,
+    max_size=30,
+).filter(lambda name: name.strip() == name)
+
+
+@given(
+    _filenames,
+    st.from_regex(r"[a-z]{1,10}/[a-z0-9.+-]{1,15}", fullmatch=True),
+    st.sampled_from(["", "; charset=binary", ";name=x"]),
+    st.binary(max_size=64),
+)
+async def test_attachment_reads_its_bytes_mime_and_filename(
+    filename, mime, params, content
+):
+    response = _raw(
+        content,
+        headers={
+            "content-type": mime + params,
+            "content-disposition": f'attachment; filename="{filename}"',
+        },
+    )
+    async with nextcloud_httpx_client(
+        base_url="https://nc.example.com",
+        transport=httpx2.MockTransport(lambda request: response),
+    ) as http:
+        result = await MailClient(http, "testuser").download_attachment(7, "1.2")
+    assert result == (content, mime, filename)
+
+
+#: Dispositions that reach the filename decoding (quoted, RFC 2231 and its
+#: continuations), with an arbitrary value; bare text almost never does.
+_dispositions = st.tuples(
+    st.sampled_from(
+        [
+            'attachment; filename="',
+            "attachment; filename=",
+            "attachment; filename*=",
+            "inline; filename*=UTF-8''",
+            "attachment; filename*0*=",
+        ]
+    ),
+    st.text(),
+).map("".join)
+
+
+@given(st.none() | _dispositions | st.text())
+@example("attachment; filename*=UTF-8''%E2%82%AC.txt")
+@example("attachment; filename*=bogus''%ZZ")
+def test_any_disposition_yields_a_filename_or_none(header):
+    """Content-Disposition is server-controlled; a malformed one costs the real
+    filename (the caller synthesises one), never the download."""
+    name = MailClient._filename_from_disposition(header)
+    assert name is None or isinstance(name, str)

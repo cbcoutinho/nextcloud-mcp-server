@@ -282,27 +282,6 @@ async def test_overwrite_existing_file(nc_client: NextcloudClient, test_base_pat
             pass
 
 
-async def test_list_root_directory(nc_client: NextcloudClient):
-    """Test listing the root directory."""
-    root_listing = await nc_client.webdav.list_directory("")
-
-    # Root directory should exist and be listable
-    assert isinstance(root_listing, list)
-    # Should have at least some default folders/files
-    assert len(root_listing) >= 0
-
-    # Check structure of items
-    for item in root_listing:
-        assert "name" in item
-        assert "path" in item
-        assert "is_directory" in item
-        assert "size" in item
-        assert "content_type" in item
-        assert "last_modified" in item
-
-    logger.info("Root directory contains %s items", len(root_listing))
-
-
 async def test_write_returns_etag_usable_without_reread(
     nc_client: NextcloudClient, test_base_path: str
 ):

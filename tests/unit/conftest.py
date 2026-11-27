@@ -8,6 +8,11 @@ import pytest
 # by every unit test that names it as a parameter, without each test module
 # having to import it explicitly.
 from tests.fixtures.storage_backend import storage_backend  # noqa: F401
+from tests.unit._settings_isolation import (
+    env_without_pytest_bookkeeping,
+    restore_settings,
+    settings_baseline,
+)
 
 _UNIT_DIR = Path(__file__).parent
 
@@ -45,22 +50,37 @@ def metric_sample():
     return _sample
 
 
+@pytest.fixture(scope="session")
+def _dynaconf_baseline() -> dict:
+    """The settings every test should start from: a fresh load of the
+    session's environment."""
+    return settings_baseline()
+
+
 @pytest.fixture(autouse=True)
-def _reload_dynaconf_after_test():
+def _reload_dynaconf_after_test(_dynaconf_baseline: dict):
     """Ensure dynaconf cache is clean between tests.
 
     Dynaconf caches env var values at load time. Tests that modify os.environ
     must call _reload_config() to refresh the cache. This fixture reloads
     after each test to prevent leaked state.
 
+    A reload costs ~40 ms. Doing it after every one of ~5,000 tests was about
+    half of the unit tier's run time, so it now runs only when the test left
+    something different: the environment, or the loaded settings (a test that
+    reloaded with a patched env, or called ``set_override``). Both checks cost
+    well under a millisecond. Autouse fixtures are torn down last, so
+    ``monkeypatch`` has already restored ``os.environ`` by this point.
+
     Uses _dynaconf.reload() directly (without validate_all) since the
     real env may have values that don't pass validators. Tests that need
     validation should call _reload_config() explicitly.
     """
+    env_before = env_without_pytest_bookkeeping()
     yield
     from nextcloud_mcp_server import config as _config
 
-    _config._dynaconf.reload()
+    restore_settings(env_before, _dynaconf_baseline)
     # get_settings()/get_nextcloud_ssl_verify()/get_nextcloud_http_keepalive()
     # are @functools.cache'd; reloading dynaconf alone won't refresh them, so
     # clear the settings caches too or a cached value leaks into later tests.

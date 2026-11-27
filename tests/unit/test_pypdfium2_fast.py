@@ -1,7 +1,11 @@
 """Unit tests for the tier-1 pypdfium2 fast PDF extractor."""
 
+import functools
+
 import pymupdf
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.document_processors.pypdfium2_fast import (
     Pypdfium2FastProcessor,
@@ -65,31 +69,47 @@ async def test_health_check():
 # bound peak RSS. Windowing must not change a single byte of the output, and the
 # page_boundaries offsets must keep indexing exactly into the joined text --
 # search/pdf_highlighter and PageAwareChunker both depend on that contract.
-@pytest.mark.parametrize("window", [0, 1, 2, 3, 7, 100])
-def test_page_window_output_is_identical(window: int):
-    content = _digital_pdf(pages=7)
+@functools.cache
+def _numbered_pdf(pages: int) -> bytes:
+    """A PDF whose page i says ``Page i``, so a page out of order shows."""
+    doc = pymupdf.open()
+    for i in range(pages):
+        doc.new_page(width=595, height=842).insert_text((50, 60), f"Page {i} body")
+    data: bytes = doc.tobytes()
+    doc.close()
+    return data
 
-    baseline_text, baseline_meta = _extract(content, 0)
-    text, meta = _extract(content, window)
 
-    assert text == baseline_text
-    assert meta["page_count"] == baseline_meta["page_count"] == 7
-    assert meta["page_boundaries"] == baseline_meta["page_boundaries"]
+@functools.cache  # shared across examples: callers must not mutate the result
+def _unwindowed(pages: int) -> tuple[str, dict]:
+    return _extract(_numbered_pdf(pages), 0)
 
 
-@pytest.mark.parametrize("window", [1, 2, 3, 7, 100])
-def test_page_window_boundaries_stay_contiguous(window: int):
-    # A window that does not divide the page count is the off-by-one risk.
-    content = _digital_pdf(pages=7)
+@st.composite
+def windowed_documents(draw) -> tuple[int, int]:
+    """A page count and a window: 0 (off), dividing it or not, or larger."""
+    pages = draw(st.integers(1, 9))
+    return pages, draw(st.integers(0, pages + 3))
 
-    text, meta = _extract(content, window)
 
+@given(windowed_documents())
+@example((7, 3))  # a window that does not divide the page count
+@example((7, 100))
+def test_page_window_output_is_identical(case):
+    """Windowing must not change a byte of the output, and each page's
+    boundaries must index exactly that page's text in order."""
+    pages, window = case
+    text, meta = _extract(_numbered_pdf(pages), window)
+
+    assert (text, meta) == _unwindowed(pages)
     boundaries = meta["page_boundaries"]
-    assert len(boundaries) == 7
+    assert meta["page_count"] == len(boundaries) == pages
     assert boundaries[0]["start_offset"] == 0
     assert boundaries[-1]["end_offset"] == len(text)
     for prev, nxt in zip(boundaries, boundaries[1:]):
         assert prev["end_offset"] == nxt["start_offset"]
+    for i, b in enumerate(boundaries):
+        assert text[b["start_offset"] : b["end_offset"]].startswith(f"Page {i} ")
 
 
 def test_page_window_handles_empty_document():

@@ -1,13 +1,15 @@
 """CIMD client_ids and RFC 9207 ``iss`` on the OAuth AS proxy (GH #1470)."""
 
+import ipaddress
 import json
+import string
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
 import httpx2
 import pytest
-from hypothesis import example, given
+from hypothesis import event, example, given
 from hypothesis import strategies as st
 
 import nextcloud_mcp_server.auth.client_registry as registry_mod
@@ -48,44 +50,173 @@ def _config(monkeypatch):
     cimd._cache.clear()
 
 
-@pytest.mark.parametrize(
-    "client_id",
-    [
-        "https://client.example.com",  # no path
-        "https://client.example.com/",
-        "https://client.example.com/a/../metadata.json",
-        "https://client.example.com/a/%2e%2e/metadata.json",
-        "https://client.example.com/a/%2E/metadata.json",
-        "https://client.example.com/metadata.json#frag",
-        "https://user:pw@client.example.com/metadata.json",
-        "https://client.example.com:abc/metadata.json",
-        "https://untrusted.example.com/metadata.json",
-    ],
-)
-async def test_invalid_or_untrusted_client_id_url_is_rejected(client_id):
+_SEGMENTS = st.text(
+    alphabet=string.ascii_letters + string.digits + "-_~.", min_size=1, max_size=8
+).filter(lambda s: s not in (".", ".."))
+_DOTS = st.sampled_from([".", "%2e", "%2E"])  # a dot, raw or percent-encoded
+_MUTATIONS = ["scheme", "userinfo", "host", "port", "no_path", "dot_segment"]
+
+
+@st.composite
+def client_id_urls(draw):
+    """``(client_id, valid)``: a valid client_id URL, or one broken by one rule.
+
+    Host case and port vary in the valid URLs: both are legal and the host is
+    compared case-insensitively. A fragment has its own property below.
+    """
+    scheme, userinfo, port = "https", "", ""
+    host = "".join(c.upper() if draw(st.booleans()) else c for c in "client.example")
+    host += ".com"
+    if draw(st.booleans()):
+        port = f":{draw(st.integers(1, 65535))}"
+    segments = draw(st.lists(_SEGMENTS, min_size=1, max_size=4))
+    path = "/" + "/".join(segments)
+
+    mutation = draw(st.sampled_from([None, *_MUTATIONS]))
+    event(f"mutation: {mutation}")
+    if mutation == "scheme":
+        scheme = draw(st.sampled_from(["http", "ftp"]))
+    elif mutation == "userinfo":
+        userinfo = draw(st.sampled_from(["user@", "user:pw@", "@", ":@"]))
+    elif mutation == "host":
+        host = draw(
+            st.sampled_from(
+                [
+                    "untrusted.example.com",
+                    "client.example.com.evil.example",
+                    "evilclient.example.com",
+                    "example.com",
+                ]
+            )
+        )
+    elif mutation == "port":
+        port = ":" + draw(
+            st.text(string.ascii_letters, min_size=1, max_size=4)
+            | st.integers(65536, 10**6).map(str)
+        )
+    elif mutation == "no_path":
+        path = draw(st.sampled_from(["", "/"]))
+    elif mutation == "dot_segment":
+        dot = "".join(draw(_DOTS) for _ in range(draw(st.sampled_from([1, 2]))))
+        segments.insert(draw(st.integers(0, len(segments))), dot)
+        path = "/" + "/".join(segments)
+    return f"{scheme}://{userinfo}{host}{port}{path}", mutation is None
+
+
+@given(client_id_urls())
+@example(("https://client.example.com/a/%2e%2e/metadata.json", False))
+@example(("https://client.example.com/a/%2E/metadata.json", False))
+async def test_client_id_url_is_accepted_exactly_when_valid(case):
+    """Draft §3 plus the host allowlist; a rejection never reaches the network."""
+    client_id, valid = case
+    cimd._cache.clear()
+    document = {**DOCUMENT, "client_id": client_id}
+    fetch = AsyncMock(return_value=json.dumps(document).encode())
+    with patch.object(cimd, "_fetch", new=fetch):
+        if not valid:
+            with pytest.raises(cimd.CIMDError):
+                await cimd.get_client_metadata(client_id)
+            fetch.assert_not_called()
+            return
+        assert await cimd.get_client_metadata(client_id) == document
+    fetch.assert_awaited_once()
+
+
+@given(st.text(string.ascii_letters + string.digits, max_size=6))
+@example("frag")
+@example("")  # urlsplit drops an empty fragment, so it once slipped through
+async def test_a_client_id_with_a_fragment_is_rejected(fragment):
+    client_id = f"{CLIENT_ID}#{fragment}"
     with patch.object(cimd, "_fetch", new=AsyncMock()) as fetch:
         with pytest.raises(cimd.CIMDError):
             await cimd.get_client_metadata(client_id)
     fetch.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "host",
-    [
-        "127.0.0.1",
-        "10.1.2.3",
-        "169.254.169.254",
-        "::1",
-        # NAT64 well-known prefix (RFC 6052) encoding 127.0.0.1 and 10.1.2.3.
-        # ipaddress calls the whole /96 global, but a DNS64/NAT64 path
-        # translates these straight back to the embedded IPv4 address.
-        "64:ff9b::7f00:1",
-        "64:ff9b::a01:203",
-    ],
+# Non-public ranges an SSRF would aim at: loopback, RFC 1918, link-local (cloud
+# metadata at 169.254.169.254), CGNAT, "this network", ULA.
+_NON_PUBLIC_NETWORKS = [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+    "100.64.0.0/10",
+    "0.0.0.0/8",
+    "::1/128",
+    "fc00::/7",
+]
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _nat64(v4: ipaddress.IPv4Address) -> str:
+    return str(ipaddress.IPv6Address(int(_NAT64.network_address) | int(v4)))
+
+
+@given(
+    st.sampled_from(_NON_PUBLIC_NETWORKS).flatmap(
+        lambda net: st.ip_addresses(network=net)
+    ),
+    st.booleans(),
 )
-async def test_non_public_address_is_refused(host):
+@example(ipaddress.ip_address("169.254.169.254"), False)
+# The NAT64 well-known prefix (RFC 6052): ipaddress calls the whole /96 global,
+# but a DNS64/NAT64 path translates these straight back to the embedded IPv4.
+@example(ipaddress.ip_address("127.0.0.1"), True)
+@example(ipaddress.ip_address("10.1.2.3"), True)
+async def test_non_public_address_is_refused(address, via_nat64):
+    host = _nat64(address) if via_nat64 and address.version == 4 else str(address)
     with pytest.raises(cimd.CIMDError, match="not publicly routable"):
         await cimd._resolve_public_address(host, 443)
+
+
+@given(st.ip_addresses(v=4))
+def test_nat64_address_is_routable_exactly_when_its_ipv4_is(v4):
+    assert cimd._is_globally_routable(_nat64(v4)) == cimd._is_globally_routable(str(v4))
+
+
+_json = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
+    max_leaves=10,
+)
+
+
+@given(
+    st.binary()
+    | _json.map(lambda v: json.dumps(v).encode())
+    | st.dictionaries(
+        st.sampled_from(
+            [
+                "client_id",
+                "redirect_uris",
+                "client_secret",
+                "token_endpoint_auth_method",
+            ]
+        ),
+        _json | st.just(CLIENT_ID) | st.lists(st.text()),
+    ).map(lambda v: json.dumps(v).encode())
+    # Well-formed documents, so the accepting branch is reached too.
+    | st.fixed_dictionaries(
+        {
+            "client_id": st.just(CLIENT_ID),
+            "redirect_uris": st.lists(st.text(), min_size=1),
+        },
+        optional={"client_name": _json, "token_endpoint_auth_method": st.text()},
+    ).map(lambda v: json.dumps(v).encode())
+)
+@example(b"\xff\xfe")  # not UTF-8
+def test_validate_document_raises_only_cimd_error(body):
+    """The document is attacker-controlled bytes: any failure is a CIMDError."""
+    try:
+        document = cimd._validate_document(CLIENT_ID, body)
+    except cimd.CIMDError:
+        event("rejected")
+        return
+    event("accepted")
+    assert document["client_id"] == CLIENT_ID
+    uris = document["redirect_uris"]
+    assert uris and all(isinstance(u, str) for u in uris)
 
 
 @pytest.mark.parametrize(

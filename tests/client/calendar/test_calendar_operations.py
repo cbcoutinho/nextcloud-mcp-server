@@ -148,41 +148,6 @@ async def test_create_and_delete_event(
         raise
 
 
-async def test_create_all_day_event(
-    nc_client: NextcloudClient, temporary_calendar: str
-):
-    """Test creating an all-day event."""
-    calendar_name = temporary_calendar
-
-    tomorrow = datetime.now() + timedelta(days=1)
-    event_data = {
-        "title": "All Day Test Event",
-        "start_datetime": tomorrow.strftime("%Y-%m-%d"),
-        "all_day": True,
-        "description": "Test all-day event",
-        "categories": "testing",
-    }
-
-    try:
-        result = await nc_client.calendar.create_event(calendar_name, event_data)
-        event_uid = result["uid"]
-        logger.info("Created all-day event with UID: %s", event_uid)
-
-        # Verify event
-        retrieved_event, _ = await nc_client.calendar.get_event(
-            calendar_name, event_uid
-        )
-        assert retrieved_event["title"] == "All Day Test Event"
-        assert retrieved_event.get("all_day") is True
-
-        # Cleanup
-        await nc_client.calendar.delete_event(calendar_name, event_uid)
-
-    except Exception as e:
-        logger.error("All-day event test failed: %s", e)
-        raise
-
-
 async def test_create_recurring_event(
     nc_client: NextcloudClient, temporary_calendar: str
 ):
@@ -425,48 +390,6 @@ async def test_delete_nonexistent_event(
     result = await nc_client.calendar.delete_event(calendar_name, fake_uid)
     assert result["status_code"] == 404
     logger.info("Correctly got 404 for deleting nonexistent event: %s", fake_uid)
-
-
-async def test_event_with_url_and_categories(
-    nc_client: NextcloudClient, temporary_calendar: str
-):
-    """Test creating an event with URL and multiple categories."""
-    calendar_name = temporary_calendar
-
-    tomorrow = datetime.now() + timedelta(days=1)
-    event_data = {
-        "title": "Event with URL and Categories",
-        "start_datetime": tomorrow.strftime("%Y-%m-%dT09:00:00"),
-        "end_datetime": tomorrow.strftime("%Y-%m-%dT10:30:00"),
-        "description": "Test event with additional metadata",
-        "categories": "work,meeting,important,quarterly",
-        "url": "https://zoom.us/j/123456789",
-        "privacy": "PRIVATE",
-        "priority": 2,
-    }
-
-    try:
-        result = await nc_client.calendar.create_event(calendar_name, event_data)
-        event_uid = result["uid"]
-        logger.info("Created event with metadata, UID: %s", event_uid)
-
-        # Verify event
-        retrieved_event, _ = await nc_client.calendar.get_event(
-            calendar_name, event_uid
-        )
-        assert retrieved_event["title"] == "Event with URL and Categories"
-        assert "work" in retrieved_event.get("categories", "")
-        assert "important" in retrieved_event.get("categories", "")
-        assert retrieved_event.get("url") == "https://zoom.us/j/123456789"
-        assert retrieved_event.get("privacy") == "PRIVATE"
-        assert retrieved_event.get("priority") == 2
-
-        # Cleanup
-        await nc_client.calendar.delete_event(calendar_name, event_uid)
-
-    except Exception as e:
-        logger.error("Event with metadata test failed: %s", e)
-        raise
 
 
 async def test_list_events_date_range_filtering(

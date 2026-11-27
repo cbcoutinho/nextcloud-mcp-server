@@ -81,7 +81,7 @@ def _parse_client_id_url(client_id: str) -> SplitResult:
         parts.scheme != "https"
         or not parts.hostname
         or parts.path in ("", "/")
-        or parts.fragment
+        or "#" in client_id  # even an empty fragment, which urlsplit drops
         or parts.username is not None
         or parts.password is not None
         or "." in segments

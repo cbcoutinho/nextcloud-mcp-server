@@ -24,9 +24,9 @@ def normalize_search_response(data):
         return []
 
 
-@pytest.fixture
-async def search_test_files(nc_client: NextcloudClient):
-    """Create test files for WebDAV search testing via MCP."""
+@pytest.fixture(scope="module")
+async def search_test_files(anyio_backend, nc_client: NextcloudClient):
+    """Create test files for WebDAV search testing via MCP. Module-scoped: every test only reads them."""
     test_dir = f"mcp_webdav_search_{uuid.uuid4().hex[:8]}"
 
     # Create base directory

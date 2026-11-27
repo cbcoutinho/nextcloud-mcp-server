@@ -1,10 +1,11 @@
 """Unit tests for DCR proxy: static client short-circuit and registration_not_supported."""
 
 import json
+import string
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from hypothesis import example, given
+from hypothesis import event, example, given
 from hypothesis import strategies as st
 
 import nextcloud_mcp_server.auth.client_registry as registry_mod
@@ -21,47 +22,75 @@ _PUBLIC = {"token_endpoint_auth_method": "none"}
 # --- application_type for public loopback clients (MCPJam, browser inspectors) ---
 
 
-@pytest.mark.parametrize(
-    ("body", "expected"),
-    [
-        (
-            {**_PUBLIC, "redirect_uris": ["http://localhost:6274/oauth/callback"]},
-            "native",
-        ),
-        ({**_PUBLIC, "redirect_uris": ["http://127.0.0.1:33418/cb"]}, "native"),
-        ({**_PUBLIC, "redirect_uris": ["http://[::1]:8080/cb"]}, "native"),
-        ({**_PUBLIC, "redirect_uris": ["com.example.app:/oauth2redirect"]}, "native"),
-        # A real web redirect stays web; the IdP decides whether to accept it.
-        ({**_PUBLIC, "redirect_uris": ["https://app.example.com/cb"]}, None),
-        (
-            {
-                **_PUBLIC,
-                "redirect_uris": ["http://localhost/cb", "https://x.example/cb"],
-            },
-            None,
-        ),
-        ({**_PUBLIC, "redirect_uris": ["http://localhost.evil.example/cb"]}, None),
-        ({**_PUBLIC, "redirect_uris": ["javascript:alert(1)"]}, None),
-        ({**_PUBLIC, "redirect_uris": []}, None),
-        # Confidential clients and an explicit application_type are untouched.
-        (
-            {
-                "token_endpoint_auth_method": "client_secret_basic",
-                "redirect_uris": ["http://localhost/cb"],
-            },
-            None,
-        ),
-        (
-            {
-                **_PUBLIC,
-                "application_type": "web",
-                "redirect_uris": ["http://localhost/cb"],
-            },
-            "web",
-        ),
-    ],
+_words = st.text(string.ascii_lowercase, min_size=1, max_size=6)
+_ports = st.none() | st.integers(1, 65535)
+_paths = st.lists(_words, max_size=3).map(lambda p: "/" + "/".join(p))
+
+
+def _http(host: str, port: int | None, path: str) -> str:
+    return f"http://{host}{f':{port}' if port else ''}{path}"
+
+
+# RFC 8252 §7.3 loopback redirects and §7.1 private-use (reverse-DNS) schemes.
+_native_uris = st.builds(
+    _http, st.sampled_from(["localhost", "127.0.0.1", "[::1]"]), _ports, _paths
+) | st.builds(lambda a, b, path: f"com.{a}.{b}:{path}", _words, _words, _paths)
+
+# Everything a browser can open, plus loopback lookalikes.
+_web_uris = (
+    st.builds(
+        _http,
+        st.sampled_from(["localhost.evil.example", "127.0.0.2", "app.example.com"]),
+        _ports,
+        _paths,
+    )
+    | st.builds(
+        lambda host, path: f"https://{host}{path}",
+        st.sampled_from(["app.example.com", "localhost", "127.0.0.1"]),
+        _paths,
+    )
+    | st.builds(
+        lambda scheme, rest: f"{scheme}:{rest}",
+        st.sampled_from(["javascript", "data", "file", "vbscript"]),
+        _words,
+    )
 )
-def test_native_application_type(body, expected):
+
+
+@st.composite
+def registrations(draw):
+    """``(body, expected application_type)``: a DCR body and how it is forwarded.
+
+    Native only for a public client with no application_type whose redirects
+    are all native; otherwise forwarded unchanged.
+    """
+    native = draw(st.booleans())
+    uris = draw(st.lists(_native_uris, min_size=1, max_size=3))
+    if not native:
+        breaker = draw(st.sampled_from(["web_uri", "no_uris", "confidential", "typed"]))
+        event(f"breaker: {breaker}")
+        if breaker == "web_uri":
+            uris.insert(draw(st.integers(0, len(uris))), draw(_web_uris))
+        elif breaker == "no_uris":
+            uris = []
+    body = {"token_endpoint_auth_method": "none", "redirect_uris": uris}
+    if not native and breaker == "confidential":
+        body["token_endpoint_auth_method"] = draw(
+            st.sampled_from(["client_secret_basic", "client_secret_post", "None"])
+        )
+    if not native and breaker == "typed":
+        body["application_type"] = draw(st.sampled_from(["web", "native", ""]))
+    event(f"native: {native}")
+    return body, "native" if native else body.get("application_type")
+
+
+@given(registrations())
+@example(
+    ({**_PUBLIC, "redirect_uris": ["http://localhost:6274/oauth/callback"]}, "native")
+)  # MCPJam
+@example(({**_PUBLIC, "redirect_uris": ["http://localhost.evil.example/cb"]}, None))
+def test_native_application_type(case):
+    body, expected = case
     assert _with_native_application_type(body).get("application_type") == expected
 
 
