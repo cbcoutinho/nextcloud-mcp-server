@@ -11,6 +11,7 @@ import logging
 from datetime import timedelta
 
 import pytest
+from caldav.lib import error as caldav_error
 
 pytestmark = pytest.mark.unit
 
@@ -1207,6 +1208,142 @@ def test_todo_reminders_round_trip():
     assert client._parse_ical_todo(ical)["reminders"] == [
         {"action": "DISPLAY", "description": "Soon", "minutes_before": 360}
     ]
+
+
+def test_todo_parent_round_trip_and_clear():
+    client = _pure_client()
+    created = client._create_ical_todo(
+        {"summary": "Child", "parent_uid": "parent-uid"}, "child-uid"
+    )
+    parsed = client._parse_ical_todo(created)
+    assert parsed["parent_uid"] == "parent-uid"
+
+    updated = client._merge_ical_todo_properties(created, {"parent_uid": ""})
+    assert "parent_uid" not in client._parse_ical_todo(updated)
+
+
+def test_todo_parent_change_preserves_non_parent_related_to():
+    client = _pure_client()
+    from icalendar import Calendar, vText
+
+    created = client._create_ical_todo(
+        {"summary": "Child", "parent_uid": "old-parent"}, "child-uid"
+    )
+    cal = Calendar.from_ical(created)
+    todo = next(c for c in cal.walk() if c.name == "VTODO")
+    related = vText("related-task")
+    related.params["RELTYPE"] = "SIBLING"
+    todo.add("RELATED-TO", related)
+
+    updated = client._merge_ical_todo_properties(
+        cal.to_ical().decode(), {"parent_uid": "new-parent"}
+    )
+    parsed = Calendar.from_ical(updated)
+    component = next(c for c in parsed.walk() if c.name == "VTODO")
+    raw_relations = component.get("RELATED-TO")
+    relations = raw_relations if isinstance(raw_relations, list) else [raw_relations]
+    assert {
+        (str(value), value.params.get("RELTYPE", "PARENT")) for value in relations
+    } == {
+        ("new-parent", "PARENT"),
+        ("related-task", "SIBLING"),
+    }
+    assert client._parse_ical_todo(updated)["parent_uid"] == "new-parent"
+
+
+@pytest.mark.anyio
+async def test_move_todo_delete_failure_keeps_source_and_reports_destination(mocker):
+    from nextcloud_client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+    source_todo = mocker.Mock(data="BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+    source_todo.load = mocker.AsyncMock()
+    source_todo.url = "https://cloud.example.org/source/task.ics"
+    source = mocker.Mock()
+    target = mocker.Mock()
+    target.save_todo = mocker.AsyncMock(return_value=mocker.Mock(url="target/task.ics"))
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_get_calendar", side_effect=[source, target])
+    mocker.patch.object(
+        client,
+        "_async_object_by_uid",
+        mocker.AsyncMock(
+            side_effect=[source_todo, caldav_error.NotFoundError("missing")]
+        ),
+    )
+    mocker.patch.object(
+        client,
+        "_delete_dav_object",
+        mocker.AsyncMock(return_value={"success": False}),
+    )
+
+    with pytest.raises(RuntimeError, match="both copies remain"):
+        await client.move_todo("source", "target", "stable-uid")
+
+    target.save_todo.assert_awaited_once_with(ical=source_todo.data)
+
+
+@pytest.mark.anyio
+async def test_move_todo_destination_write_failure_keeps_source(mocker):
+    from nextcloud_client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+    source_todo = mocker.Mock(data="BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+    source_todo.load = mocker.AsyncMock()
+    source = mocker.Mock()
+    target = mocker.Mock()
+    target.save_todo = mocker.AsyncMock(side_effect=RuntimeError("write failed"))
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_get_calendar", side_effect=[source, target])
+    mocker.patch.object(
+        client,
+        "_async_object_by_uid",
+        mocker.AsyncMock(
+            side_effect=[source_todo, caldav_error.NotFoundError("missing")]
+        ),
+    )
+    delete = mocker.patch.object(client, "_delete_dav_object", mocker.AsyncMock())
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        await client.move_todo("source", "target", "stable-uid")
+
+    delete.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_move_todo_success(mocker):
+    from nextcloud_client.calendar import CalendarClient
+
+    client = CalendarClient("https://cloud.example.org", "alice")
+    source_todo = mocker.Mock(data="complete raw calendar")
+    source_todo.load = mocker.AsyncMock()
+    source = mocker.Mock()
+    target = mocker.Mock()
+    target.save_todo = mocker.AsyncMock(return_value=mocker.Mock(url="target/task.ics"))
+    mocker.patch.object(client, "_ensure_calendar_home", mocker.AsyncMock())
+    mocker.patch.object(client, "_get_calendar", side_effect=[source, target])
+    mocker.patch.object(
+        client,
+        "_async_object_by_uid",
+        mocker.AsyncMock(
+            side_effect=[source_todo, caldav_error.NotFoundError("missing")]
+        ),
+    )
+    delete = mocker.patch.object(
+        client,
+        "_delete_dav_object",
+        mocker.AsyncMock(return_value={"success": True}),
+    )
+
+    result = await client.move_todo("source", "target", "stable-uid")
+
+    target.save_todo.assert_awaited_once_with(ical="complete raw calendar")
+    delete.assert_awaited_once()
+    assert result == {
+        "uid": "stable-uid",
+        "href": "target/task.ics",
+        "calendar_name": "target",
+    }
 
 
 def test_todo_reminder_without_a_description_says_todo():

@@ -354,6 +354,9 @@ class Todo(BaseModel):
     """Model for a CalDAV todo/task (VTODO)."""
 
     uid: str = Field(description="Todo UID")
+    parent_uid: Optional[str] = Field(
+        None, description="UID of this task's parent task"
+    )
     summary: str = Field(description="Todo summary/title")
     description: str = Field(default="", description="Todo description")
     status: str = Field(
