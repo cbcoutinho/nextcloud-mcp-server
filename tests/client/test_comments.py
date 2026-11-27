@@ -12,11 +12,12 @@ import re
 import pytest
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
-
-from nextcloud_mcp_server.utils.message_splitter import (
+from nextcloud_client.comments import (
     _PHP_TRIM_CHARS,
+    _SEPARATORS,
     MENTION_PATTERN,
     PART_PREFIX_TEMPLATE,
+    _candidate_offsets,
     measured_length,
     split_message,
 )
@@ -218,9 +219,7 @@ def test_non_convergence_fails_loudly_rather_than_silently(monkeypatch):
     sized for a smaller total than they actually carry, which would silently
     break the length invariant for a caller using a different max_length.
     """
-    monkeypatch.setattr(
-        "nextcloud_mcp_server.utils.message_splitter._MAX_PREFIX_ITERATIONS", 1
-    )
+    monkeypatch.setattr("nextcloud_client.comments._MAX_PREFIX_ITERATIONS", 1)
     message = " ".join(f"word{i:04d}" for i in range(2000))
 
     with pytest.raises(RuntimeError, match="did not converge"):
@@ -241,3 +240,34 @@ def test_max_length_too_small_for_the_prefix_is_rejected():
 def test_default_prefix_template_shape():
     """The docstrings promise agents an ``(i/N) `` marker -- pin it."""
     assert PART_PREFIX_TEMPLATE.format(index=2, total=7) == "(2/7) "
+
+
+@given(messages(), max_lengths)
+@example(_WIDTH_BOUNDARY, LIMIT)
+@example("z" * 1500, LIMIT)
+def test_candidate_offsets_match_langchain(message, budget):
+    """The port of RecursiveCharacterTextSplitter finds the same cut points.
+
+    LangChain is a server dependency, not a client one, so this runs only where
+    it is installed (the repo's dev environment).
+    """
+    splitters = pytest.importorskip("langchain_text_splitters")
+    text = message.strip(_PHP_TRIM_CHARS)
+    splitter = splitters.RecursiveCharacterTextSplitter(
+        separators=list(_SEPARATORS),
+        is_separator_regex=True,
+        chunk_size=budget,
+        chunk_overlap=0,
+        keep_separator="start",
+        add_start_index=True,
+        strip_whitespace=True,
+    )
+    expected = sorted(
+        {
+            offset
+            for document in splitter.create_documents([text])
+            if (offset := document.metadata["start_index"]) > 0
+        }
+    )
+
+    assert _candidate_offsets(text, budget) == expected

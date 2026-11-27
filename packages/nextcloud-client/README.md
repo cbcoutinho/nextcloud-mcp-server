@@ -52,6 +52,31 @@ NextcloudClient(..., verify=False)  # self-signed dev instances only
 NextcloudClient(..., keepalive=False)  # fresh connection per request
 ```
 
+### Long Deck comments
+
+Nextcloud rejects comments over 1000 characters (`HTTP 400 "Message exceeds
+allowed character limit of 1000"`). `create_split_comment` posts a longer
+message as a thread of up to 10 parts, each prefixed `(i/N)`, with parts 2..N
+replying to part 1:
+
+```python
+from nextcloud_client.deck import (
+    CommentTooLongToSplitError,
+    PartialSplitCommentError,
+    split_comment,
+)
+
+posted = await nc.deck.create_split_comment(card_id, long_text)  # list[DeckComment]
+parts = split_comment(long_text)  # the same parts, without posting
+```
+
+`CommentTooLongToSplitError` means more than 10 parts would be needed, and
+nothing was posted. `PartialSplitCommentError` means a part failed: its
+`posted` attribute lists the comments that were posted. Post only the remaining
+text, with `parent_id=posted[0].id`, rather than re-sending the whole message.
+`nextcloud_client.comments` has the underlying `split_message`,
+`measured_length` and `COMMENT_MAX_LENGTH`.
+
 ### Metrics and tracing
 
 The clients have no dependency on prometheus or OpenTelemetry. To observe them,
