@@ -5,17 +5,13 @@ Rather than truncating -- which silently corrupts an activity log while
 reporting success -- this module cuts a message into parts that each fit, on the
 most structural boundary available.
 
-This is deliberately *not* :mod:`nextcloud_mcp_server.vector.document_chunker`.
-That one is async, overlap-based (overlap would duplicate text into the comment
-thread) and tuned for MB-scale RAG documents. Here we want a synchronous,
-exact-slice split of a few kilobytes.
-
-The boundary rules come from LangChain's ``RecursiveCharacterTextSplitter``,
-which is already a dependency. It is used as a *cut-offset finder*: we take the
-offsets it would split at and slice the original string ourselves, so every part
-is an exact substring of the input. That keeps the round-trip exact -- LangChain
-drops separators from the chunks it returns, which for an activity log would
-quietly mangle the text.
+The boundary rules are those of LangChain's ``RecursiveCharacterTextSplitter``,
+ported here (``_candidate_offsets``) so the client does not depend on
+LangChain. They are used as a *cut-offset finder*: we take the offsets it would
+split at and slice the original string ourselves, so every part is an exact
+substring of the input. That keeps the round-trip exact -- LangChain drops
+separators from the chunks it returns, which for an activity log would quietly
+mangle the text.
 """
 
 import bisect
@@ -23,13 +19,10 @@ import logging
 import re
 from typing import Final
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 logger = logging.getLogger(__name__)
 
 # Break preference, most structural first. Regexes, because the heading and
-# sentence rules need them (hence is_separator_regex=True below). The trailing
-# "" is LangChain's hard-cut fallback and is what bounds every chunk by
+# sentence rules need them. The trailing "" is the hard-cut fallback and is what bounds every chunk by
 # chunk_size, so it must stay last.
 _SEPARATORS: Final[tuple[str, ...]] = (
     r"\n#{1,6} ",  # markdown headings
@@ -208,33 +201,87 @@ def _prefix_width(part_prefix_template: str | None, total: int) -> int:
 
 
 def _candidate_offsets(text: str, budget: int) -> list[int]:
-    """Offsets in ``text`` that the boundary rules consider legal cut points."""
-    splitter = RecursiveCharacterTextSplitter(
-        separators=list(_SEPARATORS),
-        is_separator_regex=True,
-        chunk_size=budget,
-        chunk_overlap=0,
-        keep_separator="start",
-        add_start_index=True,
-        strip_whitespace=True,
-    )
-    documents = splitter.create_documents([text])
-    # start_index is the chunk's offset in the original text; 0 is the start of
-    # the message, which is never a cut. -1 means LangChain could not locate the
-    # chunk, which should not happen but must not become a bogus offset.
-    return sorted(
-        {
-            offset
-            for document in documents
-            if (offset := document.metadata.get("start_index", -1)) > 0
-        }
-    )
+    """Offsets in ``text`` that the boundary rules consider legal cut points.
+
+    The chunk start offsets LangChain's ``RecursiveCharacterTextSplitter``
+    reports for ``separators=_SEPARATORS, is_separator_regex=True,
+    chunk_size=budget, chunk_overlap=0, keep_separator="start",
+    add_start_index=True`` -- a port, pinned against LangChain by a
+    differential test, so the client needs no LangChain dependency.
+    """
+    offsets: set[int] = set()
+    index = 0
+    previous_length = 0
+    for chunk in _recursive_split(text, _SEPARATORS, budget):
+        # LangChain's add_start_index: locate each chunk after the previous one.
+        index = text.find(chunk, max(0, index + previous_length))
+        previous_length = len(chunk)
+        # 0 is the start of the message, never a cut; -1 (chunk not found)
+        # should not happen but must not become a bogus offset.
+        if index > 0:
+            offsets.add(index)
+    return sorted(offsets)
+
+
+def _recursive_split(text: str, separators: tuple[str, ...], budget: int) -> list[str]:
+    """LangChain's ``RecursiveCharacterTextSplitter._split_text``, specialised."""
+    # The first separator that occurs in the text; "" always matches.
+    for i, separator in enumerate(separators):
+        if not separator or re.search(separator, text):
+            remaining = separators[i + 1 :]
+            break
+    else:  # pragma: no cover - _SEPARATORS ends with ""
+        separator, remaining = "", ()
+
+    if separator:
+        # keep_separator="start": each separator stays at the head of the piece
+        # that follows it.
+        pieces = re.split(f"({separator})", text)
+        splits = [pieces[0]] + [
+            pieces[i] + pieces[i + 1] for i in range(1, len(pieces) - 1, 2)
+        ]
+    else:
+        splits = list(text)
+
+    chunks: list[str] = []
+    small: list[str] = []
+    for piece in filter(None, splits):
+        if len(piece) < budget:
+            small.append(piece)
+            continue
+        chunks.extend(_merge(small, budget))
+        small = []
+        chunks.extend(
+            _recursive_split(piece, remaining, budget) if remaining else [piece]
+        )
+    chunks.extend(_merge(small, budget))
+    return chunks
+
+
+def _merge(pieces: list[str], budget: int) -> list[str]:
+    """LangChain's ``_merge_splits`` with no separator and no overlap.
+
+    Greedily joins pieces up to ``budget``; each chunk is ``str.strip()``-ed
+    (LangChain's strip_whitespace) and dropped if that leaves it empty.
+    """
+    chunks: list[str] = []
+    current: list[str] = []
+    total = 0
+    for piece in pieces:
+        if current and total + len(piece) > budget:
+            chunks.append("".join(current).strip())
+            current, total = [], 0
+        current.append(piece)
+        total += len(piece)
+    if current:
+        chunks.append("".join(current).strip())
+    return [chunk for chunk in chunks if chunk]
 
 
 def _pack(text: str, budget: int) -> list[str]:
     """Greedily fill parts up to ``budget``, cutting at the rightmost legal offset.
 
-    LangChain's own chunks are not used directly because it merges only within a
+    The recursive splitter's chunks are not used directly because it merges only within a
     recursion level and so under-packs: on a 312-character sample at
     ``chunk_size=120`` it returns six chunks where four fit. Every extra part is
     an extra comment on the card, so packing greedily is worth the pass.

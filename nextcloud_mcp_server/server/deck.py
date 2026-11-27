@@ -8,7 +8,18 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
 from nextcloud_client import NextcloudClient
-from nextcloud_client.deck import _normalize_color
+from nextcloud_client.comments import (
+    COMMENT_MAX_LENGTH,
+    is_blank_comment,
+    measured_length,
+)
+from nextcloud_client.deck import (
+    MAX_SPLIT_COMMENT_PARTS,
+    CommentTooLongToSplitError,
+    PartialSplitCommentError,
+    _normalize_color,
+    split_comment,
+)
 from nextcloud_client.models.deck import (
     DeckAssignedUser,
     DeckBoard,
@@ -48,12 +59,6 @@ from nextcloud_mcp_server.models.deck import (
 )
 from nextcloud_mcp_server.observability.metrics import instrument_tool
 from nextcloud_mcp_server.request_context import current_context
-from nextcloud_mcp_server.utils.message_splitter import (
-    COMMENT_MAX_LENGTH,
-    is_blank_comment,
-    measured_length,
-    split_message,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -124,11 +129,6 @@ async def _require_card_fields_supported(
 # below -- and their tests -- keep reading the same value as file comments.
 _COMMENT_MAX_LENGTH: Final[int] = COMMENT_MAX_LENGTH
 
-# Ceiling on overflow="split". Ten comments is already a wall of text on a card;
-# past that the content wants to be a note or a file attachment, not an
-# activity-log entry.
-_MAX_SPLIT_PARTS: Final[int] = 10
-
 # How a comment overflowing _COMMENT_MAX_LENGTH is handled.
 CommentOverflow = Literal["error", "split"]
 
@@ -155,19 +155,7 @@ def _validate_comment_message(message: str) -> None:
         raise ToolError(_too_long_message(message, length))
 
 
-def _min_parts_for(length: int) -> int:
-    """Lower bound on the parts a message of ``length`` would need.
-
-    Ignores boundaries and the ``(i/N)`` prefix, both of which only ever cost
-    budget -- so a real split needs at least this many. That makes it a cheap
-    way to rule a split out without running the splitter over a huge message,
-    which matters because this runs on the failure path that fires exactly when
-    a caller sends far too much.
-    """
-    return -(-length // _COMMENT_MAX_LENGTH)
-
-
-def _too_long_to_split_message(length: int, parts_needed: int | None) -> str:
+def _too_long_to_split_message(e: CommentTooLongToSplitError) -> str:
     """Explain a message too long for even the split path to help with.
 
     Shared by the error mode and the split mode so the two can never disagree:
@@ -175,15 +163,11 @@ def _too_long_to_split_message(length: int, parts_needed: int | None) -> str:
     would itself be rejected just restarts the retry loop this all exists to
     end.
     """
-    needed = (
-        str(parts_needed)
-        if parts_needed is not None
-        else f"at least {_min_parts_for(length)}"
-    )
+    needed = str(e.parts_needed) if e.exact else f"at least {e.parts_needed}"
     return (
-        f"Comment message is {length} characters; Nextcloud Deck allows "
+        f"Comment message is {e.length} characters; Nextcloud Deck allows "
         f"{_COMMENT_MAX_LENGTH} per comment. Splitting it would need {needed} "
-        f"comments, more than the {_MAX_SPLIT_PARTS}-part limit, so "
+        f"comments, more than the {MAX_SPLIT_COMMENT_PARTS}-part limit, so "
         f'overflow="split" will not work either. Nothing was posted. Content '
         f"this long belongs in a note (nc_notes_create_note) or a file "
         f"(nc_webdav_write_file) attached to the card with deck_attach_note / "
@@ -200,22 +184,17 @@ def _too_long_message(message: str, length: int) -> str:
     the exact overage, that nothing was written, and the parameter that fixes
     it -- along with what that parameter will cost.
     """
-    # Only promise a split that would actually be accepted. The cheap bound
-    # first, so a multi-megabyte paste never reaches the splitter.
-    if _min_parts_for(length) > _MAX_SPLIT_PARTS:
-        return _too_long_to_split_message(length, None)
-
+    # Only promise a split that would actually be accepted. Splitting here
+    # purely to quote a part count duplicates the work create_split_comment
+    # does if the caller then retries with overflow="split". That is
+    # deliberate: this is a rejection path, split_comment bounds the input
+    # cheaply before splitting, and telling the agent up front what the remedy
+    # costs is the whole point.
+    try:
+        parts = split_comment(message)
+    except CommentTooLongToSplitError as e:
+        return _too_long_to_split_message(e)
     overage = length - _COMMENT_MAX_LENGTH
-    # Splitting here purely to quote a part count duplicates the work
-    # _post_split_comment does if the caller then retries with overflow="split".
-    # That is deliberate: this is a rejection path, the input is bounded to
-    # _MAX_SPLIT_PARTS * _COMMENT_MAX_LENGTH by the check above, and telling the
-    # agent up front what the remedy costs is the whole point. Don't try to
-    # thread a cached result through -- the two calls are far apart and the
-    # coupling would cost more than the split.
-    parts = split_message(message, max_length=_COMMENT_MAX_LENGTH)
-    if len(parts) > _MAX_SPLIT_PARTS:
-        return _too_long_to_split_message(length, len(parts))
     return (
         f"Comment message is {length} characters; Nextcloud Deck's limit is "
         f"{_COMMENT_MAX_LENGTH} (measured after trimming whitespace, counting "
@@ -346,28 +325,22 @@ def _comment_http_error(
     return MCPError(code=-32603, message=reason)
 
 
-def _partial_split_error(
-    e: HTTPStatusError | RequestError,
-    *,
-    card_id: int,
-    posted: list[DeckComment],
-    failed_part: int,
-    total_parts: int,
-) -> MCPError:
+def _partial_split_error(error: PartialSplitCommentError) -> MCPError:
     """Report a split that died partway through.
 
-    No rollback is attempted, deliberately. Deleting the parts already posted
-    is itself a write that can 403 or time out, and a half-deleted thread is
-    harder to reason about than a clearly-labelled partial one -- it would also
-    destroy content a human may already have read. Deck has no transactional
-    multi-comment endpoint, so atomicity was never on the table; the honest
-    move is to say exactly what exists.
+    The client attempts no rollback (see PartialSplitCommentError): a
+    half-deleted thread is harder to reason about than a clearly-labelled
+    partial one, so the honest move is to say exactly what exists.
 
     The bracketed tail is a machine-readable summary for agents that
     pattern-match; the prose ahead of it carries the same facts for those that
     do not.
     """
-    posted_ids = [comment.id for comment in posted]
+    card_id = error.card_id
+    failed_part = error.failed_part
+    total_parts = error.total_parts
+    posted_ids = [comment.id for comment in error.posted]
+    e = error.__cause__
     detail = _ocs_error_message(e) if isinstance(e, HTTPStatusError) else str(e)
     reason = detail or str(e)
 
@@ -409,46 +382,16 @@ def _partial_split_error(
 async def _post_split_comment(
     client: NextcloudClient, card_id: int, message: str, parent_id: int | None
 ) -> CardCommentResponse:
-    """Post an over-length message as a numbered thread.
-
-    Everything checkable without writing is checked first, so a message that
-    cannot be posted never leaves a partial thread behind.
-    """
+    """Post an over-length message as a numbered thread (see create_split_comment)."""
     _validate_comment_message_not_blank(message)
-    length = measured_length(message)
-    # Cheap bound first, so an enormous paste is rejected without running the
-    # splitter over it.
-    if _min_parts_for(length) > _MAX_SPLIT_PARTS:
-        raise ToolError(_too_long_to_split_message(length, None))
-
-    parts = split_message(message, max_length=_COMMENT_MAX_LENGTH)
-    if len(parts) > _MAX_SPLIT_PARTS:
-        raise ToolError(_too_long_to_split_message(length, len(parts)))
-
-    posted: list[DeckComment] = []
-    for index, part in enumerate(parts, 1):
-        # Parts 2..N hang off part 1 so the card renders one thread rather than
-        # N unrelated comments.
-        reply_to = parent_id if index == 1 else posted[0].id
-        try:
-            posted.append(
-                await client.deck.create_comment(card_id, part, parent_id=reply_to)
-            )
-        except (HTTPStatusError, RequestError) as e:
-            raise _partial_split_error(
-                e,
-                card_id=card_id,
-                posted=posted,
-                failed_part=index,
-                total_parts=len(parts),
-            ) from e
-
-    logger.info(
-        "Split a %d-character comment into %d parts on card %s",
-        measured_length(message),
-        len(posted),
-        card_id,
-    )
+    try:
+        posted = await client.deck.create_split_comment(
+            card_id, message, parent_id=parent_id
+        )
+    except CommentTooLongToSplitError as e:
+        raise ToolError(_too_long_to_split_message(e)) from e
+    except PartialSplitCommentError as e:
+        raise _partial_split_error(e) from e
     return CardCommentResponse(comment=posted[0], parts=posted, part_count=len(posted))
 
 

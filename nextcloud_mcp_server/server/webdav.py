@@ -10,6 +10,11 @@ from httpx2 import HTTPStatusError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from nextcloud_client.comments import (
+    COMMENT_MAX_LENGTH,
+    is_blank_comment,
+    measured_length,
+)
 from nextcloud_client.webdav import (
     OversizeDownload,
     VersionLabelRejected,
@@ -61,11 +66,6 @@ from nextcloud_mcp_server.server.tag_exclusion import (
     is_path_excluded,
 )
 from nextcloud_mcp_server.server.webdav_image import configure_webdav_image_tools
-from nextcloud_mcp_server.utils.message_splitter import (
-    COMMENT_MAX_LENGTH,
-    is_blank_comment,
-    measured_length,
-)
 from nextcloud_mcp_server.utils.text_edit import (
     EditError,
     LineRangeError,

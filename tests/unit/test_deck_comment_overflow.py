@@ -12,6 +12,7 @@ by the ``basicauth_mode`` fixture, mirroring
 """
 
 from datetime import datetime, timezone
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -20,12 +21,12 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
+from nextcloud_client import deck as client_deck_module
+from nextcloud_client.deck import MAX_SPLIT_COMMENT_PARTS, DeckClient
 from nextcloud_client.models.deck import DeckComment
 
-from nextcloud_mcp_server.server import deck as deck_module
 from nextcloud_mcp_server.server.deck import (
     _COMMENT_MAX_LENGTH,
-    _MAX_SPLIT_PARTS,
     configure_deck_tools,
 )
 
@@ -86,6 +87,10 @@ def list_comments(deck_tools):
 def fake_client():
     client = SimpleNamespace()
     client.deck = AsyncMock()
+    # The real split loop, so tests see the individual create_comment calls.
+    client.deck.create_split_comment = partial(
+        DeckClient.create_split_comment, client.deck
+    )
     return client
 
 
@@ -257,12 +262,12 @@ async def test_message_needing_more_than_the_cap_posts_nothing(
 ):
     patch_get_client(fake_client)
 
-    message = long_message(_MAX_SPLIT_PARTS + 4)
+    message = long_message(MAX_SPLIT_COMMENT_PARTS + 4)
 
     with pytest.raises(ToolError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message=message, overflow="split")
 
-    assert f"{_MAX_SPLIT_PARTS}-part limit" in str(excinfo.value)
+    assert f"{MAX_SPLIT_COMMENT_PARTS}-part limit" in str(excinfo.value)
     assert "Nothing was posted" in str(excinfo.value)
     fake_client.deck.create_comment.assert_not_awaited()
 
@@ -280,14 +285,14 @@ async def test_error_mode_does_not_promise_a_split_that_would_be_rejected(
     feature exists to end.
     """
     patch_get_client(fake_client)
-    message = long_message(_MAX_SPLIT_PARTS + 5)
+    message = long_message(MAX_SPLIT_COMMENT_PARTS + 5)
 
     with pytest.raises(ToolError) as excinfo:
         await create_comment(ctx=ctx, card_id=42, message=message)
 
     text = str(excinfo.value)
     assert "will not work either" in text
-    assert f"{_MAX_SPLIT_PARTS}-part limit" in text
+    assert f"{MAX_SPLIT_COMMENT_PARTS}-part limit" in text
     assert "nc_notes_create_note" in text
 
     # And the split mode rejects the same message, for the same stated reason.
@@ -306,7 +311,7 @@ async def test_enormous_message_is_rejected_without_running_the_splitter(
     it has to stay cheap; the size alone rules a split out.
     """
     patch_get_client(fake_client)
-    spy = mocker.spy(deck_module, "split_message")
+    spy = mocker.spy(client_deck_module, "split_message")
 
     with pytest.raises(ToolError, match="will not work either"):
         await create_comment(

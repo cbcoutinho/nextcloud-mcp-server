@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from nextcloud_client.comments import COMMENT_MAX_LENGTH
 
 from nextcloud_mcp_server.server.webdav import configure_webdav_tools
-from nextcloud_mcp_server.utils.message_splitter import COMMENT_MAX_LENGTH
 
 pytestmark = pytest.mark.unit
 

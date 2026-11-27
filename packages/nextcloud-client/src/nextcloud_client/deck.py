@@ -1,11 +1,17 @@
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Final, List, Optional
 
 from httpx2 import HTTPStatusError, RequestError
 
 from .base import BaseNextcloudClient
+from .comments import (
+    COMMENT_MAX_LENGTH,
+    is_blank_comment,
+    measured_length,
+    split_message,
+)
 from .models.deck import (
     DeckACL,
     DeckAttachment,
@@ -20,6 +26,88 @@ from .models.deck import (
 from .ocs import OCS_REQUEST_HEADERS
 
 logger = logging.getLogger(__name__)
+
+
+# Ceiling on split comments. Ten comments is already a wall of text on a card;
+# past that the content wants to be a note or a file attachment, not an
+# activity-log entry.
+MAX_SPLIT_COMMENT_PARTS: Final[int] = 10
+
+
+class CommentTooLongToSplitError(ValueError):
+    """A comment would need more than ``MAX_SPLIT_COMMENT_PARTS`` parts.
+
+    Raised before anything is posted. ``parts_needed`` is the exact part count
+    when ``exact`` is true, otherwise a lower bound: a message whose size alone
+    rules a split out is never run through the splitter.
+    """
+
+    def __init__(self, length: int, parts_needed: int, *, exact: bool):
+        self.length = length
+        self.parts_needed = parts_needed
+        self.exact = exact
+        needed = str(parts_needed) if exact else f"at least {parts_needed}"
+        super().__init__(
+            f"Comment is {length} characters; splitting it into "
+            f"{COMMENT_MAX_LENGTH}-character comments would need {needed} parts, "
+            f"more than the {MAX_SPLIT_COMMENT_PARTS}-part limit"
+        )
+
+
+class PartialSplitCommentError(Exception):
+    """A split comment failed partway through; the earlier parts stay posted.
+
+    No rollback is attempted: deleting the posted parts is itself a write that
+    can fail, and would destroy content someone may already have read. Resume by
+    posting only the remaining text as a reply to ``posted[0]``, never by
+    re-sending the whole message. The HTTP error is chained as ``__cause__``.
+    """
+
+    def __init__(
+        self,
+        *,
+        card_id: int,
+        posted: list[DeckComment],
+        failed_part: int,
+        total_parts: int,
+    ):
+        self.card_id = card_id
+        self.posted = posted
+        self.failed_part = failed_part
+        self.total_parts = total_parts
+        super().__init__(
+            f"Split comment on card {card_id} failed at part "
+            f"{failed_part}/{total_parts}; already posted comment ids: "
+            f"{[comment.id for comment in posted]}"
+        )
+
+
+def split_comment(message: str) -> list[str]:
+    """Split a comment into the parts ``DeckClient.create_split_comment`` posts.
+
+    A message within ``COMMENT_MAX_LENGTH`` comes back unchanged as one part.
+    A longer one is cut on markdown heading, paragraph, line, sentence and word
+    boundaries (never inside an @-mention), and each part is prefixed
+    ``"(i/N) "``. Every part fits ``COMMENT_MAX_LENGTH`` as Nextcloud measures
+    it (see ``comments.measured_length``).
+
+    Raises:
+        ValueError: The message is blank.
+        CommentTooLongToSplitError: It needs more than
+            ``MAX_SPLIT_COMMENT_PARTS`` parts.
+    """
+    if is_blank_comment(message):
+        raise ValueError("Comment message must not be empty or whitespace-only")
+    length = measured_length(message)
+    # Ignoring boundaries and prefixes gives a lower bound on the part count,
+    # so an enormous paste is rejected without running the splitter over it.
+    min_parts = -(-length // COMMENT_MAX_LENGTH)
+    if min_parts > MAX_SPLIT_COMMENT_PARTS:
+        raise CommentTooLongToSplitError(length, min_parts, exact=False)
+    parts = split_message(message, max_length=COMMENT_MAX_LENGTH)
+    if len(parts) > MAX_SPLIT_COMMENT_PARTS:
+        raise CommentTooLongToSplitError(length, len(parts), exact=True)
+    return parts
 
 
 def _normalize_duedate(duedate: Optional[str]) -> Optional[str]:
@@ -881,6 +969,49 @@ class DeckClient(BaseNextcloudClient):
             headers=self._OCS_HEADERS,
         )
         return DeckComment(**response.json()["ocs"]["data"])
+
+    async def create_split_comment(
+        self, card_id: int, message: str, parent_id: Optional[int] = None
+    ) -> list[DeckComment]:
+        """Post ``message`` as one comment, or as a thread if it is too long.
+
+        The parts come from ``split_comment``. Part 1 replies to ``parent_id``
+        (if given) and parts 2..N reply to part 1, so the card shows one thread.
+        Everything checkable is checked before the first write.
+
+        Returns:
+            The posted comments in order; ``[0]`` is part 1.
+
+        Raises:
+            ValueError: The message is blank.
+            CommentTooLongToSplitError: It needs more than
+                ``MAX_SPLIT_COMMENT_PARTS`` parts. Nothing was posted.
+            PartialSplitCommentError: A part failed to post. Its ``posted``
+                lists the parts that were (empty if part 1 failed).
+        """
+        parts = split_comment(message)
+        posted: list[DeckComment] = []
+        for index, part in enumerate(parts, 1):
+            reply_to = parent_id if index == 1 else posted[0].id
+            try:
+                posted.append(
+                    await self.create_comment(card_id, part, parent_id=reply_to)
+                )
+            except (HTTPStatusError, RequestError) as e:
+                raise PartialSplitCommentError(
+                    card_id=card_id,
+                    posted=posted,
+                    failed_part=index,
+                    total_parts=len(parts),
+                ) from e
+        if len(posted) > 1:
+            logger.info(
+                "Split a %d-character comment into %d parts on card %s",
+                measured_length(message),
+                len(posted),
+                card_id,
+            )
+        return posted
 
     async def update_comment(
         self, card_id: int, comment_id: int, message: str
