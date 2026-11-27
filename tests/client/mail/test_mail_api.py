@@ -41,7 +41,7 @@ from nextcloud_client.mail import (
 from nextcloud_client.mail import _ocs_response as _unwrap_ocs
 
 from tests.client.conftest import create_mock_response
-from tests.strategies import json_values
+from tests.strategies import comparable_json_values, json_values
 
 logger = logging.getLogger(__name__)
 
@@ -993,16 +993,6 @@ def test_ocs_body_raises_only_the_documented_errors(content):
         pass
 
 
-#: JSON values without NaN, so a parsed payload can be compared with ``==``.
-_comparable_json = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats(allow_nan=False) | st.text(),
-    lambda inner: (
-        st.lists(inner, max_size=3) | st.dictionaries(st.text(), inner, max_size=3)
-    ),
-    max_leaves=8,
-)
-
-
 @st.composite
 def ocs_outcomes(draw):
     """``(statuscode as sent, the HTTP status a failure is raised with or None)``.
@@ -1018,7 +1008,7 @@ def ocs_outcomes(draw):
     return draw(st.sampled_from([code, str(code)])), code
 
 
-@given(ocs_outcomes(), _comparable_json, st.text())
+@given(ocs_outcomes(), comparable_json_values, st.text())
 def test_ocs_envelope_yields_its_data_or_raises_its_code(outcome, data, message):
     statuscode, failure = outcome
     body = {"ocs": {"meta": {"statuscode": statuscode, "message": message}}}

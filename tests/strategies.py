@@ -16,6 +16,9 @@ def _json(floats: st.SearchStrategy[float]) -> st.SearchStrategy:
 #: Any JSON value, floats (inf/nan) included: ``json.loads`` accepts ``Infinity``.
 json_values = _json(st.floats())
 
+#: JSON values without NaN, so a parsed payload can be compared with ``==``.
+comparable_json_values = _json(st.floats(allow_nan=False))
+
 #: JSON values ``httpx2.Response(json=...)`` can encode: it rejects inf and nan.
 wire_json_values = _json(st.floats(allow_nan=False, allow_infinity=False))
 

@@ -12,6 +12,7 @@ from nextcloud_mcp_server.vector.webhook_parser import (
     _indexable_suffixes,
     extract_document_task,
 )
+from tests.strategies import json_values
 
 
 @pytest.mark.unit
@@ -189,14 +190,6 @@ _EVENT_CLASSES = [
     "OCP\\SystemTag\\MapperEvent",
 ]
 
-#: Any JSON value, floats (inf/nan) included: what a payload field may hold.
-json_values = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda inner: (
-        st.lists(inner, max_size=3) | st.dictionaries(st.text(), inner, max_size=3)
-    ),
-    max_leaves=8,
-)
 _ids = st.integers() | st.text() | json_values
 _paths = (
     st.from_regex(

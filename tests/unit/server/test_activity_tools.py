@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import httpx2
 import pytest
 from hypothesis import given
-from hypothesis import strategies as st
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from nextcloud_client.models.activity import ActivityPage
@@ -15,6 +14,7 @@ from nextcloud_mcp_server.server.activity import (
     activity_file_paths,
     configure_activity_tools,
 )
+from tests.strategies import json_values
 
 pytestmark = pytest.mark.unit
 
@@ -141,13 +141,7 @@ async def test_403_without_a_cursor_does_not_blame_the_cursor(client, tools):
         await tools.nc_activity_list(SimpleNamespace())
 
 
-_json = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
-)
-
-
-@given(subject_rich=_json, object_name=_json)
+@given(subject_rich=json_values, object_name=json_values)
 def test_file_paths_never_raises_on_arbitrary_json(subject_rich, object_name):
     """subject_rich comes from the server: any JSON shape must be tolerated."""
     paths = activity_file_paths(

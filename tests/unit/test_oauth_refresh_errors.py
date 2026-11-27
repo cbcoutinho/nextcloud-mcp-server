@@ -18,6 +18,7 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from nextcloud_mcp_server.auth import oauth_routes
+from tests.strategies import json_values
 
 pytestmark = pytest.mark.unit
 
@@ -95,16 +96,11 @@ def _body(response) -> dict:
     return json.loads(bytes(response.body))
 
 
-_JSON = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda inner: st.lists(inner) | st.dictionaries(st.text(), inner),
-    max_leaves=5,
-)
-
-
 @given(
     st.one_of(
-        st.text(), st.text(st.characters(min_codepoint=0x20, max_codepoint=0x7E)), _JSON
+        st.text(),
+        st.text(st.characters(min_codepoint=0x20, max_codepoint=0x7E)),
+        json_values,
     )
 )
 @example("a" * 200)  # at the bound: kept

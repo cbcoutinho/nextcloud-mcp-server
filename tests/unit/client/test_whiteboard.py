@@ -21,16 +21,10 @@ from nextcloud_client.models.whiteboard import (
     summarize_board,
 )
 
+from tests.strategies import json_values
+
 pytestmark = pytest.mark.unit
 
-#: Any JSON value. Floats include inf/nan: ``json.loads`` accepts ``Infinity``.
-json_values = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda inner: (
-        st.lists(inner, max_size=3) | st.dictionaries(st.text(), inner, max_size=3)
-    ),
-    max_leaves=5,
-)
 
 #: Objects with the keys the summary reads, each holding an arbitrary value or
 #: a plausible one, so that generation reaches past the first type check.

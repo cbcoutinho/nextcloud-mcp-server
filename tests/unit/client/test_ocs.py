@@ -15,16 +15,9 @@ from nextcloud_client.ocs import (
     parse_ocs_envelope,
 )
 
-pytestmark = pytest.mark.unit
+from tests.strategies import json_values
 
-#: Any JSON value. Floats include inf/nan: ``json.loads`` accepts ``Infinity``.
-json_values = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda inner: (
-        st.lists(inner, max_size=3) | st.dictionaries(st.text(), inner, max_size=3)
-    ),
-    max_leaves=10,
-)
+pytestmark = pytest.mark.unit
 
 
 @given(

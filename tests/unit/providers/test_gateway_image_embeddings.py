@@ -19,6 +19,7 @@ from nextcloud_mcp_server.providers.gateway import (
     GatewayProvider,
     _raise_for_image_rejection,
 )
+from tests.strategies import json_values
 
 pytestmark = pytest.mark.unit
 
@@ -196,11 +197,6 @@ async def test_other_errors_stay_retryable(monkeypatch, response):
         await provider.embed_image_batch([PNG])
 
 
-_json = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
-    max_leaves=10,
-)
 # Hard-coded on purpose: an oracle independent of _PERMANENT_IMAGE_CODES.
 _PERMANENT = ["invalid_image", "unsupported_mime_type"]
 
@@ -231,18 +227,18 @@ def test_only_a_permanent_code_names_the_image(code, extra):
 # Arbitrary JSON reaches the object branch on few draws, so object bodies with
 # a dict detail are mixed in.
 _object_bodies = st.fixed_dictionaries(
-    {"detail": st.none() | st.text() | st.integers() | st.lists(_json)}
+    {"detail": st.none() | st.text() | st.integers() | st.lists(json_values)}
 ) | st.fixed_dictionaries(
     {
         "detail": st.fixed_dictionaries(
             {"code": st.text() | st.sampled_from(sorted(_PERMANENT_IMAGE_CODES))},
-            optional={"index": _json, "message": _json},
+            optional={"index": json_values, "message": json_values},
         )
     }
 )
 
 
-@given(_json | _object_bodies)
+@given(json_values | _object_bodies)
 @example([])
 @example("text")
 @example({"detail": {"code": []}})  # unhashable: once a TypeError on the set lookup

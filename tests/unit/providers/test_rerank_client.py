@@ -18,14 +18,9 @@ from nextcloud_mcp_server.providers.rerank import (
     RerankError,
     _parse_entry,
 )
+from tests.strategies import json_values
 
 pytestmark = pytest.mark.unit
-
-_json = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
-    max_leaves=10,
-)
 
 
 def _patch_transport(monkeypatch, handler):
@@ -333,7 +328,7 @@ class TestResponseParsing:
             )
 
     @given(
-        _json
+        json_values
         | st.fixed_dictionaries(
             {
                 "results": st.lists(
@@ -343,7 +338,7 @@ class TestResponseParsing:
                             "relevance_score": st.floats() | st.integers(),
                         }
                     )
-                    | _json,
+                    | json_values,
                     max_size=6,
                 )
             }

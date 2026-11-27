@@ -23,6 +23,7 @@ from nextcloud_mcp_server.auth.token_broker import (
     TokenBrokerService,
     refresh_token_lifetime,
 )
+from tests.strategies import json_values
 
 pytestmark = pytest.mark.unit
 
@@ -102,12 +103,6 @@ async def _stored_lifetime(path: str, **token_fields) -> int:
 
 _CAP = 3650 * _DAY
 
-_json = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda inner: st.lists(inner) | st.dictionaries(st.text(), inner),
-    max_leaves=5,
-)
-
 
 @given(st.integers(min_value=1, max_value=10**18), st.booleans())
 @example(900, False)  # Nextcloud oidc default: 15 minutes, not 90 days
@@ -124,7 +119,7 @@ def test_float_is_truncated_to_seconds(seconds):
     assert refresh_token_lifetime(seconds) == min(int(seconds), _CAP)
 
 
-@given(_json)
+@given(json_values)
 @example(0)  # Keycloak: offline token that does not expire
 @example(-60)
 @example(True)

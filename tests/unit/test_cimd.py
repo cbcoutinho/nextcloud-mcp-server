@@ -23,6 +23,7 @@ from nextcloud_mcp_server.auth.oauth_routes import (
     oauth_authorize,
 )
 from nextcloud_mcp_server.config import _reload_config
+from tests.strategies import json_values
 
 pytestmark = pytest.mark.unit
 
@@ -175,16 +176,9 @@ def test_nat64_address_is_routable_exactly_when_its_ipv4_is(v4):
     assert cimd._is_globally_routable(_nat64(v4)) == cimd._is_globally_routable(str(v4))
 
 
-_json = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
-    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
-    max_leaves=10,
-)
-
-
 @given(
     st.binary()
-    | _json.map(lambda v: json.dumps(v).encode())
+    | json_values.map(lambda v: json.dumps(v).encode())
     | st.dictionaries(
         st.sampled_from(
             [
@@ -194,7 +188,7 @@ _json = st.recursive(
                 "token_endpoint_auth_method",
             ]
         ),
-        _json | st.just(CLIENT_ID) | st.lists(st.text()),
+        json_values | st.just(CLIENT_ID) | st.lists(st.text()),
     ).map(lambda v: json.dumps(v).encode())
     # Well-formed documents, so the accepting branch is reached too.
     | st.fixed_dictionaries(
@@ -202,7 +196,7 @@ _json = st.recursive(
             "client_id": st.just(CLIENT_ID),
             "redirect_uris": st.lists(st.text(), min_size=1),
         },
-        optional={"client_name": _json, "token_endpoint_auth_method": st.text()},
+        optional={"client_name": json_values, "token_endpoint_auth_method": st.text()},
     ).map(lambda v: json.dumps(v).encode())
 )
 @example(b"\xff\xfe")  # not UTF-8
