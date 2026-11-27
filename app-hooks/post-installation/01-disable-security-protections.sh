@@ -10,6 +10,9 @@ echo "Bruteforce protection and rate limiting disabled."
 # cost (64 MiB, t=4) that was ~1 s per request on a loaded runner and the
 # largest single cost of the integration lanes. Hashes made at install time
 # are re-hashed with these settings on the user's next successful login.
+# Post-installation hooks only run on a fresh install: on an existing dev
+# stack, run this script by hand (docker compose exec app bash
+# /docker-entrypoint-hooks.d/post-installation/01-disable-security-protections.sh).
 echo "Lowering password-hashing cost for dev/CI..."
 php /var/www/html/occ config:system:set hashingMemoryCost --value=8192 --type=integer
 php /var/www/html/occ config:system:set hashingTimeCost --value=1 --type=integer
