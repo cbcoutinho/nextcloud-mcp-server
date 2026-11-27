@@ -8,6 +8,7 @@ assertions do not depend on the tools under test.
 import json
 import uuid
 
+import anyio
 import pytest
 
 pytestmark = [pytest.mark.integration]
@@ -114,9 +115,15 @@ async def test_stale_if_match_leaves_the_file_unchanged(
     """Someone changed the file after the agent read it: the edit is refused."""
     path = await text_file(b"version one\n")
     _, _, stale_etag = await nc_client.webdav.read_file(path)
+    # Nextcloud derives a file's etag from its whole-second mtime: a rewrite in
+    # the same second keeps the old etag (19 of 20 times, measured), and then
+    # the "stale" etag still matches. Move to the next second first.
+    await anyio.sleep(1.1)
     await nc_client.webdav.write_file(
         path, b"version two\n", "text/markdown", if_match=stale_etag
     )
+    _, _, current_etag = await nc_client.webdav.read_file(path)
+    assert current_etag != stale_etag, "precondition: the rewrite changed the etag"
 
     text = _error_text(
         await nc_mcp_client.call_tool(
