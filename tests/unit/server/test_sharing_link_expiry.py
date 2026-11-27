@@ -67,7 +67,8 @@ def test_compute_link_expiry_rejects_non_positive(minutes, now):
 # A century of minutes from any date up to 9000 AD: far past any real expiry,
 # and clear of datetime.max. Larger values are the xfail below.
 @given(
-    st.integers(max_value=60 * 24 * 366 * 100), _nows.filter(lambda d: d.year < 9000)
+    st.integers(max_value=60 * 24 * 366 * 100),
+    st.datetimes(max_value=datetime(8999, 12, 31), timezones=st.just(timezone.utc)),
 )
 def test_compute_link_expiry_raises_only_tool_error(minutes, now):
     try:
