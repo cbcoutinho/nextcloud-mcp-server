@@ -23,7 +23,7 @@ php occ config:system:set mcp_server_url --value="$MCP_SERVER_URL"
 # Sync-event delivery: the shared secret the MCP ingress checks, and the presets
 # whose events Astrolabe forwards (none are enabled by default). The
 # astrolabe-sync-worker compose service runs the queued deliveries.
-if [ -n "${WEBHOOK_SECRET:-}" ]; then
+if [[ -n "${WEBHOOK_SECRET:-}" ]]; then
   php occ config:system:set mcp_webhook_secret --value="$WEBHOOK_SECRET"
   php occ config:app:set astrolabe enabled_sync_presets \
     --value='["notes_sync","files_sync","deck_sync"]'

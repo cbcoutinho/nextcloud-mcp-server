@@ -272,9 +272,9 @@ async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
     logger.info("Creating session-scoped NextcloudClient from environment variables.")
     username = os.environ["NEXTCLOUD_USERNAME"]
     password = os.environ["NEXTCLOUD_PASSWORD"]
-    app_password = await _exchange_for_app_password(host, username, password)
-    client = login_client = None
+    client = login_client = app_password = None
     try:
+        app_password = await _exchange_for_app_password(host, username, password)
         client = NextcloudClient(
             base_url=host,
             username=username,
@@ -284,6 +284,7 @@ async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
         )
         # User and group admin needs the login password: Nextcloud answers 403
         # to an app password for actions that require password confirmation.
+        # Same user on both clients, so swapping the sub-clients is safe.
         login_client = nextcloud_client_from_env()
         client.users = login_client.users
         client.groups = login_client.groups
@@ -336,12 +337,17 @@ async def _exchange_for_app_password(
 
 
 async def _revoke_app_password(host: str, username: str, app_password: str) -> None:
-    async with httpx2.AsyncClient(base_url=host, auth=(username, app_password)) as http:
-        resp = await http.delete(
-            "/ocs/v2.php/core/apppassword", headers={"OCS-APIRequest": "true"}
-        )
-    if resp.is_error:
-        logger.warning("Could not revoke the test app password: %s", resp.status_code)
+    """Revoke the session's token; never raises, so it can't mask a failure."""
+    try:
+        async with httpx2.AsyncClient(
+            base_url=host, auth=(username, app_password)
+        ) as http:
+            resp = await http.delete(
+                "/ocs/v2.php/core/apppassword", headers={"OCS-APIRequest": "true"}
+            )
+        resp.raise_for_status()
+    except httpx2.HTTPError:
+        logger.warning("Could not revoke the test app password", exc_info=True)
 
 
 @pytest.fixture(scope="session")
