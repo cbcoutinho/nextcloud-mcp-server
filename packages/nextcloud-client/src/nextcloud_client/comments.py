@@ -22,8 +22,8 @@ from typing import Final
 logger = logging.getLogger(__name__)
 
 # Break preference, most structural first. Regexes, because the heading and
-# sentence rules need them. The trailing "" is the hard-cut fallback and is what bounds every chunk by
-# chunk_size, so it must stay last.
+# sentence rules need them. The trailing "" is the hard-cut fallback and is
+# what bounds every chunk by chunk_size, so it must stay last.
 _SEPARATORS: Final[tuple[str, ...]] = (
     r"\n#{1,6} ",  # markdown headings
     r"```\n",  # fenced code blocks

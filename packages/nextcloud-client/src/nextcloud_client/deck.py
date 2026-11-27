@@ -85,7 +85,8 @@ class PartialSplitCommentError(Exception):
 def split_comment(message: str) -> list[str]:
     """Split a comment into the parts ``DeckClient.create_split_comment`` posts.
 
-    A message within ``COMMENT_MAX_LENGTH`` comes back unchanged as one part.
+    A message within ``COMMENT_MAX_LENGTH`` comes back unchanged (untrimmed;
+    Nextcloud trims it) as one part.
     A longer one is cut on markdown heading, paragraph, line, sentence and word
     boundaries (never inside an @-mention), and each part is prefixed
     ``"(i/N) "``. Every part fits ``COMMENT_MAX_LENGTH`` as Nextcloud measures
@@ -986,8 +987,11 @@ class DeckClient(BaseNextcloudClient):
             ValueError: The message is blank.
             CommentTooLongToSplitError: It needs more than
                 ``MAX_SPLIT_COMMENT_PARTS`` parts. Nothing was posted.
-            PartialSplitCommentError: A part failed to post. Its ``posted``
-                lists the parts that were (empty if part 1 failed).
+            PartialSplitCommentError: A part failed with an HTTP or transport
+                error. Its ``posted`` lists the parts that were posted (empty
+                if part 1 failed). Any other error (e.g. an unparseable
+                response) propagates as-is: the failing part may then have been
+                created, so it cannot honestly be reported as not posted.
         """
         parts = split_comment(message)
         posted: list[DeckComment] = []
