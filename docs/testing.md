@@ -96,6 +96,55 @@ is roughly time-neutral; the reason to do it is the bugs it finds. Properties
 belong in the unit tier only: at integration cost (seconds per example) one
 property would take minutes per lane.
 
+## Writing properties: lessons from migrating tables
+
+CLAUDE.md has the house rules. These are the traps we hit converting
+parametrize tables, with the fix for each.
+
+**Which tables to convert.** Convert a table whose rows are samples of a
+family: any URL, any payload shape, any rejected input. Keep one whose rows
+each pin a separate decision, such as one wording, one code mapping, or one
+direction of a PHP/Python mismatch. A row that documents an incident becomes
+an `@example` on the property.
+
+**Trust-boundary checks** get two properties:
+- *accepts exactly the valid set.* A composite draws a valid input or one
+  broken by a single rule, together with the expected verdict.
+  `client_id_urls` in `tests/unit/test_cimd.py` and `registrations` in
+  `tests/unit/test_dcr_proxy.py` are examples.
+- *raises only the documented error* over arbitrary input.
+
+This pair found three real bugs that the example tables had missed:
+- CIMD accepted a client_id with an empty trailing `#` fragment.
+- The gateway's 422 parser crashed on a list body.
+- A huge `expires_in_minutes` raised `OverflowError` instead of `ToolError`.
+
+Each failing input is pinned as an `@example` on an
+`xfail(strict=True)` property, which turns into a strict XPASS failure once
+the bug is fixed.
+
+**Mirror an upstream parser differentially.** If a helper is meant to agree
+with a library, compare the two directly. `test_cli_forwarded_allow_ips.py`
+checks against uvicorn's `_TrustedHosts`.
+
+**Generation traps:**
+- `st.sampled_from` shrinks towards its first element, and a `st.just(x)`
+  branch is drawn at most about once per run. Make the valid case an explicit
+  choice (`st.sampled_from([None, *breakers])`), pin single values with
+  `@example`, and read the split with `hypothesis.event()`.
+- A uniform character draw almost never produces the one dangerous character.
+  Bias the alphabet (`st.sampled_from("./\\%?#")`) and pin `".."`.
+- `httpx2.Response(json=...)` refuses NaN and Infinity, so the test itself
+  raises. For a "never raises" property over a body, build the response with
+  `content=json.dumps(body)`.
+- Async `@given` tests can't use the function-scoped `mocker` fixture. Drive
+  the real client through `httpx2.MockTransport` instead.
+
+**Mutation-check every property.** Break the code under test, see the property
+fail, then restore the source. A mutant that survives means either a starved
+strategy or a mutation on a branch your inputs never reach. Check which one it
+is before calling the property weak.
+
 ## Benchmarking the suite
 
 ### Unit tier, locally
