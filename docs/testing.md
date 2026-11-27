@@ -141,6 +141,34 @@ checks against uvicorn's `_TrustedHosts`.
 - Async `@given` tests can't use the function-scoped `mocker` fixture. Drive
   the real client through `httpx2.MockTransport` instead.
 
+**Response parsers** (shift left) get a *faithful parse* property: a generated
+well-formed response parses to exactly the generated values. A parser that
+documents an error type also gets *never raises except that error* over
+arbitrary bodies. Where the client both writes and reads a format, add a
+round-trip: `parse(create(x)) == x`. Examples are the iCal round-trip in
+`tests/unit/client/test_calendar_ical_roundtrip.py` and the PROPFIND listing
+in `tests/unit/client/test_webdav.py`. Once a parsing check lives here, the
+integration test only needs to prove the wiring. Shared strategies
+(`json_values`, `wire_json_values`, `header_text`) are in `tests/strategies.py`.
+
+**Pure functions:**
+- **A rule that ANDs several conditions** (all keys required, every segment
+  valid): break exactly one condition per example. If the strategy breaks
+  one *or more*, a mutant that drops a single clause survives.
+- **"Never raises" over random text** almost never reaches the success
+  branch. Mix in structured-but-wrong inputs whose fields are usually in range.
+  `_http_date` in `test_webdav_trash_versions.py` reaches parsing in 26% of
+  draws this way.
+- **A fast path against its reference** (windowed vs whole-document
+  extraction) is a differential property. Cache fixtures per size with
+  `functools.cache`, and give each page or item distinct content so a reordered
+  or duplicated item shows.
+- **A tool-level table over an input family:** move the family onto a
+  property of the pure helper, and keep one tool-level case for the wiring.
+- **A property that needs `tmp_path` or `monkeypatch`:** suppress
+  `HealthCheck.function_scoped_fixture`, but only when every example
+  overwrites the shared state it uses, and say so in the docstring.
+
 **Mutation-check every property.** Break the code under test, see the property
 fail, then restore the source. A mutant that survives means either a starved
 strategy or a mutation on a branch your inputs never reach. Check which one it
