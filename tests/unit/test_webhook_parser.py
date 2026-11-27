@@ -8,7 +8,10 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from nextcloud_mcp_server.vector.webhook_parser import extract_document_task
+from nextcloud_mcp_server.vector.webhook_parser import (
+    _indexable_suffixes,
+    extract_document_task,
+)
 
 
 @pytest.mark.unit
@@ -544,6 +547,88 @@ def test_webhook_suffixes_follow_the_indexable_mime_setting(monkeypatch):
 
     assert extract_document_task(_file_written("/alice/files/Docs/a.docx")) is None
     assert extract_document_task(_file_written("/alice/files/Docs/a.pdf")) is not None
+
+
+_segments = st.from_regex(r"[A-Za-z0-9 _-]{1,10}", fullmatch=True)
+#: Folders under a user's files root, ``Notes`` included: a non-markdown file
+#: there is an ordinary file, not a note.
+_folders = st.lists(_segments | st.just("Notes"), max_size=3).map("/".join)
+
+
+def _file_path(uid: str, folder: str, name: str, suffix: str) -> str:
+    return "/".join(p for p in (f"/{uid}/files", folder, f"{name}{suffix}") if p)
+
+
+@st.composite
+def indexable_file_payloads(draw):
+    """A well-formed file event for an indexable, non-note file, and the
+    reconcile task it must yield. The suffix comes from the indexable MIME
+    setting (default config), in any letter case."""
+    suffixes = _indexable_suffixes()
+    assert suffixes, "the default config indexes at least one file type"
+    uid = draw(st.from_regex(r"[a-z]{1,8}", fullmatch=True))
+    event_class = draw(st.sampled_from(_FILE_EVENT_CLASSES))
+    node_id = draw(st.integers() | st.text(min_size=1))
+    time = draw(st.integers(min_value=0, max_value=2**40))
+    recase = draw(st.sampled_from([str.lower, str.upper, str.title]))
+    suffix = recase(draw(st.sampled_from(suffixes)))
+    path = _file_path(uid, draw(_folders), draw(_segments), suffix)
+    payload = {
+        "user": {"uid": uid},
+        "time": time,
+        "event": {"class": event_class, "node": {"id": node_id, "path": path}},
+    }
+    operation = "delete" if event_class.endswith("BeforeNodeDeletedEvent") else "index"
+    return payload, (uid, str(node_id), operation, time)
+
+
+@pytest.mark.unit
+@given(indexable_file_payloads())
+def test_an_indexable_file_event_yields_a_reconcile_task(case):
+    """Any indexable suffix (case-insensitive), in any folder (Notes/
+    included), yields a file task with ``file_path=None``, so the processor
+    resolves tag membership."""
+    payload, (uid, doc_id, operation, time) = case
+
+    task = extract_document_task(payload)
+
+    assert task is not None
+    assert (task.user_id, task.doc_id, task.doc_type, task.operation) == (
+        uid,
+        doc_id,
+        "file",
+        operation,
+    )
+    assert task.modified_at == time
+    assert task.file_path is None
+
+
+#: Suffixes vector sync does not index. ``.md`` is excluded because under
+#: ``Notes/`` it is a note.
+_ignored_suffixes = st.from_regex(r"\.[A-Za-z0-9]{1,5}", fullmatch=True).filter(
+    lambda s: s.lower() not in _indexable_suffixes() and s.lower() != ".md"
+)
+
+
+@pytest.mark.unit
+@given(
+    event_class=st.sampled_from(_FILE_EVENT_CLASSES),
+    folder=_folders,
+    name=_segments,
+    suffix=_ignored_suffixes,
+)
+def test_a_non_indexable_file_event_is_ignored(event_class, folder, name, suffix):
+    """No reconcile job for every image or archive saved on the instance."""
+    payload = {
+        "user": {"uid": "alice"},
+        "time": 1,
+        "event": {
+            "class": event_class,
+            "node": {"id": 1, "path": _file_path("alice", folder, name, suffix)},
+        },
+    }
+
+    assert extract_document_task(payload) is None
 
 
 @pytest.mark.unit
