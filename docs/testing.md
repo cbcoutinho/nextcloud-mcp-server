@@ -71,7 +71,7 @@ NC 33:
 | A request authenticated with the login password | ~0.4 s | `nc_client` trades it for an app password at session start (~0.09 s per request) |
 | Argon2 hashing of that login password at the default cost | ~0.3 s more | `01-disable-security-protections.sh` lowers the dev stack's hashing cost |
 | A `DELETE` (moves to the trash) | ~0.85 s | delete the test directory, not every file in it |
-| A fresh document becoming searchable | up to `VECTOR_SYNC_SCAN_INTERVAL` (30 s) | Astrolabe's sync events, run by the `astrolabe-sync-worker` service, index it in a few seconds |
+| A fresh note becoming searchable | up to `VECTOR_SYNC_SCAN_INTERVAL` (30 s) | Astrolabe's sync events, run by the `astrolabe-sync-worker` service, index it in a few seconds |
 | A WebDAV rewrite within the same second | the ETag doesn't change | wait 1.1 s before a rewrite whose new ETag you assert on |
 
 Rules that follow:
@@ -83,12 +83,15 @@ Rules that follow:
   every test only reads should be `@pytest.fixture(scope="module")`, taking
   `anyio_backend`. The WebDAV search fixtures write 8 files once per module,
   not once per test.
-- **Indexing waits on Astrolabe's delivery, not on the scanner.** Astrolabe
-  queues a sync event for each change to a note, file or Deck card. The
-  `astrolabe-sync-worker` compose service runs the queue every second and POSTs
-  to `MCP_SERVER_URL`'s `/webhooks/nextcloud`. Nextcloud's default AJAX cron
-  would only run it on a page visit. Poll every second, not every five. The
-  `25-configure-mcp-server-url.sh` hooks set the secret and enable the presets.
+- **Notes are indexed by Astrolabe's delivery, not by the scanner.** Astrolabe
+  queues a sync event for each note change. The `astrolabe-sync-worker`
+  compose service runs the queue every second and POSTs to `MCP_SERVER_URL`'s
+  `/webhooks/nextcloud`. Nextcloud's default AJAX cron would only run it on a
+  page visit. Poll every second, not every five. The
+  `25-configure-mcp-server-url.sh` hooks set the secret and enable only the
+  `notes_sync` preset. `files_sync` would forward every file write in the
+  suite, and checking each file's tags backed the queue up until a tagged-file
+  test timed out in CI. Tagged files and Deck cards still wait for the scanner.
   Delivery only reaches the server named in `MCP_SERVER_URL`: each CI lane
   points it at its own server, so locally set it to the server under test
   (`http://mcp:8000` for single-user). If vector tests suddenly take ~30 s
