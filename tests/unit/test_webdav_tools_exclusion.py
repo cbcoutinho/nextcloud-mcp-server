@@ -1373,10 +1373,16 @@ async def test_write_file_raises_toolerror_when_content_exceeds_configured_max_s
 
     fn = webdav_tools["nc_webdav_write_file"].fn
     ctx = _mock_ctx(fake_client)
-    with pytest.raises(ToolError, match="WEBDAV_WRITE_MAX_MB"):
+    with pytest.raises(ToolError, match="WEBDAV_WRITE_MAX_MB") as exc_info:
         await fn(path="/Public/notes.md", content="hi", ctx=ctx)
 
     fake_client.webdav.write_file.assert_not_called()
+    # Writing into a desktop-client sync folder bypasses the etag guard,
+    # excluded tags and permission scoping (GH #1831), so the error must not
+    # suggest it as the alternative.
+    message = str(exc_info.value)
+    assert "web UI" in message
+    assert "sync" not in message.lower()
 
 
 async def test_write_file_size_gate_disabled_when_max_mb_is_zero(

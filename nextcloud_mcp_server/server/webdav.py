@@ -1037,10 +1037,9 @@ def configure_webdav_tools(mcp: MCPServer):
             if size_mb > max_mb:
                 raise ToolError(
                     f"Refusing to write {path!r}: {size_mb:.1f} MB exceeds the "
-                    f"configured WEBDAV_WRITE_MAX_MB ({max_mb} MB). Write the "
-                    "file directly via the Nextcloud web UI or a synced client "
-                    "instead, or raise WEBDAV_WRITE_MAX_MB if this size is "
-                    "expected."
+                    f"configured WEBDAV_WRITE_MAX_MB ({max_mb} MB). Upload the "
+                    "file through the Nextcloud web UI instead, or raise "
+                    "WEBDAV_WRITE_MAX_MB if this size is expected."
                 )
 
         result = await client.webdav.write_file(
