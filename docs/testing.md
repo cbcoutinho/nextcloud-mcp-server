@@ -91,7 +91,17 @@ Rules that follow:
   `25-configure-mcp-server-url.sh` hooks set the secret and enable the presets.
   Delivery only reaches the server named in `MCP_SERVER_URL`: each CI lane
   points it at its own server, so locally set it to the server under test
-  (`http://mcp:8000` for single-user).
+  (`http://mcp:8000` for single-user). If vector tests suddenly take ~30 s
+  each, delivery has stopped and the scanner is indexing instead. Check
+  `docker compose logs astrolabe-sync-worker`, and look for
+  `Sync event delivery failed` in `nextcloud.log`. It names the URL it tried.
+- **`nc_client` needs the login password.** It exchanges `NEXTCLOUD_PASSWORD`
+  for an app password. If the variable already holds one, it uses it as is,
+  and the speedup is lost. Users and groups always go through
+  `NEXTCLOUD_PASSWORD` itself, because Nextcloud requires password
+  confirmation for those actions, and an app password can't give it.
+  A killed session leaves its token behind. It shows in the user's device list
+  as "nextcloud-mcp-server integration tests".
 
 ## Keeping the unit tier fast
 

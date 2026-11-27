@@ -271,24 +271,24 @@ async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
 
     logger.info("Creating session-scoped NextcloudClient from environment variables.")
     username = os.environ["NEXTCLOUD_USERNAME"]
-    app_password = await _exchange_for_app_password(
-        host, username, os.environ["NEXTCLOUD_PASSWORD"]
-    )
-    client = NextcloudClient(
-        base_url=host,
-        username=username,
-        auth=httpx2.BasicAuth(username, app_password),
-        password=app_password,
-        **nextcloud_client_kwargs(),
-    )
-    # User and group admin needs the login password: Nextcloud answers 403 to an
-    # app password for actions that require password confirmation.
-    login_client = nextcloud_client_from_env()
-    client.users = login_client.users
-    client.groups = login_client.groups
-
-    # Perform a quick check to ensure connection works
+    password = os.environ["NEXTCLOUD_PASSWORD"]
+    app_password = await _exchange_for_app_password(host, username, password)
+    client = login_client = None
     try:
+        client = NextcloudClient(
+            base_url=host,
+            username=username,
+            auth=httpx2.BasicAuth(username, app_password or password),
+            password=app_password or password,
+            **nextcloud_client_kwargs(),
+        )
+        # User and group admin needs the login password: Nextcloud answers 403
+        # to an app password for actions that require password confirmation.
+        login_client = nextcloud_client_from_env()
+        client.users = login_client.users
+        client.groups = login_client.groups
+
+        # Perform a quick check to ensure connection works
         await client.capabilities()
         logger.info(
             "NextcloudClient session fixture initialized and capabilities checked."
@@ -298,13 +298,22 @@ async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
         logger.error("Failed to initialize NextcloudClient session fixture: %s", e)
         pytest.fail(f"Failed to connect to Nextcloud or get capabilities: {e}")
     finally:
-        await client.close()
-        await login_client.close()
-        await _revoke_app_password(host, username, app_password)
+        for c in (client, login_client):
+            if c is not None:
+                await c.close()
+        if app_password:
+            await _revoke_app_password(host, username, app_password)
 
 
-async def _exchange_for_app_password(host: str, username: str, password: str) -> str:
-    """Trade the login password for an app password.
+# Names the token in Nextcloud's device list, so one a killed session never
+# revoked is easy to find and prune.
+_TEST_TOKEN_AGENT = "nextcloud-mcp-server integration tests"
+
+
+async def _exchange_for_app_password(
+    host: str, username: str, password: str
+) -> str | None:
+    """Trade the login password for an app password; ``None`` if it is one.
 
     The client strips cookies, so every request with the login password is a
     full login: ~0.4 s each on the dev stack, against ~0.09 s with an app
@@ -313,10 +322,17 @@ async def _exchange_for_app_password(host: str, username: str, password: str) ->
     async with httpx2.AsyncClient(base_url=host, auth=(username, password)) as http:
         resp = await http.get(
             "/ocs/v2.php/core/getapppassword",
-            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+            headers={
+                "OCS-APIRequest": "true",
+                "Accept": "application/json",
+                "User-Agent": _TEST_TOKEN_AGENT,
+            },
         )
-        resp.raise_for_status()
-        return resp.json()["ocs"]["data"]["apppassword"]
+    if resp.status_code == 403:  # Nextcloud's answer when password is a token
+        logger.info("NEXTCLOUD_PASSWORD is already an app password; using it")
+        return None
+    resp.raise_for_status()
+    return resp.json()["ocs"]["data"]["apppassword"]
 
 
 async def _revoke_app_password(host: str, username: str, app_password: str) -> None:

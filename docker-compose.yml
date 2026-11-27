@@ -85,9 +85,12 @@ services:
       - |
         until php occ status 2>/dev/null | grep -q 'installed: true'; do sleep 5; done
         # A worker reads config.php once; restart it so a URL or secret the
-        # app's start hooks write afterwards takes effect within seconds.
+        # app's start hooks write afterwards takes effect within seconds. If occ
+        # fails (database down, say), back off rather than spin. Without
+        # Astrolabe it just finds no jobs: deliveries are queued only by
+        # Astrolabe's listener.
         while true; do
-          php occ background-job:worker --stop_after=10s 'OCA\Astrolabe\BackgroundJob\SyncEventDeliveryJob'
+          php occ background-job:worker --stop_after=10s 'OCA\Astrolabe\BackgroundJob\SyncEventDeliveryJob' || sleep 5
         done
 
   recipes:

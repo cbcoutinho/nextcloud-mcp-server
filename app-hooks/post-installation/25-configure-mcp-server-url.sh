@@ -28,6 +28,8 @@ if [ -n "${WEBHOOK_SECRET:-}" ]; then
   php occ config:app:set astrolabe enabled_sync_presets \
     --value='["notes_sync","files_sync","deck_sync"]'
   echo "Astrolabe sync-event delivery enabled"
+else
+  echo "WEBHOOK_SECRET not set: Astrolabe sync-event delivery left off"
 fi
 
 echo "MCP server URL configured successfully"
