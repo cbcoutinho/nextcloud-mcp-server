@@ -54,6 +54,28 @@ def _env_without_pytest_bookkeeping() -> dict[str, str]:
     return env
 
 
+def restore_settings(env_before: dict[str, str], baseline: dict) -> bool:
+    """Reload dynaconf if the environment or the settings drifted from
+    ``baseline``. Returns whether it reloaded. Tested in
+    ``test_settings_isolation.py``."""
+    from nextcloud_mcp_server import config as _config
+
+    if (
+        _env_without_pytest_bookkeeping() == env_before
+        and _config._dynaconf.as_dict() == baseline
+    ):
+        return False
+    _config._dynaconf.reload()
+    # A key added with set_override() survives reload(). Left in place, it
+    # would make every later test differ from the baseline and pay the
+    # reload, as TEST_CACHE_INVALIDATION_PROBE once did for ~2,700 tests.
+    # Only keys absent from the baseline are removed: re-setting a changed
+    # key would pin an override that a later monkeypatch.setenv can't beat.
+    for key in _config._dynaconf.as_dict().keys() - baseline.keys():
+        _config._dynaconf.unset(key, force=True)
+    return True
+
+
 @pytest.fixture(scope="session")
 def _dynaconf_baseline() -> dict:
     """The settings every test should start from: a fresh load of the
@@ -87,18 +109,7 @@ def _reload_dynaconf_after_test(_dynaconf_baseline: dict):
     yield
     from nextcloud_mcp_server import config as _config
 
-    if (
-        _env_without_pytest_bookkeeping() != env_before
-        or _config._dynaconf.as_dict() != _dynaconf_baseline
-    ):
-        _config._dynaconf.reload()
-        # A key added with set_override() survives reload(). Left in place, it
-        # would make every later test differ from the baseline and pay the
-        # reload, as TEST_CACHE_INVALIDATION_PROBE once did for ~2,700 tests.
-        # Only keys absent from the baseline are removed: re-setting a changed
-        # key would pin an override that a later monkeypatch.setenv can't beat.
-        for key in _config._dynaconf.as_dict().keys() - _dynaconf_baseline.keys():
-            _config._dynaconf.unset(key, force=True)
+    restore_settings(env_before, _dynaconf_baseline)
     # get_settings()/get_nextcloud_ssl_verify()/get_nextcloud_http_keepalive()
     # are @functools.cache'd; reloading dynaconf alone won't refresh them, so
     # clear the settings caches too or a cached value leaks into later tests.
