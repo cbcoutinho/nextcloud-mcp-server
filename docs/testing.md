@@ -171,6 +171,42 @@ integration test only needs to prove the wiring. Shared strategies
   `monkeypatch.setattr` in each example is undone only once, at teardown, so it
   must set the same value every time.
 
+### State machines for ordering bugs
+
+A store whose correctness depends on the *order* of operations (expiry, upserts
+that must keep a field, first-insert-wins, purges across keys) gets a
+`RuleBasedStateMachine`. Rules apply random sequences of the public operations,
+and an invariant compares the store with a plain dict model after every step.
+`tests/unit/test_store_state_machines.py` covers `TokenCache`,
+`RefreshTokenStorage` (refresh tokens and profiles) and `BatchOcrJobStore`.
+Together they take about 3 s and caught all 10 planted ordering bugs.
+
+How to write one here:
+1. **Build the machine inside a plain sync test** and run it with
+   `run_state_machine_as_test(Machine, settings=...)`. Fixtures are then
+   closure variables. There's no `@given`, so no function-scoped-fixture
+   warning.
+2. **Async stores:** use one `anyio.from_thread.start_blocking_portal()` per
+   test and call `portal.call(store.method, *args)`. That keeps one event loop
+   for the whole run, at about 0.5 ms per hop. `anyio.run` per call would
+   create a loop every time.
+3. **SQLite:** create and `initialize()` the store once per test (Alembic,
+   ~230 ms), and wipe its table in the machine's `__init__` (~4 ms). Each call
+   costs ~4 ms, so a database machine affords about 40 examples × 12 steps per
+   second.
+4. **Clock:** an explicit integer clock that a rule advances; never sleep.
+   Patch only the store module's reference
+   (`monkeypatch.setattr(module, "time", SimpleNamespace(time=clock.time))`),
+   and reset the clock in `__init__`, because the fixture outlives each run.
+5. **Make boundaries reachable.** Use tiny TTLs and 1 s ticks so that
+   `expires_at == now` actually happens. Prefer one invariant that reads the
+   whole store over many `get` rules that may never be picked. Start from a
+   populated state with `@initialize`, because Hypothesis favours short runs.
+   The first version of these machines missed half the planted bugs until all
+   three changes were made, so plant a bug before trusting a machine.
+6. **Budget:** explicit `settings(max_examples=..., stateful_step_count=...,
+   deadline=None)`, about 1–2 s per machine.
+
 **Mutation-check every property.** Break the code under test, see the property
 fail, then restore the source. A mutant that survives means either a starved
 strategy or a mutation on a branch your inputs never reach. Check which one it
