@@ -9,7 +9,7 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 import pytest
-from hypothesis import example, given
+from hypothesis import event, example, given
 from hypothesis import strategies as st
 from nextcloud_client.calendar import CalendarClient
 
@@ -169,3 +169,4 @@ def test_any_ical_text_parses_to_an_event_or_none(text):
     never raised out of a listing."""
     parsed = _client()._parse_ical_event(text)
     assert parsed is None or isinstance(parsed, dict)
+    event("parsed an event" if parsed else "skipped")

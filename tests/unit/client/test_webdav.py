@@ -1726,6 +1726,7 @@ def listed_entries(draw, path: str):
         "name": name,
         "path": f"{path}/{name}" if path else name,
         "is_directory": is_dir,
+        # The parser's decision: a file without getcontentlength reads as 0.
         "size": None if is_dir else (size or 0),
         "content_type": content_type,
         "last_modified": modified,
