@@ -15,6 +15,7 @@ from hypothesis import strategies as st
 
 from nextcloud_mcp_server.providers.base import ImageInput, ImageInputRejected
 from nextcloud_mcp_server.providers.gateway import (
+    _PERMANENT_IMAGE_CODES,
     GatewayProvider,
     _raise_for_image_rejection,
 )
@@ -226,21 +227,38 @@ def test_only_a_permanent_code_names_the_image(code, extra):
     assert excinfo.value.index == (index if isinstance(index, int) else None)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a 422 whose JSON body is not an object ([], a string) raises "
-    "AttributeError on .get, and an unhashable detail.code raises TypeError on "
-    "the set lookup, instead of falling through to raise_for_status",
+# Object bodies whose detail is not a dict, or a dict with a string code: the
+# shapes the parser handles today. The rest are the xfail below.
+_object_bodies = st.fixed_dictionaries(
+    {"detail": st.none() | st.text() | st.integers() | st.lists(_json)}
+) | st.fixed_dictionaries(
+    {
+        "detail": st.fixed_dictionaries(
+            {"code": st.text() | st.sampled_from(sorted(_PERMANENT_IMAGE_CODES))},
+            optional={"index": _json, "message": _json},
+        )
+    }
 )
-@given(_json | st.fixed_dictionaries({"detail": _json}))
-@example([])
-@example({"detail": {"code": []}})
+
+
+@given(_object_bodies)
 def test_rejection_parser_raises_only_image_input_rejected(body):
     try:
         # json.dumps, not json=: httpx2 refuses NaN, which a real body may carry.
         _raise_for_image_rejection(httpx2.Response(422, content=json.dumps(body)))
     except ImageInputRejected:
         return
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="a 422 whose JSON body is not an object ([], a string) raises "
+    "AttributeError on .get, and an unhashable detail.code raises TypeError on "
+    "the set lookup, instead of falling through to raise_for_status",
+)
+@pytest.mark.parametrize("body", [[], "text", {"detail": {"code": []}}])
+def test_rejection_parser_falls_through_on_an_unexpected_body(body):
+    _raise_for_image_rejection(httpx2.Response(422, content=json.dumps(body)))
 
 
 @pytest.mark.parametrize("path", ["image", "text"])
