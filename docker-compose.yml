@@ -223,8 +223,8 @@ services:
     restart: always
     # Exchanges NEXTCLOUD_PASSWORD for an app password before starting the
     # server: each request then costs ~0.06 s instead of ~0.26 s. Dev/CI only.
+    # The script passes the server's arguments (--transport streamable-http).
     entrypoint: ["/opt/venv/bin/python", "-I", "/opt/dev-mcp-entrypoint.py"]
-    command: ["--transport", "streamable-http"]
     depends_on:
       app:
         condition: service_healthy

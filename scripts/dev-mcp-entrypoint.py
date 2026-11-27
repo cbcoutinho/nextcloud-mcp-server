@@ -21,7 +21,15 @@ import sys
 import urllib.error
 import urllib.request
 
-SERVER = ["/opt/venv/bin/nextcloud-mcp-server", "run", "--host", "0.0.0.0"]
+# Fixed, not taken from argv: the compose service is this script's only caller.
+SERVER = [
+    "/opt/venv/bin/nextcloud-mcp-server",
+    "run",
+    "--host",
+    "0.0.0.0",
+    "--transport",
+    "streamable-http",
+]
 CACHE = "/app/data/nextcloud-app-password"
 
 
@@ -54,15 +62,21 @@ def app_password(login_password: str) -> str:
             _get("/ocs/v2.php/cloud/user", cached)
             return cached
         except urllib.error.HTTPError as e:
-            if e.code != 401:  # revoked or from an old Nextcloud volume: reissue
+            # Revoked, or from an old Nextcloud volume: reissue.
+            if e.code not in (401, 403):
                 raise
     # 403 when NEXTCLOUD_PASSWORD already is an app password (handled by main).
     token = _get("/ocs/v2.php/core/getapppassword", login_password)["ocs"]["data"][
         "apppassword"
     ]
-    fd = os.open(CACHE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(token)
+    try:
+        fd = os.open(CACHE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token)
+    except OSError as e:  # still use the token; the next start issues another
+        print(
+            f"dev entrypoint: could not cache the app password ({e!r})", file=sys.stderr
+        )
     return token
 
 
@@ -77,7 +91,7 @@ def main() -> None:
             f"dev entrypoint: keeping NEXTCLOUD_PASSWORD as given ({e!r})",
             file=sys.stderr,
         )
-    os.execv(SERVER[0], SERVER + sys.argv[1:])
+    os.execv(SERVER[0], SERVER)
 
 
 if __name__ == "__main__":
