@@ -9,6 +9,8 @@ import json
 
 import httpx2
 import pytest
+from hypothesis import event, example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.providers.ner import (
     MAX_TEXT_CHARS,
@@ -117,23 +119,81 @@ async def test_ignores_unasked_labels_and_out_of_range_entities(monkeypatch):
     assert await NerClient(_URL, "m").detect(["ACME Ltd"]) == [set()]
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"results": [{"index": 0, "entities": []}]},  # text 1 unaccounted for
-        {"results": [{"index": 0, "entities": []}] * 2},  # duplicate index
-        {"results": [{"index": 5, "entities": []}]},
-        # bool is an int subclass: True must not be read as index 1.
-        {"results": [{"index": 0, "entities": []}, {"index": True, "entities": []}]},
-        {"results": [{"index": 0}]},
-        {"nope": []},
-        [],
-    ],
-)
-async def test_incomplete_or_malformed_response_raises(monkeypatch, payload):
-    _patch_transport(monkeypatch, _ok(payload))
+async def test_incomplete_response_raises(monkeypatch):
+    """Wiring: detect() applies the strict parse below to the HTTP body."""
+    _patch_transport(monkeypatch, _ok({"results": [{"index": 0, "entities": []}]}))
     with pytest.raises(NerError):
         await NerClient(_URL, "m").detect(["a", "b"])
+
+
+_LABELS = ("person",)
+_json = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
+    max_leaves=10,
+)
+_BREAKERS = ["missing", "duplicate", "out_of_range", "bool_index", "no_entities"]
+
+
+@st.composite
+def ner_responses(draw):
+    """``(texts, body, complete)``: a response accounting for every text exactly
+    once, or one broken in a single way. Result order is shuffled: only
+    ``index`` ties a result to its text."""
+    texts = draw(st.lists(st.text(max_size=5), min_size=1, max_size=4))
+    results = [
+        {"index": i, "entities": draw(st.lists(_json, max_size=2))}
+        for i in range(len(texts))
+    ]
+    breaker = draw(st.sampled_from([None, *_BREAKERS]))
+    event(f"breaker: {breaker}")
+    victim = draw(st.integers(0, len(results) - 1))
+    if breaker == "missing":
+        del results[victim]
+    elif breaker == "duplicate":
+        results.append(dict(results[victim]))
+    elif breaker == "out_of_range":
+        results[victim]["index"] = draw(
+            st.integers(max_value=-1) | st.integers(min_value=len(texts))
+        )
+    elif breaker == "bool_index":  # bool is an int subclass: True is not 1
+        results[victim]["index"] = bool(results[victim]["index"])
+    elif breaker == "no_entities":
+        results[victim]["entities"] = draw(
+            st.none() | st.text() | st.dictionaries(st.text(), _json)
+        )
+    return texts, {"results": draw(st.permutations(results))}, breaker is None
+
+
+@given(ner_responses())
+def test_parse_accepts_exactly_a_response_covering_every_text(case):
+    """A text the response does not account for would be served unredacted."""
+    texts, body, complete = case
+    if not complete:
+        with pytest.raises(NerError):
+            NerClient._parse(body, texts, _LABELS)
+        return
+    assert len(NerClient._parse(body, texts, _LABELS)) == len(texts)
+
+
+@given(_json, st.lists(st.text(max_size=5), min_size=1, max_size=3))
+@example({"nope": []}, ["a", "b"])
+@example([], ["a", "b"])
+@example({"results": [{"index": 0}]}, ["a", "b"])
+@example(
+    {
+        "results": [
+            {"index": 0, "entities": [{"label": "person", "start": 0, "end": 1}]}
+        ]
+    },
+    ["a"],
+)
+def test_parse_raises_only_ner_error(body, texts):
+    try:
+        found = NerClient._parse(body, texts, _LABELS)
+    except NerError:
+        return
+    assert len(found) == len(texts)
 
 
 async def test_error_for_a_bad_result_does_not_carry_its_names(monkeypatch):

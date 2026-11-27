@@ -6,7 +6,7 @@ import math
 from unittest.mock import MagicMock
 
 import pytest
-from hypothesis import given
+from hypothesis import HealthCheck, event, example, given, settings
 from hypothesis import strategies as st
 
 from nextcloud_mcp_server.providers.base import (
@@ -70,7 +70,9 @@ async def test_embed_image_batch_requires_confirmation():
 # --- SimpleProvider -------------------------------------------------------
 
 
-@pytest.mark.parametrize("model", [None, "", "amazon.titan-embed-image-v1"])
+@given(st.none() | st.text().filter(lambda m: m != SIMPLE_IMAGE_MODEL))
+@example("")
+@example("amazon.titan-embed-image-v1")
 async def test_simple_confirms_only_the_sentinel(model):
     """The autodetect fallback must never confirm a real-looking model id."""
     provider = SimpleProvider(image_embedding_model=model)
@@ -285,19 +287,32 @@ async def test_bedrock_cohere_text_query_is_search_query(bedrock_client):
 
 # Classification table (ADR-042 §5): only ValidationException is permanent.
 @pytest.mark.parametrize("model", ["amazon.titan-embed-image-v1", "cohere.embed-v4:0"])
-@pytest.mark.parametrize(
-    "code, permanent",
-    [
-        ("ValidationException", True),
-        ("ThrottlingException", False),
-        ("ServiceUnavailableException", False),
-        ("InternalServerException", False),
-        ("ModelTimeoutException", False),
-        ("AccessDeniedException", False),
-    ],
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(
+    st.just("ValidationException")
+    | st.sampled_from(
+        [
+            "ThrottlingException",
+            "ServiceUnavailableException",
+            "InternalServerException",
+            "ModelTimeoutException",
+            "AccessDeniedException",
+            # Case matters: a near-miss of the one permanent code is retryable.
+            "validationexception",
+        ]
+    )
+    | st.text(max_size=30)
 )
-async def test_bedrock_error_classification(bedrock_client, model, code, permanent):
-    """The second image fails; a rejection names it, anything else propagates."""
+# The permanent side is a single input, which generation draws at most once.
+@example("ValidationException")
+async def test_bedrock_error_classification(bedrock_client, model, code):
+    """The second image fails; a rejection names it, anything else propagates.
+
+    The fixture is safe to share across examples: every one resets
+    ``invoke_model.side_effect`` before calling.
+    """
+    permanent = code == "ValidationException"
+    event(f"permanent: {permanent}")
     provider = await _confirmed(model)
     ok = (
         {"embedding": [0.0] * 1024}

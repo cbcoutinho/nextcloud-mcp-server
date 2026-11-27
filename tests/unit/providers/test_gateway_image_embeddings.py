@@ -10,9 +10,14 @@ import json
 
 import httpx2
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from nextcloud_mcp_server.providers.base import ImageInput, ImageInputRejected
-from nextcloud_mcp_server.providers.gateway import GatewayProvider
+from nextcloud_mcp_server.providers.gateway import (
+    GatewayProvider,
+    _raise_for_image_rejection,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -188,6 +193,54 @@ async def test_other_errors_stay_retryable(monkeypatch, response):
     await provider.confirm_image_embeddings()
     with pytest.raises(httpx2.HTTPStatusError):
         await provider.embed_image_batch([PNG])
+
+
+_json = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda children: st.lists(children) | st.dictionaries(st.text(), children),
+    max_leaves=10,
+)
+_PERMANENT = ["invalid_image", "unsupported_mime_type"]
+
+
+@given(
+    st.sampled_from([*_PERMANENT, "image_too_large", "too_many_images"])
+    | st.text(max_size=20),
+    st.fixed_dictionaries(
+        {},
+        optional={"index": st.none() | st.integers() | st.text(), "message": st.text()},
+    ),
+)
+@example("invalid_image", {})
+@example("unsupported_mime_type", {"index": 3})
+def test_only_a_permanent_code_names_the_image(code, extra):
+    """A dict-shaped 422 skips the image only for a permanent code; anything
+    else returns, leaving raise_for_status to make it retryable."""
+    resp = httpx2.Response(422, json={"detail": {"code": code, **extra}})
+    if code not in _PERMANENT:
+        assert _raise_for_image_rejection(resp) is None
+        return
+    with pytest.raises(ImageInputRejected) as excinfo:
+        _raise_for_image_rejection(resp)
+    index = extra.get("index")
+    assert excinfo.value.index == (index if isinstance(index, int) else None)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="a 422 whose JSON body is not an object ([], a string) raises "
+    "AttributeError on .get, and an unhashable detail.code raises TypeError on "
+    "the set lookup, instead of falling through to raise_for_status",
+)
+@given(_json | st.fixed_dictionaries({"detail": _json}))
+@example([])
+@example({"detail": {"code": []}})
+def test_rejection_parser_raises_only_image_input_rejected(body):
+    try:
+        # json.dumps, not json=: httpx2 refuses NaN, which a real body may carry.
+        _raise_for_image_rejection(httpx2.Response(422, content=json.dumps(body)))
+    except ImageInputRejected:
+        return
 
 
 @pytest.mark.parametrize("path", ["image", "text"])

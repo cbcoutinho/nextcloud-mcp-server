@@ -16,6 +16,8 @@ authenticated client):
 from datetime import datetime, timezone
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError
 
 from nextcloud_mcp_server.server.sharing import (
@@ -50,14 +52,31 @@ def test_compute_link_expiry_crosses_midnight():
     assert expires_at == "2026-06-03T00:20:00Z"
 
 
-@pytest.mark.parametrize("minutes", [0, -1, -60])
-def test_compute_link_expiry_rejects_non_positive(minutes):
+_nows = st.datetimes(timezones=st.just(timezone.utc))
+
+
+@given(st.integers(max_value=0), _nows)
+@example(0, datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc))
+def test_compute_link_expiry_rejects_non_positive(minutes, now):
     """Non-positive durations are rejected — this tool never mints a permanent
     (non-expiring) public link."""
-    now = datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
-
     with pytest.raises(ToolError, match="positive"):
         _compute_link_expiry(minutes, now)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="expires_in_minutes is an unbounded int: a huge value overflows "
+    "datetime and raises OverflowError, which mcp masks as a bare "
+    "'Error executing tool' instead of a ToolError",
+)
+@given(st.integers(), _nows)
+@example(10**10, datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc))
+def test_compute_link_expiry_raises_only_tool_error(minutes, now):
+    try:
+        _compute_link_expiry(minutes, now)
+    except ToolError:
+        return
 
 
 def test_build_link_response_maps_fields():

@@ -8,10 +8,13 @@ proxy's address.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 
 import pytest
 from click.testing import CliRunner
+from hypothesis import event, example, given
+from hypothesis import strategies as st
 from uvicorn.middleware.proxy_headers import _TrustedHosts
 
 from nextcloud_mcp_server.cli import (
@@ -24,26 +27,33 @@ from nextcloud_mcp_server.config import Settings
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize(
-    "token",
-    ["127.0.0.1", "192.168.1.5", "10.0.0.0/8", "::1", "fd00::/8"],
+_tokens = (
+    st.ip_addresses().map(str)
+    # Networks, written with and without host bits set.
+    | st.tuples(st.ip_addresses(), st.integers(0, 128)).map(lambda a: f"{a[0]}/{a[1]}")
+    | st.ip_addresses().map(lambda a: str(ipaddress.ip_network(a)))
+    | st.text(alphabet="0123456789abcdef.:/%*", max_size=16)
+    | st.text()
 )
-def test_parseable_tokens(token):
-    assert _is_ip_or_network(token) is True
 
 
-@pytest.mark.parametrize(
-    "token",
-    [
-        "proxy.internal",  # hostname: uvicorn compares against an IP string
-        "10.0.0.1/8",  # host bits set — uvicorn's ip_network() is strict
-        "10.0.0.256",
-        "*",  # only a wildcard as the whole value, never as one entry
-        "",
-    ],
-)
-def test_unparseable_tokens(token):
-    assert _is_ip_or_network(token) is False
+def _parsed_by_uvicorn(token: str) -> bool:
+    hosts = _TrustedHosts([token])
+    return bool(hosts.trusted_hosts or hosts.trusted_networks)
+
+
+@given(_tokens)
+@example("proxy.internal")  # hostname: uvicorn compares against an IP string
+@example("10.0.0.1/8")  # host bits set: uvicorn's ip_network() is strict
+@example("10.0.0.256")
+@example("*")  # only a wildcard as the whole value, never as one entry
+@example("")
+def test_a_token_is_parseable_exactly_when_uvicorn_parses_it(token):
+    """Differential against real uvicorn: the startup report must flag exactly
+    the entries uvicorn demotes to inert literals."""
+    expected = _parsed_by_uvicorn(token)
+    event(f"parseable: {expected}")
+    assert _is_ip_or_network(token) is expected
 
 
 @pytest.mark.parametrize(
