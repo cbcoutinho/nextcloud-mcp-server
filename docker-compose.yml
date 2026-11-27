@@ -221,6 +221,9 @@ services:
   mcp:
     build: .
     restart: always
+    # Exchanges NEXTCLOUD_PASSWORD for an app password before starting the
+    # server: each request then costs ~0.06 s instead of ~0.26 s. Dev/CI only.
+    entrypoint: ["/opt/venv/bin/python", "-I", "/opt/dev-mcp-entrypoint.py"]
     command: ["--transport", "streamable-http"]
     depends_on:
       app:
@@ -231,6 +234,7 @@ services:
     volumes:
       - mcp-data:/app/data
       - ./settings.toml.example:/app/settings.toml:ro
+      - ./scripts/dev-mcp-entrypoint.py:/opt/dev-mcp-entrypoint.py:ro
     environment:
       - NEXTCLOUD_HOST=http://app:80
       - NEXTCLOUD_USERNAME=admin

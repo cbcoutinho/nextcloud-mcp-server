@@ -68,7 +68,7 @@ NC 33:
 
 | Cost | Per occurrence | What we do about it |
 |---|---|---|
-| A request authenticated with the login password | ~0.4 s | `nc_client` trades it for an app password at session start (~0.09 s per request) |
+| A request authenticated with the login password | ~0.26 s | `nc_client` and the single-user `mcp` service trade it for an app password (~0.06 s per request) |
 | Argon2 hashing of that login password at the default cost | ~0.3 s more | `01-disable-security-protections.sh` lowers the dev stack's hashing cost |
 | A `DELETE` (moves to the trash) | ~0.85 s | delete the test directory, not every file in it |
 | A fresh note becoming searchable | up to `VECTOR_SYNC_SCAN_INTERVAL` (30 s) | Astrolabe's sync events, run by the `astrolabe-sync-worker` service, index it in a few seconds |
@@ -105,6 +105,13 @@ Rules that follow:
   confirmation for those actions, and an app password can't give it.
   A killed session leaves its token behind. It shows in the user's device list
   as "nextcloud-mcp-server integration tests".
+- **The single-user `mcp` service does the same at startup.** Its compose
+  entrypoint, `scripts/dev-mcp-entrypoint.py`, exchanges `NEXTCLOUD_PASSWORD`
+  for an app password, caches it in the `mcp-data` volume and reuses it while
+  it still authenticates. If the exchange fails, it logs
+  `dev entrypoint: keeping NEXTCLOUD_PASSWORD as given` and the server runs
+  on the login password, slower. Its token shows in the device list as
+  "nextcloud-mcp-server dev compose".
 
 ## Keeping the unit tier fast
 
