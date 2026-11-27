@@ -227,6 +227,8 @@ def test_validate_document_raises_only_cimd_error(body):
         return
     event("accepted")
     assert document["client_id"] == CLIENT_ID
+    uris = document["redirect_uris"]
+    assert uris and all(isinstance(u, str) for u in uris)
 
 
 @pytest.mark.parametrize(

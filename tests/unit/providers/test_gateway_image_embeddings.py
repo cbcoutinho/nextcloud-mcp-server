@@ -201,6 +201,7 @@ _json = st.recursive(
     lambda children: st.lists(children) | st.dictionaries(st.text(), children),
     max_leaves=10,
 )
+# Hard-coded on purpose: an oracle independent of _PERMANENT_IMAGE_CODES.
 _PERMANENT = ["invalid_image", "unsupported_mime_type"]
 
 
@@ -250,13 +251,23 @@ def test_rejection_parser_raises_only_image_input_rejected(body):
         return
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a 422 whose JSON body is not an object ([], a string) raises "
-    "AttributeError on .get, and an unhashable detail.code raises TypeError on "
-    "the set lookup, instead of falling through to raise_for_status",
+_NOT_AN_OBJECT = pytest.mark.xfail(
+    strict=True, reason="a non-object 422 body raises AttributeError on .get"
 )
-@pytest.mark.parametrize("body", [[], "text", {"detail": {"code": []}}])
+_UNHASHABLE_CODE = pytest.mark.xfail(
+    strict=True, reason="an unhashable detail.code raises TypeError on the set lookup"
+)
+
+
+# One xfail per row, so fixing one bug XPASSes its rows without the other's.
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param([], marks=_NOT_AN_OBJECT),
+        pytest.param("text", marks=_NOT_AN_OBJECT),
+        pytest.param({"detail": {"code": []}}, marks=_UNHASHABLE_CODE),
+    ],
+)
 def test_rejection_parser_falls_through_on_an_unexpected_body(body):
     _raise_for_image_rejection(httpx2.Response(422, content=json.dumps(body)))
 
