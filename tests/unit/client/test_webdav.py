@@ -2,12 +2,15 @@
 
 import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
+from xml.sax.saxutils import escape as xml_escape
 
+import httpx2
 import pytest
 from httpx2 import HTTPStatusError
 from hypothesis import example, given
 from hypothesis import strategies as st
+from nextcloud_client.http import nextcloud_httpx_client
 from nextcloud_client.webdav import (
     WebDAVClient,
     like_predicate,
@@ -1658,3 +1661,109 @@ def test_like_predicate_carries_any_literal_verbatim(value):
     literal = root.find(".//{DAV:}literal")
     assert literal is not None
     assert (literal.text or "") == value
+
+
+# ── PROPFIND listing: faithful parse ────────────────────────────────────
+
+#: Text an XML 1.0 element can carry back unchanged: no control characters
+#: (the parser folds ``\r``), surrogates or non-characters.
+_xml_text = st.text(
+    st.characters(codec="utf-8", exclude_categories=("Cc", "Cs", "Cn")),
+    min_size=1,
+    max_size=15,
+)
+
+
+def _prop(tag: str, text: str | None) -> str:
+    return "" if text is None else f"<{tag}>{xml_escape(text)}</{tag}>"
+
+
+@st.composite
+def listed_entries(draw, path: str):
+    """``(<d:response> for one child, the item list_directory should report)``."""
+    name = draw(
+        st.text(
+            st.characters(
+                codec="utf-8",
+                exclude_categories=("Cc", "Cs", "Cn"),
+                exclude_characters="/",
+            ),
+            min_size=1,
+            max_size=15,
+        )
+    )
+    is_dir = draw(st.booleans())
+    size = draw(st.none() | st.integers(min_value=0, max_value=2**63))
+    content_type = draw(st.none() | _xml_text)
+    modified = draw(st.none() | _xml_text)
+    etag_raw, etag = draw(st.none().map(lambda _: (None, None)) | transported_etags())
+    fileid = draw(
+        st.none().map(lambda _: (None, None))
+        | st.integers().map(lambda n: (str(n), n))
+        # Non-numeric costs the deep link only, never the listing.
+        | _xml_text.filter(lambda t: not any(c.isdigit() for c in t)).map(
+            lambda t: (t, None)
+        )
+    )
+    href = (
+        "/remote.php/dav/files/alice/" + quote(name, safe="") + ("/" if is_dir else "")
+    )
+    xml = (
+        f"<d:response><d:href>{href}</d:href><d:propstat><d:prop>"
+        + (
+            "<d:resourcetype><d:collection/></d:resourcetype>"
+            if is_dir
+            else "<d:resourcetype/>"
+        )
+        + _prop("d:getcontentlength", None if size is None else str(size))
+        + _prop("d:getcontenttype", content_type)
+        + _prop("d:getlastmodified", modified)
+        + _prop("d:getetag", etag_raw)
+        + _prop("oc:fileid", fileid[0])
+        + "</d:prop></d:propstat></d:response>"
+    )
+    item = {
+        "name": name,
+        "path": f"{path}/{name}" if path else name,
+        "is_directory": is_dir,
+        "size": None if is_dir else (size or 0),
+        "content_type": content_type,
+        "last_modified": modified,
+        # An empty <d:getetag/> carries no etag at all.
+        "etag": etag if etag_raw else None,
+        "file_id": fileid[1],
+    }
+    return xml, item
+
+
+@st.composite
+def listings(draw):
+    """A PROPFIND Depth:1 body, the path it lists, and the items it holds."""
+    path = draw(st.sampled_from(["", "Docs", "Docs/Sub"]))
+    entries = draw(st.lists(listed_entries(path), max_size=3))
+    body = (
+        '<?xml version="1.0"?>'
+        '<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
+        # The first response is the listed directory itself.
+        "<d:response><d:href>/remote.php/dav/files/alice/</d:href>"
+        "<d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype>"
+        "</d:prop></d:propstat></d:response>"
+        + "".join(xml for xml, _ in entries)
+        + "</d:multistatus>"
+    )
+    return body.encode(), path, [item for _, item in entries]
+
+
+@pytest.mark.unit
+@given(listings())
+async def test_list_directory_reports_exactly_the_listed_properties(case):
+    body, path, expected = case
+    async with nextcloud_httpx_client(
+        base_url="https://nc.example.com",
+        transport=httpx2.MockTransport(
+            lambda request: httpx2.Response(207, content=body)
+        ),
+    ) as http:
+        client = WebDAVClient(http, "alice")
+        client._principal_discovered = True
+        assert await client.list_directory(path) == expected

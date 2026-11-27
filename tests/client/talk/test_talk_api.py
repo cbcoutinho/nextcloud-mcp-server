@@ -4,6 +4,9 @@ import logging
 
 import httpx2
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
+from nextcloud_client.http import nextcloud_httpx_client
 from nextcloud_client.models.talk import (
     TalkConversation,
     TalkMessage,
@@ -18,6 +21,7 @@ from tests.client.conftest import (
     create_mock_talk_message_response,
     create_mock_talk_room_response,
 )
+from tests.strategies import header_text, wire_json_values
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.unit
@@ -777,20 +781,27 @@ async def test_remove_reaction_sends_delete_with_body(mocker):
     assert kwargs["json"] == {"reaction": "🎉"}
 
 
-@pytest.mark.parametrize("empty", [{}, [], None])
-async def test_reaction_map_normalises_empty_payloads(mocker, empty):
-    """ "No reactions" arrives in three shapes across spreed's responses.
+_reaction_actors = st.fixed_dictionaries(
+    {"actorType": st.just("users"), "actorId": st.text(), "timestamp": st.integers()}
+)
 
-    Talk 22 returns ``{}`` for an unreacted message, but PHP serialises empty
-    maps as ``[]`` elsewhere in this API and ``null`` shows up on error paths.
-    All three have to mean the same thing to the caller.
-    """
-    response = mocker.Mock()
-    response.json.return_value = {"ocs": {"meta": {"statuscode": 200}, "data": empty}}
-    mocker.patch.object(TalkClient, "_make_request", return_value=response)
-    client = TalkClient(mocker.AsyncMock(), "testuser")
 
-    assert await client.list_reactions("abc123", 1) == {}
+@given(
+    st.dictionaries(st.text(min_size=1), st.lists(_reaction_actors), min_size=1)
+    | wire_json_values
+)
+@example({})
+@example([])
+@example(None)
+async def test_reaction_map_keeps_a_map_and_empties_anything_else(data):
+    """ "No reactions" arrives as ``{}`` (Talk 22), ``[]`` (PHP's empty map) or
+    ``null`` (error paths); anything that is not a reaction map reads as empty
+    rather than raising."""
+    response = httpx2.Response(
+        200, json={"ocs": {"meta": {"statuscode": 200}, "data": data}}
+    )
+    reactions = await _talk(response, "list_reactions", "abc123", 1)
+    assert reactions == (data if isinstance(data, dict) else {})
 
 
 async def test_list_reactions_filters_by_emoji(mocker):
@@ -893,3 +904,140 @@ async def test_create_group_conversation_sends_room_name(mocker):
         "roomType": 2,
         "roomName": "Team",
     }
+
+
+# ── Response parsing properties ─────────────────────────────────────────
+
+
+async def _talk(response: httpx2.Response, method: str, *args, **kwargs):
+    """Call a TalkClient method against a canned response, through the real
+    ``_make_request`` (so a 304 raises and is handled as in production)."""
+    async with nextcloud_httpx_client(
+        base_url="https://nc.example.com",
+        transport=httpx2.MockTransport(lambda request: response),
+    ) as http:
+        return await getattr(TalkClient(http, "testuser"), method)(*args, **kwargs)
+
+
+def _ocs_list(data, headers=None) -> httpx2.Response:
+    return httpx2.Response(
+        200, json={"ocs": {"meta": {"statuscode": 200}, "data": data}}, headers=headers
+    )
+
+
+_ints = st.integers(min_value=-(2**53), max_value=2**53)
+
+#: The optional message fields, each with its default when spreed omits it.
+_MESSAGE_DEFAULTS = {
+    "systemMessage": "",
+    "messageParameters": {},
+    "expirationTimestamp": None,
+    "referenceId": None,
+    "markdown": None,
+    "threadId": None,
+    "isThread": None,
+}
+_message_optionals = {
+    "systemMessage": st.text(),
+    "expirationTimestamp": st.none() | _ints,
+    "referenceId": st.none() | st.text(),
+    "markdown": st.none() | st.booleans(),
+    "threadId": st.none() | _ints,
+    "isThread": st.none() | st.booleans(),
+}
+
+
+@st.composite
+def message_payloads(draw, *, with_identity: bool = True):
+    """``(message as spreed sends it, the model fields it should parse to)``."""
+    sent = draw(
+        st.fixed_dictionaries(
+            {
+                "actorType": st.sampled_from(["users", "guests", "bots"]),
+                "actorId": st.text(),
+                "actorDisplayName": st.text(),
+                "timestamp": _ints,
+                "messageType": st.sampled_from(["comment", "system"]),
+                "message": st.text(),
+            }
+            | ({"id": _ints, "token": st.text()} if with_identity else {}),
+            optional=_message_optionals,
+        )
+    )
+    expected = _MESSAGE_DEFAULTS | sent
+    params = draw(
+        st.none()
+        | st.just([])
+        | st.dictionaries(st.text(), st.dictionaries(st.text(), st.text()))
+    )
+    if params is not None:
+        # PHP serialises an empty parameter map as [].
+        sent["messageParameters"] = params
+        expected["messageParameters"] = params or {}
+    # spreed sends many fields the model does not map; they are dropped.
+    sent["reactions"] = draw(st.dictionaries(st.text(), st.integers(), max_size=2))
+    return sent, expected
+
+
+@st.composite
+def last_given_headers(draw):
+    """``(X-Chat-Last-Given or None, the cursor get_messages should return)``."""
+    kind = draw(st.sampled_from(["absent", "int", "garbage"]))
+    if kind == "absent":
+        return None, None
+    if kind == "int":
+        n = draw(_ints)
+        return str(n), n
+    return draw(header_text.filter(lambda t: not any(c.isdigit() for c in t))), None
+
+
+@given(st.lists(message_payloads(), max_size=3), last_given_headers())
+@example([], ("not-a-number", None))
+async def test_messages_parse_to_exactly_the_sent_fields(messages, header):
+    sent_header, cursor = header
+    response = _ocs_list(
+        [sent for sent, _ in messages],
+        headers={"X-Chat-Last-Given": sent_header} if sent_header is not None else None,
+    )
+    parsed, last_given = await _talk(response, "get_messages", "abc")
+    assert [m.model_dump() for m in parsed] == [want for _, want in messages]
+    assert last_given == cursor
+
+
+@st.composite
+def room_payloads(draw):
+    """``(room as spreed sends it, fields it should parse to)``.
+
+    ``type`` is renamed to ``room_type``; ``lastMessage`` is ``[]`` in a room
+    with no messages yet, and lacks ``id``/``token`` in a federated room.
+    """
+    room = {
+        "id": draw(_ints),
+        "token": draw(st.text()),
+        "type": draw(st.integers(1, 6)),
+        "name": draw(st.text()),
+        "displayName": draw(st.text()),
+        "unreadMessages": draw(_ints),
+    }
+    expected = {k: v for k, v in room.items() if k != "type"} | {
+        "room_type": room["type"]
+    }
+    shape = draw(st.sampled_from(["never", "local", "federated", "absent"]))
+    if shape == "never":
+        room["lastMessage"] = []
+        expected["lastMessage"] = None
+    elif shape == "absent":
+        expected["lastMessage"] = None
+    else:
+        sent, want = draw(message_payloads(with_identity=shape == "local"))
+        room["lastMessage"] = sent
+        expected["lastMessage"] = {"id": None, "token": None} | want
+    return room, expected
+
+
+@given(st.lists(room_payloads(), max_size=3))
+async def test_rooms_parse_to_exactly_the_sent_fields(rooms):
+    parsed = await _talk(_ocs_list([sent for sent, _ in rooms]), "list_conversations")
+    for room, (_, expected) in zip(parsed, rooms, strict=True):
+        dumped = room.model_dump()
+        assert {k: dumped[k] for k in expected} == expected

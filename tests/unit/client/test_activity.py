@@ -4,10 +4,17 @@ The header semantics are those of the activity app bundled with Nextcloud 33-35
 (``Data::setOffsetFromSince``), which also hold for its 9.x development line.
 """
 
+import string
+from dataclasses import asdict
+
 import httpx2
 import pytest
-from nextcloud_client.activity import ActivityClient
+from hypothesis import example, given
+from hypothesis import strategies as st
+from nextcloud_client.activity import ActivityClient, _normalise_objects
 from nextcloud_client.http import nextcloud_httpx_client
+
+from tests.strategies import header_text, json_values
 
 pytestmark = pytest.mark.unit
 
@@ -126,8 +133,131 @@ async def test_list_filters():
         assert await ActivityClient(http, "alice").list_filters() == filters
 
 
-@pytest.mark.parametrize("bad", ["../../cloud/users", "all/x", "", "a b"])
+FILTER_CHARS = string.ascii_letters + string.digits + "_-"
+_filter_ids = st.text(st.sampled_from(FILTER_CHARS), max_size=10)
+
+
+@given(
+    st.tuples(
+        _filter_ids,
+        # URL-meaningful characters first: a uniform draw almost never picks "."
+        st.sampled_from("./\\%?#&= ")
+        | st.characters(codec="utf-8", exclude_characters=FILTER_CHARS),
+        _filter_ids,
+    ).map("".join)
+)
+@example("")
+@example("..")  # API_BASE/.. would address the parent route
+@example("../../cloud/users")
 async def test_filter_id_cannot_leave_the_activity_route(bad):
-    """The filter is a path segment: reject anything that could walk elsewhere."""
+    """The filter is a path segment: an empty id, or one character outside the
+    slug alphabet, is refused before any request is made."""
     with pytest.raises(ValueError, match="Invalid activity filter"):
         await _call(httpx2.Response(200), filter=bad)
+
+
+@given(_filter_ids.filter(bool))
+async def test_any_slug_is_a_valid_filter(filter_id):
+    _, request = await _call(_ocs([]), filter=filter_id)
+    assert request.url.path == f"{BASE}/{filter_id}"
+
+
+# ── Response parsing ────────────────────────────────────────────────────
+
+
+@st.composite
+def int_headers(draw):
+    """``(header value or None, what the page should report)``.
+
+    Positive ids are cursors; ``0`` and negatives mean "none" (the 9.x line
+    sends ``0``); anything non-numeric is ignored rather than raised on.
+    """
+    kind = draw(st.sampled_from(["absent", "positive", "non_positive", "garbage"]))
+    if kind == "absent":
+        return None, None
+    if kind == "positive":
+        n = draw(st.integers(min_value=1))
+        return str(n), n
+    if kind == "non_positive":
+        return str(draw(st.integers(max_value=0))), None
+    garbage = draw(header_text.filter(lambda t: not any(c.isdigit() for c in t)))
+    return garbage, None
+
+
+_object_values = st.text().map(lambda t: (t, t)) | st.integers().map(
+    lambda n: (n, str(n))
+)
+
+
+@st.composite
+def activity_rows(draw):
+    """``(row as sent, row as the page should carry it)``.
+
+    ``objects`` arrives as a JSON object, or as ``[]`` when PHP encodes an
+    empty map; values may be numbers, which the page carries as strings.
+    """
+    row = {"activity_id": draw(st.integers(min_value=1)), "subject": draw(st.text())}
+    expected = dict(row)
+    shape = draw(st.sampled_from(["map", "php_empty", "absent"]))
+    if shape == "map":
+        pairs = draw(st.dictionaries(st.text(), _object_values, max_size=3))
+        row["objects"] = {k: sent for k, (sent, _) in pairs.items()}
+        expected["objects"] = {k: want for k, (_, want) in pairs.items()}
+    else:
+        if shape == "php_empty":
+            row["objects"] = []
+        expected["objects"] = {}
+    return row, expected
+
+
+@st.composite
+def activity_pages(draw):
+    """A well-formed response, the ``since`` it answers, and the page it reads as."""
+    status = draw(st.sampled_from([200, 204, 304]))
+    since = draw(st.integers(min_value=0, max_value=10**6))
+    last_header, last_given = draw(int_headers())
+    first_header, first_known = draw(int_headers())
+    has_more = draw(st.booleans())
+    etag = draw(st.none() | header_text)
+    headers = {}
+    if last_header is not None:
+        headers["X-Activity-Last-Given"] = last_header
+    if first_header is not None:
+        headers["X-Activity-First-Known"] = first_header
+    if has_more:
+        headers["Link"] = NEXT
+    elif draw(st.booleans()):
+        headers["Link"] = '<https://nc.example.com/x>; rel="prev"'
+    if etag is not None:
+        headers["ETag"] = etag
+    rows = draw(st.lists(activity_rows(), max_size=3)) if status == 200 else []
+    if status == 200:
+        response = _ocs([sent for sent, _ in rows], headers=headers)
+    else:
+        response = httpx2.Response(status, headers=headers)
+    expected = {
+        "activities": [want for _, want in rows],
+        "last_given": last_given,
+        "first_known": first_known,
+        "has_more": has_more,
+        "etag": etag,
+        "cursor_reset": since > 0 and first_known is not None,
+    }
+    return response, since, expected
+
+
+@given(activity_pages())
+async def test_page_carries_exactly_what_the_response_said(case):
+    response, since, expected = case
+    page, _ = await _call(response, since=since)
+    assert asdict(page) == expected
+
+
+@given(json_values)
+@example([])
+@example({"12": 3})
+def test_objects_of_any_shape_normalise_to_a_string_map(objects):
+    """PHP's ``[]`` for an empty map, or anything stranger, never raises."""
+    normalised = _normalise_objects(objects)
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in normalised.items())
+    assert len(normalised) == (len(objects) if isinstance(objects, dict) else 0)
