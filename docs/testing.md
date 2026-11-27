@@ -119,10 +119,13 @@ This pair found three real bugs that the example tables had missed:
 - The gateway's 422 parser crashed on a list body.
 - A huge `expires_in_minutes` raised `OverflowError` instead of `ToolError`.
 
-Each bug is a separate example test marked `xfail(strict=True)`, which
-fails as a strict XPASS once the bug is fixed. The property keeps running,
-and passing, over the inputs the bug doesn't touch. Don't put the xfail on
-the property itself: that hides every other input the property covers.
+While a found bug is unfixed, pin it as a separate example test marked
+`xfail(strict=True)`, which fails as a strict XPASS once the bug is fixed.
+The property keeps running, and passing, over the inputs the bug doesn't
+touch. Don't put the xfail on the property itself: that hides every other
+input the property covers. When the fix lands, delete the xfail test, widen
+the property to the inputs it used to avoid, and keep the failing input as an
+`@example` on it. The three bugs above went through exactly that.
 
 **Mirror an upstream parser differentially.** If a helper is meant to agree
 with a library, compare the two directly. `test_cli_forwarded_allow_ips.py`

@@ -228,8 +228,8 @@ def test_only_a_permanent_code_names_the_image(code, extra):
     assert excinfo.value.index == (index if isinstance(index, int) else None)
 
 
-# Object bodies whose detail is not a dict, or a dict with a string code: the
-# shapes the parser handles today. The rest are the xfail below.
+# Arbitrary JSON reaches the object branch on few draws, so object bodies with
+# a dict detail are mixed in.
 _object_bodies = st.fixed_dictionaries(
     {"detail": st.none() | st.text() | st.integers() | st.lists(_json)}
 ) | st.fixed_dictionaries(
@@ -242,34 +242,16 @@ _object_bodies = st.fixed_dictionaries(
 )
 
 
-@given(_object_bodies)
+@given(_json | _object_bodies)
+@example([])
+@example("text")
+@example({"detail": {"code": []}})  # unhashable: once a TypeError on the set lookup
 def test_rejection_parser_raises_only_image_input_rejected(body):
     try:
         # json.dumps, not json=: httpx2 refuses NaN, which a real body may carry.
         _raise_for_image_rejection(httpx2.Response(422, content=json.dumps(body)))
     except ImageInputRejected:
         return
-
-
-_NOT_AN_OBJECT = pytest.mark.xfail(
-    strict=True, reason="a non-object 422 body raises AttributeError on .get"
-)
-_UNHASHABLE_CODE = pytest.mark.xfail(
-    strict=True, reason="an unhashable detail.code raises TypeError on the set lookup"
-)
-
-
-# One xfail per row, so fixing one bug XPASSes its rows without the other's.
-@pytest.mark.parametrize(
-    "body",
-    [
-        pytest.param([], marks=_NOT_AN_OBJECT),
-        pytest.param("text", marks=_NOT_AN_OBJECT),
-        pytest.param({"detail": {"code": []}}, marks=_UNHASHABLE_CODE),
-    ],
-)
-def test_rejection_parser_falls_through_on_an_unexpected_body(body):
-    _raise_for_image_rejection(httpx2.Response(422, content=json.dumps(body)))
 
 
 @pytest.mark.parametrize("path", ["image", "text"])

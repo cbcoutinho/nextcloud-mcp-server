@@ -64,30 +64,15 @@ def test_compute_link_expiry_rejects_non_positive(minutes, now):
         _compute_link_expiry(minutes, now)
 
 
-# A century of minutes from any date up to 9000 AD: far past any real expiry,
-# and clear of datetime.max. Larger values are the xfail below.
-@given(
-    st.integers(max_value=60 * 24 * 366 * 100),
-    st.datetimes(max_value=datetime(8999, 12, 31), timezones=st.just(timezone.utc)),
-)
+@given(st.integers(), _nows)
+@example(
+    10**10, datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
+)  # once OverflowError
 def test_compute_link_expiry_raises_only_tool_error(minutes, now):
     try:
         _compute_link_expiry(minutes, now)
     except ToolError:
         return
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="expires_in_minutes is an unbounded int: a huge value overflows "
-    "datetime and raises OverflowError, which mcp masks as a bare "
-    "'Error executing tool' instead of a ToolError",
-)
-def test_a_huge_expiry_raises_tool_error():
-    with pytest.raises(ToolError):
-        _compute_link_expiry(
-            10**10, datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
-        )
 
 
 def test_build_link_response_maps_fields():

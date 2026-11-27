@@ -122,23 +122,11 @@ async def test_client_id_url_is_accepted_exactly_when_valid(case):
     fetch.assert_awaited_once()
 
 
-@given(st.text(string.ascii_letters + string.digits, min_size=1, max_size=6))
+@given(st.text(string.ascii_letters + string.digits, max_size=6))
 @example("frag")
+@example("")  # urlsplit drops an empty fragment, so it once slipped through
 async def test_a_client_id_with_a_fragment_is_rejected(fragment):
     client_id = f"{CLIENT_ID}#{fragment}"
-    with patch.object(cimd, "_fetch", new=AsyncMock()) as fetch:
-        with pytest.raises(cimd.CIMDError):
-            await cimd.get_client_metadata(client_id)
-    fetch.assert_not_called()
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="an empty fragment ('…/metadata.json#') parses as fragment='' and is "
-    "accepted; draft §3 forbids a fragment component, empty or not",
-)
-async def test_a_client_id_with_an_empty_fragment_is_rejected():
-    client_id = f"{CLIENT_ID}#"
     with patch.object(cimd, "_fetch", new=AsyncMock()) as fetch:
         with pytest.raises(cimd.CIMDError):
             await cimd.get_client_metadata(client_id)

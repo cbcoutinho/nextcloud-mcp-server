@@ -478,10 +478,11 @@ def _raise_for_image_rejection(resp: httpx2.Response) -> None:
     ``raise_for_status`` — retryable, because nothing names the input.
     """
     try:
-        detail = resp.json().get("detail")
+        body = resp.json()
     except ValueError:
         return  # not JSON: nothing names the input
-    if not (isinstance(detail, dict) and "code" in detail):
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if not (isinstance(detail, dict) and isinstance(detail.get("code"), str)):
         return
     code = detail["code"]
     message = detail.get("message") or code
