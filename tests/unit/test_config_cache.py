@@ -79,4 +79,6 @@ def test_set_override_invalidates_settings(mocker):
     # hook fires without perturbing a real setting.
     config.set_override("TEST_CACHE_INVALIDATION_PROBE", "1")
     assert spy.call_count >= 1
+    # A set_override survives reload(), so remove the probe key explicitly.
+    config._dynaconf.unset("TEST_CACHE_INVALIDATION_PROBE", force=True)
     _reload_config()  # reset shared dynaconf/cache state for other tests
