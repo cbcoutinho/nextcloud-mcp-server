@@ -15,6 +15,7 @@ The Token Broker provides:
 """
 
 import logging
+import weakref
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 
@@ -183,8 +184,12 @@ class TokenBrokerService:
         self.cache = TokenCache(cache_ttl, cache_early_refresh)
         self._oidc_config = None
 
-        # Per-user locks for token refresh operations (prevents race conditions)
-        self._user_refresh_locks: dict[str, anyio.Lock] = {}
+        # Per-user locks for token refresh operations (prevents race conditions).
+        # Weak values: a lock lives only while a caller holds or waits on it, so
+        # the dict does not grow by one entry per user forever (GH #408).
+        self._user_refresh_locks: weakref.WeakValueDictionary[str, anyio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         self._locks_lock = anyio.Lock()  # Protects the locks dict itself
         self._http_client = None
 
@@ -207,12 +212,19 @@ class TokenBrokerService:
             user_id: User ID to get lock for
 
         Returns:
-            anyio.Lock for this user's refresh operations
+            anyio.Lock for this user's refresh operations. The caller must keep
+            the returned reference until it has released the lock: the dict
+            holds it weakly, so a dropped reference lets the entry disappear.
         """
         async with self._locks_lock:
-            if user_id not in self._user_refresh_locks:
-                self._user_refresh_locks[user_id] = anyio.Lock()
-            return self._user_refresh_locks[user_id]
+            # Bind the lock to a local before storing it. With weak values, a
+            # lock that only the dict refers to is collected at once, so a
+            # store-then-reread would raise KeyError.
+            lock = self._user_refresh_locks.get(user_id)
+            if lock is None:
+                lock = anyio.Lock()
+                self._user_refresh_locks[user_id] = lock
+            return lock
 
     async def _get_oidc_config(self) -> dict:
         """Get OIDC configuration from discovery endpoint."""
