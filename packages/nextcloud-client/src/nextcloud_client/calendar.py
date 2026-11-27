@@ -119,6 +119,142 @@ def _calendar_is_transparent(response_elem: Any, ns: dict[str, str]) -> bool:
     return elem is not None and elem.find("./c:transparent", ns) is not None
 
 
+_DAV_NS = "DAV:"
+_CALDAV_NS = "urn:ietf:params:xml:ns:caldav"
+_ICAL_NS = (
+    "http://apple.com/ns/ical/"  # NOSONAR(S5332) XML namespace URI, never fetched
+)
+
+# RFC 5545 3.8.2.7 TRANSP values. Lower-cased, they are also the two child
+# elements of CalDAV ``schedule-calendar-transp`` (RFC 4791 5.2.9).
+TRANSPARENCY_VALUES = frozenset({"OPAQUE", "TRANSPARENT"})
+
+
+def normalize_transparency(value: str) -> str:
+    """Return ``value`` as ``OPAQUE`` or ``TRANSPARENT``, case-insensitively.
+
+    Raises:
+        ValueError: If ``value`` is neither.
+    """
+    normalized = value.strip().upper()
+    if normalized not in TRANSPARENCY_VALUES:
+        raise ValueError(f"transparency must be OPAQUE or TRANSPARENT, got {value!r}")
+    return normalized
+
+
+def _append_calendar_props(
+    prop: Any,
+    *,
+    display_name: str | None = None,
+    description: str | None = None,
+    color: str | None = None,
+    transparency: str | None = None,
+) -> None:
+    """Append the given calendar properties to a ``<d:prop>`` element.
+
+    Shared by MKCALENDAR and PROPPATCH, so both write the same namespaces. An
+    argument left as ``None`` is not written. The elements are built with
+    lxml, which escapes the text, so a ``&`` or ``<`` in a name cannot break
+    the request body.
+    """
+    if display_name is not None:
+        etree.SubElement(prop, f"{{{_DAV_NS}}}displayname").text = display_name
+    if description is not None:
+        etree.SubElement(
+            prop, f"{{{_CALDAV_NS}}}calendar-description"
+        ).text = description
+    if color is not None:
+        # Nextcloud maps the Apple-namespace property to its calendarcolor
+        # column, which the Calendar UI shows. cs:calendar-color is not in that
+        # map: MKCALENDAR drops it and PROPPATCH stores it as a dead property.
+        etree.SubElement(prop, f"{{{_ICAL_NS}}}calendar-color").text = color
+    if transparency is not None:
+        transp = etree.SubElement(prop, f"{{{_CALDAV_NS}}}schedule-calendar-transp")
+        etree.SubElement(
+            transp, f"{{{_CALDAV_NS}}}{normalize_transparency(transparency).lower()}"
+        )
+
+
+def _xml_document(root: Any) -> str:
+    return etree.tostring(root, xml_declaration=True, encoding="utf-8").decode("utf-8")
+
+
+def mkcalendar_body(
+    *,
+    display_name: str,
+    description: str = "",
+    color: str = "#1976D2",
+    transparency: str | None = None,
+) -> str:
+    """Build the MKCALENDAR request body (RFC 4791 5.3.1) for a new calendar."""
+    root = etree.Element(
+        f"{{{_CALDAV_NS}}}mkcalendar",
+        nsmap={"d": _DAV_NS, "c": _CALDAV_NS, "ical": _ICAL_NS},
+    )
+    prop = etree.SubElement(
+        etree.SubElement(root, f"{{{_DAV_NS}}}set"), f"{{{_DAV_NS}}}prop"
+    )
+    _append_calendar_props(
+        prop,
+        display_name=display_name,
+        description=description,
+        color=color,
+        transparency=transparency,
+    )
+    components = etree.SubElement(
+        prop, f"{{{_CALDAV_NS}}}supported-calendar-component-set"
+    )
+    for name in ("VEVENT", "VTODO"):
+        etree.SubElement(components, f"{{{_CALDAV_NS}}}comp", name=name)
+    return _xml_document(root)
+
+
+def calendar_proppatch_body(
+    *,
+    display_name: str | None = None,
+    description: str | None = None,
+    color: str | None = None,
+    transparency: str | None = None,
+) -> str:
+    """Build a PROPPATCH body (RFC 4918 9.2) that sets only the given properties."""
+    root = etree.Element(
+        f"{{{_DAV_NS}}}propertyupdate",
+        nsmap={"d": _DAV_NS, "c": _CALDAV_NS, "ical": _ICAL_NS},
+    )
+    prop = etree.SubElement(
+        etree.SubElement(root, f"{{{_DAV_NS}}}set"), f"{{{_DAV_NS}}}prop"
+    )
+    _append_calendar_props(
+        prop,
+        display_name=display_name,
+        description=description,
+        color=color,
+        transparency=transparency,
+    )
+    return _xml_document(root)
+
+
+def proppatch_failures(raw: str) -> list[str]:
+    """List the properties a PROPPATCH multistatus did not set.
+
+    Each entry reads ``"<property>: <status line>"``. A PROPPATCH is atomic
+    (RFC 4918 9.2), so one refused property fails the others with 424; all of
+    them are listed. An empty list means every property was set.
+    """
+    tree = etree.fromstring(raw.encode("utf-8"))
+    ns = {"d": _DAV_NS}
+    failures: list[str] = []
+    for propstat in tree.findall(".//d:propstat", ns):
+        status = (propstat.findtext("d:status", default="", namespaces=ns)).strip()
+        parts = status.split()
+        if len(parts) >= 2 and parts[1] == "200":
+            continue
+        prop = propstat.find("d:prop", ns)
+        names = [] if prop is None else [etree.QName(p).localname for p in prop]
+        failures.extend(f"{name}: {status or 'no status'}" for name in names)
+    return failures
+
+
 def _rrule_to_string(rrule: Any) -> str:
     """Render an icalendar ``vRecur`` as an RFC 5545 RRULE value.
 
@@ -684,13 +820,14 @@ class CalendarClient:
         and a ``source`` URL pointing at the upstream feed (issue #830).
         """
         await self._ensure_calendar_home()
-        # Use custom PROPFIND with CalendarServer namespace (cs:) for calendar-color.
-        # caldav library's nsmap lacks "CS" namespace, and its CalendarColor uses
-        # Apple iCal namespace which Nextcloud doesn't recognize.
+        # Custom PROPFIND, because caldav's nsmap lacks the CalendarServer (cs:)
+        # namespace. Nextcloud keeps a calendar's colour under
+        # ical:calendar-color (its calendarcolor column). cs:calendar-color is
+        # still read as a fallback: earlier versions of this client wrote it,
+        # and a PROPPATCH stores it as a dead property.
         #
-        # cs:source / ical:calendar-color are requested to surface external
-        # subscriptions: Nextcloud exposes those as cs:subscribed collections
-        # carrying a cs:source href and an Apple-namespace color.
+        # cs:source is requested to surface external subscriptions: Nextcloud
+        # exposes those as cs:subscribed collections carrying a cs:source href.
         propfind_body = """<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:ical="http://apple.com/ns/ical/">
     <d:prop>
@@ -773,11 +910,12 @@ class CalendarClient:
                 else ""
             )
 
-            # Regular calendars expose cs:calendar-color; subscriptions store
-            # their color under the Apple iCal namespace.
-            color_elem = response_elem.find(".//cs:calendar-color", ns)
+            # Nextcloud stores calendar and subscription colours under the
+            # Apple iCal namespace. cs:calendar-color is a legacy fallback (see
+            # the PROPFIND above).
+            color_elem = response_elem.find(".//ical:calendar-color", ns)
             if color_elem is None or not color_elem.text:
-                color_elem = response_elem.find(".//ical:calendar-color", ns)
+                color_elem = response_elem.find(".//cs:calendar-color", ns)
             color = (
                 color_elem.text
                 if color_elem is not None and color_elem.text
@@ -819,32 +957,30 @@ class CalendarClient:
         display_name: str = "",
         description: str = "",
         color: str = "#1976D2",
+        transparency: str | None = None,
     ) -> dict[str, Any]:
-        """Create a new calendar with retry on 429 errors."""
-        await self._ensure_calendar_home()
-        # Use custom MKCALENDAR XML instead of caldav library's make_calendar() due to:
-        # 1. Missing CalendarServer namespace (cs:) in caldav's nsmap
-        # 2. caldav's CalendarColor uses Apple iCal namespace, not cs:calendar-color
-        # 3. make_calendar() doesn't support calendar-description or calendar-color params
-        calendar_url = self._get_calendar_url(calendar_name)
+        """Create a new calendar with retry on 429 errors.
 
-        mkcalendar_body = f"""<?xml version="1.0" encoding="utf-8"?>
-<mkcalendar xmlns="urn:ietf:params:xml:ns:caldav" xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
-    <d:set>
-        <d:prop>
-            <d:displayname>{display_name or calendar_name}</d:displayname>
-            <cs:calendar-color>{color}</cs:calendar-color>
-            <caldav:calendar-description xmlns:caldav="urn:ietf:params:xml:ns:caldav">{description}</caldav:calendar-description>
-            <caldav:supported-calendar-component-set xmlns:caldav="urn:ietf:params:xml:ns:caldav">
-                <caldav:comp name="VEVENT"/>
-                <caldav:comp name="VTODO"/>
-            </caldav:supported-calendar-component-set>
-        </d:prop>
-    </d:set>
-</mkcalendar>"""
+        Args:
+            transparency: ``OPAQUE`` or ``TRANSPARENT`` (CalDAV
+                ``schedule-calendar-transp``). ``TRANSPARENT`` is Nextcloud's
+                "never show me as busy". ``None`` leaves the server default,
+                which is opaque.
+        """
+        await self._ensure_calendar_home()
+        # Custom MKCALENDAR XML instead of caldav's make_calendar(), which does
+        # not take calendar-description, calendar-color or
+        # schedule-calendar-transp. See mkcalendar_body for the namespaces.
+        calendar_url = self._get_calendar_url(calendar_name)
+        body = mkcalendar_body(
+            display_name=display_name or calendar_name,
+            description=description,
+            color=color,
+            transparency=transparency,
+        )
 
         # Create calendar via MKCALENDAR request
-        response = await self._dav_client.mkcalendar(calendar_url, mkcalendar_body)
+        response = await self._dav_client.mkcalendar(calendar_url, body)
 
         if response.status != 201:
             raise RuntimeError(
@@ -861,8 +997,69 @@ class CalendarClient:
             "display_name": display_name or calendar_name,
             "description": description,
             "color": color,
+            "transparent": transparency is not None
+            and normalize_transparency(transparency) == "TRANSPARENT",
             "status_code": 201,
         }
+
+    async def update_calendar(
+        self,
+        calendar_name: str,
+        *,
+        display_name: str | None = None,
+        description: str | None = None,
+        color: str | None = None,
+        transparency: str | None = None,
+    ) -> dict[str, Any]:
+        """Change properties of an existing calendar with one PROPPATCH.
+
+        Only the arguments that are not ``None`` are sent; the others keep
+        their stored value. ``description=""`` clears the description.
+
+        Returns:
+            The calendar as ``list_calendars`` reports it after the change.
+
+        Raises:
+            ValueError: If no property is given, or ``transparency`` is not
+                ``OPAQUE`` or ``TRANSPARENT``.
+            RuntimeError: If the server refuses the PROPPATCH or any property
+                in it, for example on a read-only subscription.
+        """
+        if all(
+            value is None for value in (display_name, description, color, transparency)
+        ):
+            raise ValueError("No calendar property to update")
+        body = calendar_proppatch_body(
+            display_name=display_name,
+            description=description,
+            color=color,
+            transparency=transparency,
+        )
+        await self._ensure_calendar_home()
+        response = await self._dav_client.proppatch(
+            self._get_calendar_url(calendar_name), body
+        )
+        if response.status not in (200, 204, 207):
+            raise RuntimeError(
+                f"Failed to update calendar '{calendar_name}': HTTP {response.status}"
+            )
+        # A 207 can still refuse properties: each one carries its own status.
+        if response.status == 207 and response.raw:
+            failures = proppatch_failures(response.raw)
+            if failures:
+                raise RuntimeError(
+                    f"Failed to update calendar '{calendar_name}': "
+                    + "; ".join(failures)
+                )
+
+        logger.debug("Updated calendar: %s", calendar_name)
+        for calendar in await self.list_calendars():
+            if calendar["name"] == calendar_name:
+                return calendar
+        raise RuntimeError(
+            f"Calendar '{calendar_name}' was updated but is missing from the "
+            "calendar list"
+        )
 
     async def delete_calendar(self, calendar_name: str) -> dict[str, Any]:
         """Delete a calendar."""
@@ -2143,6 +2340,11 @@ class CalendarClient:
         privacy = event_data.get("privacy", "PUBLIC")
         event.add("class", privacy)
 
+        # Free/busy transparency (RFC 5545 3.8.2.7). Absent means OPAQUE.
+        transparency = event_data.get("transparency")
+        if transparency:
+            event.add("transp", normalize_transparency(transparency))
+
         # Add URL
         url = event_data.get("url", "")
         if url:
@@ -2504,6 +2706,10 @@ class CalendarClient:
                     component["PRIORITY"] = event_data["priority"]
                 if "privacy" in event_data:
                     component["CLASS"] = event_data["privacy"].upper()
+                if "transparency" in event_data:
+                    component["TRANSP"] = normalize_transparency(
+                        event_data["transparency"]
+                    )
                 if "url" in event_data:
                     component["URL"] = event_data["url"]
 

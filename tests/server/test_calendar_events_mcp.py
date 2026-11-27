@@ -2,6 +2,7 @@
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta
 
 import pytest
@@ -459,3 +460,133 @@ async def test_mcp_create_meeting_binds_a_timezone(
     finally:
         for uid in uids:
             await nc_client.calendar.delete_event(temporary_calendar, uid)
+
+
+async def test_mcp_event_transparency_round_trips(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, temporary_calendar: str
+):
+    """GH #1604: create, update and bulk update write the event's TRANSP."""
+    start = (datetime.now() + timedelta(days=9)).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
+    create_result = await nc_mcp_client.call_tool(
+        "nc_calendar_create_event",
+        {
+            "calendar_name": temporary_calendar,
+            "title": "Transparency MCP Test",
+            "start_datetime": start.strftime("%Y-%m-%dT%H:%M:%S"),
+            "end_datetime": (start + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+            "transparency": "TRANSPARENT",
+        },
+    )
+    assert create_result.is_error is False, create_result.content
+    event_uid = json.loads(create_result.content[0].text)["uid"]
+
+    try:
+        event, _ = await nc_client.calendar.get_event(temporary_calendar, event_uid)
+        assert event["transp"] == "TRANSPARENT"
+
+        update_result = await nc_mcp_client.call_tool(
+            "nc_calendar_update_event",
+            {
+                "calendar_name": temporary_calendar,
+                "event_uid": event_uid,
+                "transparency": "OPAQUE",
+            },
+        )
+        assert update_result.is_error is False, update_result.content
+        event, _ = await nc_client.calendar.get_event(temporary_calendar, event_uid)
+        assert event["transp"] == "OPAQUE"
+        assert event["title"] == "Transparency MCP Test"
+
+        bulk_result = await nc_mcp_client.call_tool(
+            "nc_calendar_bulk_operations",
+            {
+                "operation": "update",
+                "calendar_name": temporary_calendar,
+                "title_contains": "Transparency MCP Test",
+                "start_date": start.strftime("%Y-%m-%d"),
+                "end_date": (start + timedelta(days=1)).strftime("%Y-%m-%d"),
+                "new_transparency": "TRANSPARENT",
+            },
+        )
+        assert bulk_result.is_error is False, bulk_result.content
+        assert json.loads(bulk_result.content[0].text)["updated_count"] == 1
+        event, _ = await nc_client.calendar.get_event(temporary_calendar, event_uid)
+        assert event["transp"] == "TRANSPARENT"
+    finally:
+        await nc_client.calendar.delete_event(temporary_calendar, event_uid)
+
+
+async def test_mcp_manage_calendar_writes_transparency_and_properties(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient
+):
+    """GH #1604: create sets transparency, update changes only what it is given."""
+    calendar_name = f"mcp-transp-{uuid.uuid4().hex[:8]}"
+
+    async def stored() -> dict:
+        calendars = await nc_client.calendar.list_calendars()
+        return next(c for c in calendars if c["name"] == calendar_name)
+
+    create_result = await nc_mcp_client.call_tool(
+        "nc_calendar_manage_calendar",
+        {
+            "action": "create",
+            "calendar_name": calendar_name,
+            "display_name": "Info & deadlines",
+            "color": "#00AA00",
+            "transparency": "TRANSPARENT",
+        },
+    )
+    assert create_result.is_error is False, create_result.content
+
+    try:
+        created = json.loads(create_result.content[0].text)
+        assert created["action"] == "create"
+        assert created["calendar"]["transparent"] is True
+        before = await stored()
+        assert before["transparent"] is True
+        assert before["display_name"] == "Info & deadlines"
+        # The colour passed to create is stored: it used to be dropped.
+        assert before["color"].upper().startswith("#00AA00")
+
+        update_result = await nc_mcp_client.call_tool(
+            "nc_calendar_manage_calendar",
+            {
+                "action": "update",
+                "calendar_name": calendar_name,
+                "transparency": "OPAQUE",
+                "description": "Due dates only",
+            },
+        )
+        assert update_result.is_error is False, update_result.content
+        updated = json.loads(update_result.content[0].text)
+        assert updated["calendar"]["transparent"] is False
+
+        after = await stored()
+        assert after["transparent"] is False
+        assert after["description"] == "Due dates only"
+        # Not passed on update, so kept as stored.
+        assert after["display_name"] == "Info & deadlines"
+        assert after["color"] == before["color"]
+
+        rename_result = await nc_mcp_client.call_tool(
+            "nc_calendar_manage_calendar",
+            {
+                "action": "update",
+                "calendar_name": calendar_name,
+                "display_name": "Renamed",
+                "color": "#AA0000",
+            },
+        )
+        assert rename_result.is_error is False, rename_result.content
+        renamed = await stored()
+        assert renamed["display_name"] == "Renamed"
+        assert renamed["color"].upper().startswith("#AA0000")
+        assert renamed["transparent"] is False
+    finally:
+        delete_result = await nc_mcp_client.call_tool(
+            "nc_calendar_manage_calendar",
+            {"action": "delete", "calendar_name": calendar_name},
+        )
+        assert delete_result.is_error is False, delete_result.content

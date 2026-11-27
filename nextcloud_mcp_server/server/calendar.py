@@ -1,6 +1,6 @@
 import datetime as dt
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx2
 from mcp.server.mcpserver import Context, MCPServer
@@ -23,6 +23,7 @@ from nextcloud_mcp_server.models.calendar import (
     ListCalendarsResponse,
     ListEventsResponse,
     ListTodosResponse,
+    ManageCalendarResponse,
     Reminder,
     Todo,
     UpcomingEventsResponse,
@@ -160,6 +161,7 @@ def configure_calendar_tools(mcp: MCPServer):
         color: str = "",
         timezone: str = "",
         reminders: list[Reminder] | None = None,
+        transparency: Literal["OPAQUE", "TRANSPARENT"] = "OPAQUE",
     ):
         """Create a comprehensive calendar event with full feature support.
 
@@ -212,6 +214,9 @@ def configure_calendar_tools(mcp: MCPServer):
                 ``trigger_at`` (absolute), plus an optional ``action``
                 (DISPLAY/EMAIL/AUDIO), ``description``, ``summary`` (EMAIL
                 subject) and ``related`` (START/END).
+            transparency: Free/busy transparency (RFC 5545 TRANSP). ``OPAQUE``
+                makes the event block time ("Busy" in Nextcloud), and
+                ``TRANSPARENT`` does not ("Free").
 
         Returns:
             Dict with event creation result
@@ -237,6 +242,7 @@ def configure_calendar_tools(mcp: MCPServer):
             "url": url,
             "color": color,
             "timezone": timezone,
+            "transparency": transparency,
         }
         # Only forward ``recurring`` when the caller actually set it. Sending the
         # default would pin it to False on every call, which is what made
@@ -439,6 +445,7 @@ def configure_calendar_tools(mcp: MCPServer):
         color: str | None = None,
         timezone: str | None = None,
         reminders: list[Reminder] | None = None,
+        transparency: Literal["OPAQUE", "TRANSPARENT"] | None = None,
         etag: str = "",
     ):
         """Update any aspect of an existing event.
@@ -503,6 +510,8 @@ def configure_calendar_tools(mcp: MCPServer):
             event_data["timezone"] = timezone
         if reminders is not None:
             event_data["reminders"] = _reminders_to_dicts(reminders)
+        if transparency is not None:
+            event_data["transparency"] = transparency
 
         return await client.calendar.update_event(
             calendar_name, event_uid, event_data, etag
@@ -807,6 +816,7 @@ def configure_calendar_tools(mcp: MCPServer):
         new_categories: Optional[str] = None,
         new_priority: Optional[int] = None,
         new_reminder_minutes: Optional[int] = None,
+        new_transparency: Literal["OPAQUE", "TRANSPARENT"] | None = None,
         # Move operation parameters
         target_calendar: Optional[str] = None,
         apply_to_series: bool = False,
@@ -833,6 +843,8 @@ def configure_calendar_tools(mcp: MCPServer):
             new_categories: New categories for matching events (comma-separated)
             new_priority: New priority for matching events (1-9, 5=normal)
             new_reminder_minutes: New reminder time in minutes before event
+            new_transparency: New free/busy transparency, ``OPAQUE`` (busy) or
+                ``TRANSPARENT`` (free)
 
             # For move operations:
             target_calendar: Calendar to move events to (requires operation="move")
@@ -974,6 +986,8 @@ def configure_calendar_tools(mcp: MCPServer):
                 update_data["priority"] = new_priority
             if new_reminder_minutes is not None:
                 update_data["reminder_minutes"] = new_reminder_minutes
+            if new_transparency is not None:
+                update_data["transparency"] = new_transparency
 
             if not update_data:
                 raise ToolError("No update data provided for update operation")
@@ -1092,75 +1106,92 @@ def configure_calendar_tools(mcp: MCPServer):
     @require_scopes("calendar.write")
     @instrument_tool
     async def nc_calendar_manage_calendar(
-        action: str,  # "create", "delete", "update", "list"
+        action: Literal["create", "delete", "update", "list"],
         ctx: Context,
         calendar_name: str = "",
-        display_name: str = "",
-        description: str = "",
-        color: str = "#1976D2",  # Default blue color
-    ):
-        """Manage calendar creation, deletion, and properties.
-
-        This tool provides comprehensive calendar management functionality including
-        creating new calendars, deleting existing ones, and updating calendar properties.
+        display_name: str | None = None,
+        description: str | None = None,
+        color: str | None = None,
+        transparency: Literal["OPAQUE", "TRANSPARENT"] | None = None,
+    ) -> ManageCalendarResponse:
+        """Create, delete, update or list calendars.
 
         Args:
-            action: Action to perform - "create", "delete", "update", or "list"
-            calendar_name: Internal name for the calendar (required for create/delete/update)
-            display_name: Human-readable name for the calendar (used for create/update)
-            description: Description for the calendar (used for create/update)
-            color: Hex color code for the calendar (e.g., "#1976D2" for blue)
+            action: "create", "delete", "update", or "list"
+            calendar_name: Internal name for the calendar (required for
+                create/delete/update)
+            display_name: Human-readable name. On create it defaults to
+                ``calendar_name``.
+            description: Description of the calendar. On update, ``""`` clears it.
+            color: Hex color code (e.g. ``"#1976D2"``). On create it defaults to
+                ``"#1976D2"``.
+            transparency: ``TRANSPARENT`` makes the whole calendar free/busy
+                transparent: Nextcloud's "never show me as busy". ``OPAQUE``
+                makes its events block time again.
+
+        On update, only the arguments you pass change. The others keep their
+        stored value.
 
         Returns:
-            Result of the calendar management operation
+            ManageCalendarResponse with the affected calendar, or the list of
+            calendars for ``list``.
         """
         client = await get_client(ctx)
 
         if action == "list":
-            # Wrap in ListCalendarsResponse so the result is one content block,
-            # not one per calendar (GH #568). Mirrors nc_calendar_list_calendars.
+            # One response model for every action keeps the result a single
+            # content block (GH #568), as nc_calendar_list_calendars does.
             calendars_data = await client.calendar.list_calendars()
             calendars = [Calendar(**cal_data) for cal_data in calendars_data]
-            return ListCalendarsResponse(
-                calendars=calendars, total_count=len(calendars)
+            return ManageCalendarResponse(
+                action="list",
+                calendars=calendars,
+                total_count=len(calendars),
+                message=f"Found {len(calendars)} calendars",
             )
 
-        elif action == "create":
-            if not calendar_name:
-                raise ToolError("calendar_name is required for create action")
+        if not calendar_name:
+            raise ToolError(f"calendar_name is required for {action} action")
 
-            return await client.calendar.create_calendar(
+        if action == "create":
+            created = await client.calendar.create_calendar(
                 calendar_name=calendar_name,
                 display_name=display_name or calendar_name,
-                description=description,
-                color=color,
+                description=description or "",
+                color=color or "#1976D2",
+                transparency=transparency,
+            )
+            return ManageCalendarResponse(
+                action="create",
+                calendar=Calendar(**created),
+                message=f"Created calendar '{calendar_name}'",
             )
 
-        elif action == "delete":
-            if not calendar_name:
-                raise ToolError("calendar_name is required for delete action")
+        if action == "delete":
+            await client.calendar.delete_calendar(calendar_name)
+            return ManageCalendarResponse(
+                action="delete",
+                message=f"Deleted calendar '{calendar_name}'",
+            )
 
-            return await client.calendar.delete_calendar(calendar_name)
+        if action == "update":
+            try:
+                updated = await client.calendar.update_calendar(
+                    calendar_name,
+                    display_name=display_name,
+                    description=description,
+                    color=color,
+                    transparency=transparency,
+                )
+            except (ValueError, RuntimeError) as e:
+                raise ToolError(str(e)) from e
+            return ManageCalendarResponse(
+                action="update",
+                calendar=Calendar(**updated),
+                message=f"Updated calendar '{calendar_name}'",
+            )
 
-        elif action == "update":
-            if not calendar_name:
-                raise ToolError("calendar_name is required for update action")
-
-            # Note: Calendar property updates require additional CalDAV PROPPATCH implementation
-            # For now, return an informative message
-            return {
-                "status": "not_implemented",
-                "message": "Calendar property updates require PROPPATCH implementation",
-                "calendar_name": calendar_name,
-                "requested_changes": {
-                    "display_name": display_name,
-                    "description": description,
-                    "color": color,
-                },
-            }
-
-        else:
-            raise ToolError("Action must be 'create', 'delete', 'update', or 'list'")
+        raise ToolError("Action must be 'create', 'delete', 'update', or 'list'")
 
     # ============= Todo/Task Tools =============
 

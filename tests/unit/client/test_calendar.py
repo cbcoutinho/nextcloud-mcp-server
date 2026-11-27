@@ -458,6 +458,23 @@ def _calendar_client_with_propfind(mocker, raw_xml: str):
     return client, instance
 
 
+async def test_list_calendars_prefers_the_apple_namespace_color(mocker):
+    """Nextcloud keeps the colour under ical:calendar-color (its calendarcolor
+    column). A stale cs:calendar-color dead property, written by earlier
+    versions of this client, must not hide it.
+    """
+    raw = _LIST_CALENDARS_MULTISTATUS.replace(
+        "<cs:calendar-color>#FF0000</cs:calendar-color>",
+        "<cs:calendar-color>#FF0000</cs:calendar-color>"
+        "<ical:calendar-color>#0000FF</ical:calendar-color>",
+    )
+    client, _ = _calendar_client_with_propfind(mocker, raw)
+
+    calendars = await client.list_calendars()
+
+    assert {cal["name"]: cal["color"] for cal in calendars}["personal"] == "#0000FF"
+
+
 async def test_list_calendars_includes_external_subscription(mocker):
     """External subscriptions are returned alongside regular calendars and are
     flagged read-only with their source feed URL (issue #830).
