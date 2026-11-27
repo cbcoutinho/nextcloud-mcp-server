@@ -27,7 +27,7 @@ pytestmark = pytest.mark.integration
 REQUIRED_PARAMS = {"doc_type", "doc_id", "chunk_start", "chunk_end"}
 
 INDEX_TIMEOUT_SECONDS = 180
-POLL_INTERVAL_SECONDS = 5
+POLL_INTERVAL_SECONDS = 1
 
 # Files index more slowly than notes (tag-gated: the scanner has to see the tag
 # assignment on its next pass), and this budget must stay clear of the 180s

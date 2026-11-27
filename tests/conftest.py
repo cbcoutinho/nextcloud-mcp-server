@@ -25,7 +25,7 @@ from mcp.types import ElicitRequestParams, ElicitResult, ErrorData
 from nextcloud_client import NextcloudClient
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from nextcloud_mcp_server.http import nextcloud_client_from_env
+from nextcloud_mcp_server.http import nextcloud_client_from_env, nextcloud_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +270,22 @@ async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
         pytest.fail(f"Nextcloud server at {host} is not ready")
 
     logger.info("Creating session-scoped NextcloudClient from environment variables.")
-    client = nextcloud_client_from_env()
+    username = os.environ["NEXTCLOUD_USERNAME"]
+    app_password = await _exchange_for_app_password(
+        host, username, os.environ["NEXTCLOUD_PASSWORD"]
+    )
+    client = NextcloudClient(
+        base_url=host,
+        username=username,
+        auth=httpx2.BasicAuth(username, app_password),
+        password=app_password,
+        **nextcloud_client_kwargs(),
+    )
+    # User and group admin needs the login password: Nextcloud answers 403 to an
+    # app password for actions that require password confirmation.
+    login_client = nextcloud_client_from_env()
+    client.users = login_client.users
+    client.groups = login_client.groups
 
     # Perform a quick check to ensure connection works
     try:
@@ -284,6 +299,33 @@ async def nc_client(anyio_backend) -> AsyncGenerator[NextcloudClient, Any]:
         pytest.fail(f"Failed to connect to Nextcloud or get capabilities: {e}")
     finally:
         await client.close()
+        await login_client.close()
+        await _revoke_app_password(host, username, app_password)
+
+
+async def _exchange_for_app_password(host: str, username: str, password: str) -> str:
+    """Trade the login password for an app password.
+
+    The client strips cookies, so every request with the login password is a
+    full login: ~0.4 s each on the dev stack, against ~0.09 s with an app
+    password. nc_client does most of the integration tier's setup and cleanup.
+    """
+    async with httpx2.AsyncClient(base_url=host, auth=(username, password)) as http:
+        resp = await http.get(
+            "/ocs/v2.php/core/getapppassword",
+            headers={"OCS-APIRequest": "true", "Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        return resp.json()["ocs"]["data"]["apppassword"]
+
+
+async def _revoke_app_password(host: str, username: str, app_password: str) -> None:
+    async with httpx2.AsyncClient(base_url=host, auth=(username, app_password)) as http:
+        resp = await http.delete(
+            "/ocs/v2.php/core/apppassword", headers={"OCS-APIRequest": "true"}
+        )
+    if resp.is_error:
+        logger.warning("Could not revoke the test app password: %s", resp.status_code)
 
 
 @pytest.fixture(scope="session")

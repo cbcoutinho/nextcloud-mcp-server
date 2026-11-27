@@ -17,7 +17,7 @@ from tests.integration._search_helpers import document_is_searchable
 pytestmark = pytest.mark.integration
 
 INDEX_TIMEOUT_SECONDS = 150
-POLL_INTERVAL_SECONDS = 5
+POLL_INTERVAL_SECONDS = 1
 
 
 async def _search(nc_mcp_client, **arguments) -> dict:

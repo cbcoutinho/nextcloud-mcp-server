@@ -53,6 +53,46 @@ only to check one of those, move the check to a unit test and delete it.
 Cross-service boundaries we own also need a Pact contract test; upstream
 Nextcloud apps do not (see ADR-029).
 
+Test the same Nextcloud behaviour once. If a feature has an MCP-level test
+(`tests/server/`), don't repeat the same request at the client level
+(`tests/client/`). Keep a client test only for what the tool layer can't reach.
+`tests/client/webdav/test_webdav_search.py` keeps wildcards, subdirectory scope
+and XML escaping, and leaves name, type, limit and combined filters to
+`tests/server/test_webdav_search_mcp.py`.
+
+## Where integration time goes
+
+Integration tests are slow because of request costs and indexing waits on the
+dev stack. Network and pytest overhead are a small part. Measured locally on
+NC 33:
+
+| Cost | Per occurrence | What we do about it |
+|---|---|---|
+| A request authenticated with the login password | ~0.4 s | `nc_client` trades it for an app password at session start (~0.09 s per request) |
+| Argon2 hashing of that login password at the default cost | ~0.3 s more | `01-disable-security-protections.sh` lowers the dev stack's hashing cost |
+| A `DELETE` (moves to the trash) | ~0.85 s | delete the test directory, not every file in it |
+| A fresh document becoming searchable | up to `VECTOR_SYNC_SCAN_INTERVAL` (30 s) | Astrolabe's sync events, run by the `astrolabe-sync-worker` service, index it in a few seconds |
+| A WebDAV rewrite within the same second | the ETag doesn't change | wait 1.1 s before a rewrite whose new ETag you assert on |
+
+Rules that follow:
+
+- **Every request counts.** Our client strips cookies, so with the login
+  password each request is a full login. Build setup through `nc_client`, not
+  through a client made from `NEXTCLOUD_PASSWORD`.
+- **Scope read-only setup to the module.** A fixture that writes files that
+  every test only reads should be `@pytest.fixture(scope="module")`, taking
+  `anyio_backend`. The WebDAV search fixtures write 8 files once per module,
+  not once per test.
+- **Indexing waits on Astrolabe's delivery, not on the scanner.** Astrolabe
+  queues a sync event for each change to a note, file or Deck card. The
+  `astrolabe-sync-worker` compose service runs the queue every second and POSTs
+  to `MCP_SERVER_URL`'s `/webhooks/nextcloud`. Nextcloud's default AJAX cron
+  would only run it on a page visit. Poll every second, not every five. The
+  `25-configure-mcp-server-url.sh` hooks set the secret and enable the presets.
+  Delivery only reaches the server named in `MCP_SERVER_URL`: each CI lane
+  points it at its own server, so locally set it to the server under test
+  (`http://mcp:8000` for single-user).
+
 ## Keeping the unit tier fast
 
 ### Settings isolation

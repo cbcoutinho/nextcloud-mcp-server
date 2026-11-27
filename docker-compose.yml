@@ -23,7 +23,7 @@ services:
     restart: always
 
   app:
-    image: ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:33.0.11@sha256:73d52a6c57497a619120d1fca99d559f09dad52fb5e542051e31ebc66e05c7f3}
+    image: &nextcloud-image ${NEXTCLOUD_IMAGE:-docker.io/library/nextcloud:33.0.11@sha256:73d52a6c57497a619120d1fca99d559f09dad52fb5e542051e31ebc66e05c7f3}
     restart: always
     ports:
       - 127.0.0.1:8080:80
@@ -56,11 +56,39 @@ services:
       # app-hooks/before-starting/27-create-login-flow-mcp-client.sh when set.
       - LOGIN_FLOW_OIDC_CLIENT_ID=${LOGIN_FLOW_OIDC_CLIENT_ID:-}
       - LOGIN_FLOW_OIDC_CLIENT_SECRET=${LOGIN_FLOW_OIDC_CLIENT_SECRET:-}
+      # Astrolabe signs its sync-event deliveries to MCP_SERVER_URL's
+      # /webhooks/nextcloud with this; 25-configure-mcp-server-url.sh stores it.
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-dev-webhook-secret-change-me}
     healthcheck:
       test: ["CMD-SHELL", "curl -Ss http://localhost/status.php | grep '\"installed\":true' || exit 1"]
       interval: 10s
       timeout: 30s
       retries: 30
+
+  # Runs Astrolabe's queued sync-event deliveries (its webhooks to the MCP
+  # server) within a second. Nextcloud's default AJAX cron runs background jobs
+  # only on page visits, so without this a change waits for the MCP scanner's
+  # next pass (VECTOR_SYNC_SCAN_INTERVAL) instead.
+  astrolabe-sync-worker:
+    image: *nextcloud-image
+    restart: always
+    user: "33:33"  # www-data, the owner of the shared Nextcloud volume
+    working_dir: /var/www/html
+    depends_on:
+      - app
+    volumes:
+      - nextcloud:/var/www/html
+    environment:
+      - REDIS_HOST=redis  # read by the image's redis.config.php
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until php occ status 2>/dev/null | grep -q 'installed: true'; do sleep 5; done
+        # A worker reads config.php once; restart it so a URL or secret the
+        # app's start hooks write afterwards takes effect within seconds.
+        while true; do
+          php occ background-job:worker --stop_after=10s 'OCA\Astrolabe\BackgroundJob\SyncEventDeliveryJob'
+        done
 
   recipes:
     image: docker.io/library/nginx:1.31.10-alpine@sha256:aceb952b920393b7d0bc7b978927fc283370bea89fb082c6fef0ce18c60f96a9
