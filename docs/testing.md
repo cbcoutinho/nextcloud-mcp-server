@@ -73,12 +73,14 @@ the way:
   that are absent from the baseline. It does not re-set changed keys, because
   a pinned override would beat a later test's `monkeypatch.setenv`.
 
-The decision lives in `restore_settings()` (`tests/unit/conftest.py`), and
-`tests/unit/test_settings_isolation.py` pins it: an untouched config is not
+The decision lives in `restore_settings()` (`tests/unit/_settings_isolation.py`),
+and `tests/unit/test_settings_isolation.py` pins it: an untouched config is not
 reloaded, a patched env is reloaded back to the baseline, and a leaked
-override key is removed. The comparison is on `as_dict()` values, which are
-all scalars today. If a setting ever holds a dict or list, a test that mutates
-it in place would go unnoticed.
+override key is removed. The baseline is deep-copied, so a test that mutates a
+nested setting in place still shows up as drift (today every setting is a
+scalar). A *changed* key set through `set_override()` also survives the
+reload. It is deliberately left alone (see above), so later tests keep
+reloading until a test resets it.
 
 Change settings in tests only through `monkeypatch.setenv(...)` followed by
 `config._reload_config()`. `monkeypatch` undoes the env change, and the fixture

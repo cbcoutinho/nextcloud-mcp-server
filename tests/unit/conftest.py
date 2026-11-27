@@ -1,6 +1,5 @@
 """Unit test configuration — shared fixtures for all unit tests."""
 
-import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +8,11 @@ import pytest
 # by every unit test that names it as a parameter, without each test module
 # having to import it explicitly.
 from tests.fixtures.storage_backend import storage_backend  # noqa: F401
+from tests.unit._settings_isolation import (
+    env_without_pytest_bookkeeping,
+    restore_settings,
+    settings_baseline,
+)
 
 _UNIT_DIR = Path(__file__).parent
 
@@ -46,44 +50,11 @@ def metric_sample():
     return _sample
 
 
-def _env_without_pytest_bookkeeping() -> dict[str, str]:
-    """``os.environ`` minus ``PYTEST_CURRENT_TEST``, which pytest rewrites for
-    every phase of every test and so always differs."""
-    env = dict(os.environ)
-    env.pop("PYTEST_CURRENT_TEST", None)
-    return env
-
-
-def restore_settings(env_before: dict[str, str], baseline: dict) -> bool:
-    """Reload dynaconf if the environment or the settings drifted from
-    ``baseline``. Returns whether it reloaded. Tested in
-    ``test_settings_isolation.py``."""
-    from nextcloud_mcp_server import config as _config
-
-    if (
-        _env_without_pytest_bookkeeping() == env_before
-        and _config._dynaconf.as_dict() == baseline
-    ):
-        return False
-    _config._dynaconf.reload()
-    # A key added with set_override() survives reload(). Left in place, it
-    # would make every later test differ from the baseline and pay the
-    # reload, as TEST_CACHE_INVALIDATION_PROBE once did for ~2,700 tests.
-    # Only keys absent from the baseline are removed: re-setting a changed
-    # key would pin an override that a later monkeypatch.setenv can't beat.
-    for key in _config._dynaconf.as_dict().keys() - baseline.keys():
-        _config._dynaconf.unset(key, force=True)
-    return True
-
-
 @pytest.fixture(scope="session")
 def _dynaconf_baseline() -> dict:
     """The settings every test should start from: a fresh load of the
     session's environment."""
-    from nextcloud_mcp_server import config as _config
-
-    _config._dynaconf.reload()
-    return _config._dynaconf.as_dict()
+    return settings_baseline()
 
 
 @pytest.fixture(autouse=True)
@@ -105,7 +76,7 @@ def _reload_dynaconf_after_test(_dynaconf_baseline: dict):
     real env may have values that don't pass validators. Tests that need
     validation should call _reload_config() explicitly.
     """
-    env_before = _env_without_pytest_bookkeeping()
+    env_before = env_without_pytest_bookkeeping()
     yield
     from nextcloud_mcp_server import config as _config
 
