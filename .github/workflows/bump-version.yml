@@ -92,10 +92,24 @@ jobs:
             echo "bumped=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Push tags
+      # The branch goes over SSH with BUMP_DEPLOY_KEY: the default-branch ruleset
+      # only lets that deploy key push directly (GitHub Actions can't be a bypass
+      # actor on a personal account; homelab-terraform github-bump-deploy-keys.tf).
+      # Tags stay on GITHUB_TOKEN so they don't fire the `push: tags` workflows —
+      # release/docker already run below via workflow_call.
+      - name: Push bump commit and tags
         if: steps.bump.outputs.bumped == 'true'
+        env:
+          BUMP_DEPLOY_KEY: ${{ secrets.BUMP_DEPLOY_KEY }}
         run: |
-          git push
+          : "${BUMP_DEPLOY_KEY:?BUMP_DEPLOY_KEY secret is not set}"
+          d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+          printf '%s\n' "$BUMP_DEPLOY_KEY" > "$d/key"; chmod 600 "$d/key"
+          # GitHub's published host key (gh api meta .ssh_keys)
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$d/known_hosts"
+          GIT_SSH_COMMAND="ssh -i $d/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$d/known_hosts" \
+            git push "git@github.com:${GITHUB_REPOSITORY}.git" HEAD:refs/heads/master
+          # If this fails, master has an untagged bump commit (a re-run skips as superseded): push the tag by hand.
           git push --tags
 
       - name: Summary
