@@ -4,6 +4,8 @@ Payload examples are taken from real Nextcloud captures recorded in
 ``webhook-testing-findings.md``.
 """
 
+import string
+
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
@@ -542,10 +544,23 @@ def test_webhook_suffixes_follow_the_indexable_mime_setting(monkeypatch):
     assert extract_document_task(_file_written("/alice/files/Docs/a.pdf")) is not None
 
 
-_segments = st.from_regex(r"[A-Za-z0-9 _-]{1,10}", fullmatch=True)
-#: Folders under a user's files root, ``Notes`` included: a non-markdown file
-#: there is an ordinary file, not a note.
-_folders = st.lists(_segments | st.just("Notes"), max_size=3).map("/".join)
+# Texts rather than ``st.from_regex``, and the folder depth drawn first rather
+# than ``st.lists``: both make the number of draws vary with the value, so
+# Hypothesis's mutations often outgrew the example and discarded it.
+#: ``[A-Za-z0-9 _-]{1,10}``
+_segments = st.text(
+    string.ascii_letters + string.digits + " _-", min_size=1, max_size=10
+)
+#: ``[a-z]{1,8}``
+_uids = st.text(string.ascii_lowercase, min_size=1, max_size=8)
+
+
+@st.composite
+def _folders(draw) -> str:
+    """Folders under a user's files root, ``Notes`` included: a non-markdown
+    file there is an ordinary file, not a note. Up to three deep."""
+    depth = draw(st.integers(0, 3))
+    return "/".join(draw(_segments | st.just("Notes")) for _ in range(depth))
 
 
 def _file_path(uid: str, folder: str, name: str, suffix: str) -> str:
@@ -559,13 +574,13 @@ def indexable_file_payloads(draw):
     setting (default config), in any letter case."""
     suffixes = _indexable_suffixes()
     assert suffixes, "the default config indexes at least one file type"
-    uid = draw(st.from_regex(r"[a-z]{1,8}", fullmatch=True))
+    uid = draw(_uids)
     event_class = draw(st.sampled_from(_FILE_EVENT_CLASSES))
     node_id = draw(st.integers() | st.text(min_size=1))
     time = draw(st.integers(min_value=0, max_value=2**40))
     recase = draw(st.sampled_from([str.lower, str.upper, str.title]))
     suffix = recase(draw(st.sampled_from(suffixes)))
-    path = _file_path(uid, draw(_folders), draw(_segments), suffix)
+    path = _file_path(uid, draw(_folders()), draw(_segments), suffix)
     payload = {
         "user": {"uid": uid},
         "time": time,
@@ -598,15 +613,17 @@ def test_an_indexable_file_event_yields_a_reconcile_task(case):
 
 #: Suffixes vector sync does not index. ``.md`` is excluded because under
 #: ``Notes/`` it is a note.
-_ignored_suffixes = st.from_regex(r"\.[A-Za-z0-9]{1,5}", fullmatch=True).filter(
-    lambda s: s.lower() not in _indexable_suffixes() and s.lower() != ".md"
+_ignored_suffixes = (
+    st.text(string.ascii_letters + string.digits, min_size=1, max_size=5)
+    .map(".{}".format)
+    .filter(lambda s: s.lower() not in _indexable_suffixes() and s.lower() != ".md")
 )
 
 
 @pytest.mark.unit
 @given(
     event_class=st.sampled_from(_FILE_EVENT_CLASSES),
-    folder=_folders,
+    folder=_folders(),
     name=_segments,
     suffix=_ignored_suffixes,
 )

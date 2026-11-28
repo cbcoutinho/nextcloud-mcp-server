@@ -19,7 +19,7 @@ from nextcloud_mcp_server.providers.gateway import (
     GatewayProvider,
     _raise_for_image_rejection,
 )
-from tests.strategies import json_values
+from tests.strategies import dictionaries_with_optional_keys, json_values
 
 pytestmark = pytest.mark.unit
 
@@ -204,9 +204,8 @@ _PERMANENT = ["invalid_image", "unsupported_mime_type"]
 @given(
     st.sampled_from([*_PERMANENT, "image_too_large", "too_many_images"])
     | st.text(max_size=20),
-    st.fixed_dictionaries(
-        {},
-        optional={"index": st.none() | st.integers() | st.text(), "message": st.text()},
+    dictionaries_with_optional_keys(
+        {}, {"index": st.none() | st.integers() | st.text(), "message": st.text()}
     ),
 )
 @example("invalid_image", {})
@@ -230,9 +229,9 @@ _object_bodies = st.fixed_dictionaries(
     {"detail": st.none() | st.text() | st.integers() | st.lists(json_values)}
 ) | st.fixed_dictionaries(
     {
-        "detail": st.fixed_dictionaries(
+        "detail": dictionaries_with_optional_keys(
             {"code": st.text() | st.sampled_from(sorted(_PERMANENT_IMAGE_CODES))},
-            optional={"index": json_values, "message": json_values},
+            {"index": json_values, "message": json_values},
         )
     }
 )

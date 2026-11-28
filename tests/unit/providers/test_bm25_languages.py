@@ -60,27 +60,37 @@ def test_invalid_setting_fails_at_startup():
         Settings(bm25_languages="german,english")
 
 
-_ONE_PER_SCRIPT = st.dictionaries(
-    st.sampled_from(sorted(set(BM25_LANGUAGE_SCRIPTS.values()))),
-    st.just(None),
-    min_size=1,
-).flatmap(
-    lambda scripts: st.tuples(
-        *[
+_SCRIPTS = sorted(set(BM25_LANGUAGE_SCRIPTS.values()))
+
+
+@st.composite
+def one_per_script_in_any_order(draw) -> tuple[list[str], list[str]]:
+    """``(languages, shuffled)``: at most one language per script, at least one
+    in all, and the same languages in any order.
+
+    Every script draws a language and an in/out flag, and the order is a
+    permutation of all scripts, so the number of draws never depends on how
+    many are in. Hypothesis's mutations then never outgrow the example.
+    """
+    first = draw(st.sampled_from(_SCRIPTS))
+    chosen = {}
+    for script in _SCRIPTS:
+        lang = draw(
             st.sampled_from(
                 [lang for lang, s in BM25_LANGUAGE_SCRIPTS.items() if s == script]
             )
-            for script in scripts
-        ]
-    )
-)
+        )
+        if draw(st.booleans()) or script == first:
+            chosen[script] = lang
+    order = draw(st.permutations(_SCRIPTS))
+    return list(chosen.values()), [chosen[s] for s in order if s in chosen]
 
 
-@given(languages=_ONE_PER_SCRIPT, data=st.data())
-def test_parse_is_order_insensitive(languages, data):
+@given(one_per_script_in_any_order())
+def test_parse_is_order_insensitive(case):
     """Any ordering of a valid set parses to the same sorted tuple, so the
     collection name does not depend on how the operator wrote the list."""
-    shuffled = data.draw(st.permutations(languages))
+    languages, shuffled = case
     assert parse_bm25_languages(",".join(shuffled)) == tuple(sorted(languages))
 
 

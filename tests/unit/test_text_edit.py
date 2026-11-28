@@ -3,7 +3,7 @@
 import io
 
 import pytest
-from hypothesis import assume, example, given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from nextcloud_mcp_server.utils.text_edit import (
@@ -25,15 +25,26 @@ _lf_text = st.text(alphabet="ab\n", max_size=30)
 
 
 @st.composite
-def lf_edits(draw):
+def _lf_text_with_a_break(draw):
+    """``_lf_text`` restricted to texts with at least one line break, built
+    by inserting one rather than filtering for it."""
+    rest = draw(st.text(alphabet="ab\n", max_size=29))
+    at = draw(st.integers(0, len(rest)))
+    return rest[:at] + "\n" + rest[at:]
+
+
+@st.composite
+def lf_edits(draw, texts=_lf_text):
     """An LF-only file and an edit as a model sends it: ``\\n`` line breaks,
     ``old_string`` usually quoted from the file itself."""
-    text = draw(_lf_text)
-    if text and draw(st.booleans()):
-        start = draw(st.integers(0, len(text) - 1))
-        old = text[start : draw(st.integers(start + 1, len(text)))]
-    else:
-        old = draw(st.text(alphabet="ab\n", min_size=1, max_size=30))
+    text = draw(texts)
+    # Both branches draw the same choices, so Hypothesis can switch between
+    # them without the example outgrowing its size cap (a discarded example).
+    quote = draw(st.booleans())
+    start = draw(st.integers(0, max(len(text) - 1, 0)))
+    stop = draw(st.integers(start + 1, max(len(text), start + 1)))
+    other = draw(st.text(alphabet="ab\n", min_size=1, max_size=30))
+    old = text[start:stop] if text and quote else other
     edit = TextEdit(old, draw(_lf_text), replace_all=draw(st.booleans()))
     return text, edit
 
@@ -72,7 +83,8 @@ def _crlf(text: str) -> str:
     return text.replace("\n", "\r\n")
 
 
-@given(lf_edits())
+# Only texts with a line break: without one there is no convention to keep.
+@given(lf_edits(_lf_text_with_a_break()))
 @example(("a\nb\nc\n", TextEdit("a\nb", "x\ny")))  # \n quote matches CRLF
 @example(("a\nb\na\nb\n", TextEdit("b", "B", replace_all=True)))
 @example(("a\nb\na\nb\n", TextEdit("a\nb", "x\ny", replace_all=True)))
@@ -86,7 +98,6 @@ def test_a_crlf_file_is_edited_as_if_it_were_lf(case):
     throughout, an edit must do exactly what it does to the LF version of the
     file, and the file must stay CRLF-only."""
     lf_text, edit = case
-    assume("\n" in lf_text)  # no line endings, so no convention to keep
 
     expected = _outcome(lf_text, edit)
 

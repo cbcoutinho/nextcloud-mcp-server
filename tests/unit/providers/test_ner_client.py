@@ -18,7 +18,7 @@ from nextcloud_mcp_server.providers.ner import (
     NerError,
     windows,
 )
-from tests.strategies import json_values
+from tests.strategies import fixed_draw_lists, json_values
 
 pytestmark = pytest.mark.unit
 
@@ -136,9 +136,9 @@ def ner_responses(draw):
     """``(texts, body, complete)``: a response accounting for every text exactly
     once, or one broken in a single way. Result order is shuffled: only
     ``index`` ties a result to its text."""
-    texts = draw(st.lists(st.text(max_size=5), min_size=1, max_size=4))
+    texts = draw(fixed_draw_lists(st.text(max_size=5), min_size=1, max_size=4))
     results = [
-        {"index": i, "entities": draw(st.lists(json_values, max_size=2))}
+        {"index": i, "entities": draw(fixed_draw_lists(json_values, max_size=2))}
         for i in range(len(texts))
     ]
     breaker = draw(st.sampled_from([None, *_BREAKERS]))
@@ -172,7 +172,7 @@ def test_parse_accepts_exactly_a_response_covering_every_text(case):
     assert len(NerClient._parse(body, texts, _LABELS)) == len(texts)
 
 
-@given(json_values, st.lists(st.text(max_size=5), min_size=1, max_size=3))
+@given(json_values, fixed_draw_lists(st.text(max_size=5), min_size=1, max_size=3))
 @example({"nope": []}, ["a", "b"])
 @example([], ["a", "b"])
 @example({"results": [{"index": 0}]}, ["a", "b"])

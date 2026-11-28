@@ -64,42 +64,53 @@ def client_id_urls(draw):
 
     Host case and port vary in the valid URLs: both are legal and the host is
     compared case-insensitively. A fragment has its own property below.
+
+    The values every mutation needs are drawn whichever one applies, so the
+    number of draws is fixed: Hypothesis's mutations never outgrow the example
+    and discard it.
     """
-    scheme, userinfo, port = "https", "", ""
     host = "".join(c.upper() if draw(st.booleans()) else c for c in "client.example")
     host += ".com"
-    if draw(st.booleans()):
-        port = f":{draw(st.integers(1, 65535))}"
-    segments = draw(st.lists(_SEGMENTS, min_size=1, max_size=4))
+    port_number = draw(st.integers(1, 65535))
+    port = f":{port_number}" if draw(st.booleans()) else ""
+    n_segments = draw(st.integers(1, 4))
+    segments = [draw(_SEGMENTS) for _ in range(n_segments)]
     path = "/" + "/".join(segments)
 
     mutation = draw(st.sampled_from([None, *_MUTATIONS]))
     event(f"mutation: {mutation}")
-    if mutation == "scheme":
-        scheme = draw(st.sampled_from(["http", "ftp"]))
-    elif mutation == "userinfo":
-        userinfo = draw(st.sampled_from(["user@", "user:pw@", "@", ":@"]))
-    elif mutation == "host":
-        host = draw(
-            st.sampled_from(
-                [
-                    "untrusted.example.com",
-                    "client.example.com.evil.example",
-                    "evilclient.example.com",
-                    "example.com",
-                ]
-            )
+    bad_scheme = draw(st.sampled_from(["http", "ftp"]))
+    userinfo = draw(st.sampled_from(["user@", "user:pw@", "@", ":@"]))
+    bad_host = draw(
+        st.sampled_from(
+            [
+                "untrusted.example.com",
+                "client.example.com.evil.example",
+                "evilclient.example.com",
+                "example.com",
+            ]
         )
+    )
+    bad_port = draw(
+        st.text(string.ascii_letters, min_size=1, max_size=4)
+        | st.integers(65536, 10**6).map(str)
+    )
+    bare_path = draw(st.sampled_from(["", "/"]))
+    dots = [draw(_DOTS), draw(_DOTS)]
+    dot = "".join(dots[: draw(st.sampled_from([1, 2]))])
+    dot_at = draw(st.integers(0, len(segments)))
+
+    scheme = bad_scheme if mutation == "scheme" else "https"
+    if mutation != "userinfo":
+        userinfo = ""
+    if mutation == "host":
+        host = bad_host
     elif mutation == "port":
-        port = ":" + draw(
-            st.text(string.ascii_letters, min_size=1, max_size=4)
-            | st.integers(65536, 10**6).map(str)
-        )
+        port = ":" + bad_port
     elif mutation == "no_path":
-        path = draw(st.sampled_from(["", "/"]))
+        path = bare_path
     elif mutation == "dot_segment":
-        dot = "".join(draw(_DOTS) for _ in range(draw(st.sampled_from([1, 2]))))
-        segments.insert(draw(st.integers(0, len(segments))), dot)
+        segments.insert(dot_at, dot)
         path = "/" + "/".join(segments)
     return f"{scheme}://{userinfo}{host}{port}{path}", mutation is None
 

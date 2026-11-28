@@ -8,6 +8,7 @@ caldav build whichever auth its backend needs.
 """
 
 import logging
+import string
 from datetime import timedelta
 from urllib.parse import quote, unquote
 
@@ -1285,37 +1286,52 @@ def _todo_with_alarm(alarm_body: str) -> str:
     )
 
 
-_ical_token = st.from_regex(r"(X-)?[A-Za-z][A-Za-z0-9-]{0,10}", fullmatch=True)
-_ical_text = st.from_regex(r"[A-Za-z0-9 ]{0,12}", fullmatch=True)
+# Built from texts rather than ``st.from_regex``: a regex draws per character,
+# so Hypothesis's mutations often outgrew the example and discarded it.
+#: ``(X-)?[A-Za-z][A-Za-z0-9-]{0,10}``
+_ical_token = st.builds(
+    "{}{}{}".format,
+    st.sampled_from(["", "X-"]),
+    st.text(string.ascii_letters, min_size=1, max_size=1),
+    st.text(string.ascii_letters + string.digits + "-", max_size=10),
+)
+#: ``[A-Za-z0-9 ]{0,12}``
+_ical_text = st.text(string.ascii_letters + string.digits + " ", max_size=12)
 
 
 @st.composite
 def stored_alarms(draw) -> tuple[str, bool]:
     """A VALARM body any CalDAV client might have stored, and whether it has a
-    TRIGGER (without one there is nothing to report)."""
-    lines = []
+    TRIGGER (without one there is nothing to report).
+
+    Every line's values are drawn whether the line is kept or not, and the
+    order is a permutation of all four line slots, so the number of draws is
+    fixed: Hypothesis's mutations never outgrow the example and discard it.
+    """
+    lines = [None] * 4  # ACTION, TRIGGER, DESCRIPTION, SUMMARY
+    action = draw(st.sampled_from(["DISPLAY", "EMAIL", "AUDIO"]) | _ical_token)
     if draw(st.booleans()):
-        action = draw(st.sampled_from(["DISPLAY", "EMAIL", "AUDIO"]) | _ical_token)
-        lines.append(f"ACTION:{action}")
+        lines[0] = f"ACTION:{action}"
     trigger = draw(st.sampled_from(["none", "relative", "absolute"]))
     event(f"trigger: {trigger}")
+    sign = draw(st.sampled_from(["", "+", "-"]))
+    amount = draw(st.integers(0, 10_000))
+    unit = draw(st.sampled_from(["TS", "TM", "TH", "D", "W"]))
+    related = draw(st.sampled_from(["START", "END", "start"]) | _ical_token)
+    with_related = draw(st.booleans())
     if trigger == "relative":
-        sign = draw(st.sampled_from(["", "+", "-"]))
-        amount = draw(st.integers(0, 10_000))
-        unit = draw(st.sampled_from(["TS", "TM", "TH", "D", "W"]))
         duration = f"{sign}P{'T' if unit.startswith('T') else ''}{amount}{unit[-1]}"
-        params = ""
-        if draw(st.booleans()):
-            related = draw(st.sampled_from(["START", "END", "start"]) | _ical_token)
-            params = f";RELATED={related}"
-        lines.append(f"TRIGGER{params}:{duration}")
+        params = f";RELATED={related}" if with_related else ""
+        lines[1] = f"TRIGGER{params}:{duration}"
     elif trigger == "absolute":
-        lines.append("TRIGGER;VALUE=DATE-TIME:20260101T090000Z")
-    for name in ("DESCRIPTION", "SUMMARY"):
+        lines[1] = "TRIGGER;VALUE=DATE-TIME:20260101T090000Z"
+    for slot, name in ((2, "DESCRIPTION"), (3, "SUMMARY")):
+        text = draw(_ical_text)
         if draw(st.booleans()):
-            lines.append(f"{name}:{draw(_ical_text)}")
-    lines = draw(st.permutations(lines))
-    return "\n".join(lines) or "ACTION:DISPLAY", trigger != "none"
+            lines[slot] = f"{name}:{text}"
+    order = draw(st.permutations(range(4)))
+    kept = [lines[i] for i in order if lines[i] is not None]
+    return "\n".join(kept) or "ACTION:DISPLAY", trigger != "none"
 
 
 @given(stored_alarms())

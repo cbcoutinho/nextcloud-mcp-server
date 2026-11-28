@@ -13,7 +13,12 @@ from nextcloud_mcp_server.auth.oauth_routes import (
     _with_native_application_type,
     oauth_register_proxy,
 )
-from tests.strategies import json_values
+from tests.strategies import (
+    dictionaries_with_optional_keys,
+    fixed_draw_lists,
+    fixed_draw_one_of,
+    json_values,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -96,11 +101,14 @@ def test_native_application_type(case):
 
 
 @given(
-    st.dictionaries(
-        st.sampled_from(
-            ["token_endpoint_auth_method", "redirect_uris", "application_type", "x"]
+    dictionaries_with_optional_keys(
+        {},
+        dict.fromkeys(
+            ["token_endpoint_auth_method", "redirect_uris", "application_type", "x"],
+            fixed_draw_one_of(
+                json_values, st.just("none"), fixed_draw_lists(st.text(), max_size=5)
+            ),
         ),
-        json_values | st.just("none") | st.lists(st.text()),
     )
 )
 @example({**_PUBLIC, "redirect_uris": ["http://[::1/cb"]})  # invalid IPv6 host
