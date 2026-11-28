@@ -128,3 +128,79 @@ async def test_mcp_whiteboard_get_refuses_anything_else_alike(
         messages.add(result.content[0].text.replace(path, "PATH"))
     assert len(messages) == 1, messages
     assert "No whiteboard to read" in messages.pop()
+
+
+async def test_mcp_whiteboard_write_round_trip(
+    nc_mcp_client: ClientSession, nc_client: NextcloudClient, board_dir: str
+):
+    """Create a board, draw on it, change and delete, and read it back."""
+    path = f"{board_dir}/drawn.whiteboard"
+    call = nc_mcp_client.call_tool
+
+    created = _payload(await call("nc_whiteboard_create", {"path": path}))
+    listed = _payload(await call("nc_whiteboard_list", {"path": board_dir}))
+    assert path in {board["path"] for board in listed["results"]}
+
+    etag = _payload(await call("nc_whiteboard_get", {"path": path}))["etag"]
+    assert created["etag"] in (None, etag)
+    added = _payload(
+        await call(
+            "nc_whiteboard_add_elements",
+            {
+                "path": path,
+                "etag": etag,
+                "elements": [
+                    {"type": "rectangle", "id": "plan", "x": 0, "y": 0, "text": "Plan"},
+                    {"type": "ellipse", "id": "ship", "x": 400, "y": 0, "text": "Ship"},
+                    {"type": "arrow", "id": "go", "start": "plan", "end": "ship"},
+                ],
+            },
+        )
+    )
+    assert added["element_ids"] == ["plan", "ship", "go"]
+
+    etag = _payload(await call("nc_whiteboard_get", {"path": path}))["etag"]
+    assert added["etag"] in (None, etag)
+    _payload(
+        await call(
+            "nc_whiteboard_update_elements",
+            {
+                "path": path,
+                "etag": etag,
+                "changes": [{"id": "ship", "text": "Release", "y": 200}],
+            },
+        )
+    )
+
+    board = _payload(await call("nc_whiteboard_get", {"path": path}))
+    by_id = {element["id"]: element for element in board["elements"]}
+    assert by_id["plan"]["text"] == "Plan"
+    assert (by_id["ship"]["text"], by_id["ship"]["y"]) == ("Release", 200)
+    assert (by_id["go"]["start"], by_id["go"]["end"]) == ("plan", "ship")
+    assert board["total_count"] == 3
+
+    # A stale etag is refused, and the board is left as it was.
+    stale = await call(
+        "nc_whiteboard_delete_elements", {"path": path, "etag": etag, "ids": ["go"]}
+    )
+    assert stale.is_error is True
+    assert "has changed since that etag" in stale.content[0].text
+
+    _payload(
+        await call(
+            "nc_whiteboard_delete_elements",
+            {"path": path, "etag": board["etag"], "ids": ["plan"]},
+        )
+    )
+    board = _payload(await call("nc_whiteboard_get", {"path": path}))
+    by_id = {element["id"]: element for element in board["elements"]}
+    assert "plan" not in by_id
+    assert "start" not in by_id["go"] and by_id["go"]["end"] == "ship"
+
+    # Nothing was removed from the file: the deleted elements are still there.
+    content, _, _ = await nc_client.webdav.read_file(path)
+    stored = {e["id"]: e for e in json.loads(content)["elements"]}
+    assert stored["plan"]["isDeleted"] is True
+
+    existing = await call("nc_whiteboard_create", {"path": path})
+    assert existing.is_error is True

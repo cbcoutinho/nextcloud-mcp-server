@@ -325,7 +325,7 @@ Scopes are **per-app** and follow an `<app>.<read|write>` pattern. There is no `
 | `todo.read` / `todo.write` | Tasks (VTODO outside Calendar) |
 | `collectives.read` / `collectives.write` | Collectives |
 | `shopping_list.read` / `shopping_list.write` | Shopping List |
-| `whiteboard.read` | Whiteboard (read-only). Reads board files without `files.read` |
+| `whiteboard.read` / `whiteboard.write` | Whiteboard. Reads and changes board files without `files.read` / `files.write` |
 | `lucarne.read` / `lucarne.write` | Lucarne |
 | `activity.read` | Activity stream (read-only). Reveals file paths and who changed them; `EXCLUDED_TAGS` still applies |
 | `news.read` | News (read-only) |

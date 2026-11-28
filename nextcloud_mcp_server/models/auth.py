@@ -99,6 +99,7 @@ ALL_SUPPORTED_SCOPES: frozenset[str] = frozenset(
         "shopping_list.read",
         "shopping_list.write",
         "whiteboard.read",
+        "whiteboard.write",
         "lucarne.read",
         "lucarne.write",
         "activity.read",
