@@ -344,6 +344,9 @@ class ManageCalendarResponse(BaseResponse):
     calendars: Optional[List[Calendar]] = Field(
         None, description="List of calendars (for list action)"
     )
+    total_count: Optional[int] = Field(
+        None, description="Number of calendars (for list action)"
+    )
     message: str = Field(description="Success message")
 
 

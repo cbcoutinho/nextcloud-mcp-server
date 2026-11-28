@@ -14,7 +14,7 @@
 | `nc_calendar_get_upcoming_events` | Get upcoming events in the next N days |
 | `nc_calendar_find_availability` | Find free time slots for meetings, from your own calendars plus any attendees' free/busy |
 | `nc_calendar_bulk_operations` | **New:** Bulk update, delete, or move events matching filter criteria |
-| `nc_calendar_manage_calendar` | **New:** Create, delete, and manage calendar properties |
+| `nc_calendar_manage_calendar` | Create, delete, list and update calendars. `update` changes only the properties you pass: `display_name`, `description`, `color`, `transparency` |
 | `nc_calendar_complete_todo` | **New:** Mark a todo complete, setting `STATUS`, `PERCENT-COMPLETE` and `COMPLETED` together |
 
 ### Calendar Integration
@@ -114,6 +114,21 @@ new_calendar = await nc_calendar_manage_calendar(
     display_name="Project Alpha Calendar",
     description="Calendar for Project Alpha team",
     color="#FF5722",
+)
+
+# Due dates that should stay visible without making you look busy:
+# a free event, and a whole calendar set to "never show me as busy".
+await nc_calendar_create_event(
+    calendar_name="personal",
+    title="Report due",
+    start_datetime="2025-08-15",
+    all_day=True,
+    transparency="TRANSPARENT",
+)
+await nc_calendar_manage_calendar(
+    action="update",
+    calendar_name="deadlines",
+    transparency="TRANSPARENT",
 )
 ```
 
