@@ -25,7 +25,10 @@ class ProvisionStatusResponse(BaseResponse):
     """Response from nc_auth_check_status tool."""
 
     status: str = Field(
-        description="Status: 'provisioned', 'pending', 'not_initiated', 'error'"
+        description=(
+            "Status: 'provisioned', 'pending', 'not_initiated', 'revoked' "
+            "(Nextcloud no longer accepts the stored app password), 'error'"
+        )
     )
     message: str = Field(description="Human-readable status message")
     user_id: str | None = Field(None, description="MCP user ID")
