@@ -6,9 +6,11 @@ requiring real network calls or database connections.
 """
 
 import asyncio
+import gc
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import httpx2
 import pytest
 from cryptography.fernet import Fernet
@@ -450,3 +452,70 @@ class TestRefreshTokenRotation:
         mock_storage.store_refresh_token.assert_not_called()
 
         await broker.close()
+
+
+class TestUserRefreshLocks:
+    """Per-user refresh locks are shared while in use and dropped after (GH #408)."""
+
+    async def test_lock_is_shared_while_referenced(self, token_broker):
+        """Two lookups for one user return the same lock while it is held."""
+        first = await token_broker._get_user_refresh_lock("alice")
+        second = await token_broker._get_user_refresh_lock("alice")
+
+        assert first is second
+        assert first is not await token_broker._get_user_refresh_lock("bob")
+
+    async def test_unused_lock_is_dropped(self, token_broker):
+        """Once no caller holds a user's lock, its entry leaves the dict."""
+        lock = await token_broker._get_user_refresh_lock("alice")
+        async with lock:
+            assert "alice" in token_broker._user_refresh_locks
+
+        del lock
+        gc.collect()
+
+        assert "alice" not in token_broker._user_refresh_locks
+
+    async def test_concurrent_background_refreshes_serialise(
+        self, token_broker, mock_storage
+    ):
+        """Concurrent refreshes for one user run one at a time, then the lock goes.
+
+        Only the first caller refreshes; the others wait on the shared lock and
+        then find the token in the cache. Separate locks would let every
+        caller refresh, and overlap.
+        """
+        mock_storage.get_refresh_token.return_value = {"refresh_token": "rt"}
+        active = 0
+        max_active = 0
+        refreshes = 0
+
+        async def fake_refresh(refresh_token, scopes, user_id=None):
+            nonlocal active, max_active, refreshes
+            refreshes += 1
+            active += 1
+            max_active = max(max_active, active)
+            await anyio.sleep(0.01)
+            active -= 1
+            return "background-token", 300
+
+        tokens: list[str | None] = []
+
+        async def fetch() -> None:
+            tokens.append(
+                await token_broker.get_background_token("alice", ["notes.read"])
+            )
+
+        with patch.object(
+            token_broker, "_refresh_access_token_with_scopes", fake_refresh
+        ):
+            async with anyio.create_task_group() as tg:
+                for _ in range(5):
+                    tg.start_soon(fetch)
+
+        assert tokens == ["background-token"] * 5
+        assert refreshes == 1
+        assert max_active == 1
+
+        gc.collect()
+        assert "alice" not in token_broker._user_refresh_locks
