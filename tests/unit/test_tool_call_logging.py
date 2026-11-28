@@ -302,8 +302,8 @@ class TestSanitizeToolArgs:
 #: space, another separator or none. Plain ``st.text()`` almost never does.
 _scheme_prefixed_headers = st.builds(
     lambda scheme, sep, rest: scheme + sep + rest,
-    st.sampled_from(["Basic", "Bearer"]).flatmap(
-        lambda s: st.sampled_from([s, s.lower(), s.upper(), s.swapcase()])
+    st.sampled_from(
+        ["Basic", "basic", "BASIC", "bASIC", "Bearer", "bearer", "BEARER", "bEARER"]
     ),
     st.sampled_from([" ", "", "\t", ":"]),
     st.text(),
