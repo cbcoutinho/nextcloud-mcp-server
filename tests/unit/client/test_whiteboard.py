@@ -8,7 +8,7 @@ view reads each feature of the format.
 import json
 
 import pytest
-from hypothesis import assume, example, given
+from hypothesis import assume, event, example, given
 from hypothesis import strategies as st
 from nextcloud_client.models.whiteboard import (
     MAX_GROUPS,
@@ -111,11 +111,21 @@ def test_parse_board_raises_only_invalid_board(content: bytes):
     assert isinstance(scene["elements"], list)
 
 
-@given(value=json_values)
+#: Objects wrapping another object in ``data``, the older file layout. Arbitrary
+#: JSON almost never has a ``data`` object, so the unwrapping went unchecked.
+_data_wrapped = st.fixed_dictionaries(
+    {"data": st.dictionaries(st.text(), json_values)},
+    optional={"type": json_values, "version": json_values},
+)
+
+
+@given(value=json_values | _data_wrapped)
 def test_json_without_an_element_list_is_not_a_board(value):
     """An unrelated JSON file must not read as an empty board."""
     for candidate in (value, value.get("data") if isinstance(value, dict) else None):
         assume(not isinstance(candidate, dict) or "elements" not in candidate)
+    wrapped = isinstance(value, dict) and isinstance(value.get("data"), dict)
+    event("data object unwrapped" if wrapped else "no data object")
     content = json.dumps(value).encode()
     with pytest.raises(InvalidBoardError):
         parse_board(content)
