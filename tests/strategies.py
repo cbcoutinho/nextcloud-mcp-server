@@ -79,6 +79,8 @@ def fixed_draw_lists(
     and the example is discarded as ``gave_up``. Here the number of draws is
     fixed.
     """
+    if not 0 <= min_size <= max_size:
+        raise ValueError(f"need 0 <= min_size <= max_size, got {min_size}, {max_size}")
     length = draw(st.integers(min_size, max_size))
     return [draw(elements) for _ in range(max_size)][:length]
 
