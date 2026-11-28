@@ -90,6 +90,10 @@ def fixed_draw_one_of(draw, *alternatives: st.SearchStrategy):
     For a ``one_of`` used several times in one example whose alternatives
     make different numbers of choices: a mutation that copies one branch
     index over another then never needs more choices than the example has.
+
+    Every alternative is drawn on every call, so each draw costs the sum of
+    all alternatives. Keep the alternatives cheap; use plain ``st.one_of``
+    for a heavy one.
     """
     index = draw(st.integers(0, len(alternatives) - 1))
     return [draw(alternative) for alternative in alternatives][index]
