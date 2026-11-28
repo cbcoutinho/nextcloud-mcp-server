@@ -18,7 +18,7 @@ from nextcloud_mcp_server.providers.rerank import (
     RerankError,
     _parse_entry,
 )
-from tests.strategies import json_values
+from tests.strategies import dictionaries_with_optional_keys, json_values
 
 pytestmark = pytest.mark.unit
 
@@ -218,6 +218,14 @@ class TestTimeoutBudget:
         assert seen[0].read == 30.0
 
 
+@st.composite
+def _seen_sets(draw) -> set[int]:
+    """Any subset of -2..7. One in/out flag per value rather than ``st.sets``,
+    so the number of draws is fixed and Hypothesis's mutations never outgrow
+    the example."""
+    return {i for i in range(-2, 8) if draw(st.booleans())}
+
+
 class TestResponseParsing:
     """`_parse` is the contract boundary — everything downstream trusts it."""
 
@@ -285,10 +293,10 @@ class TestResponseParsing:
 
     @given(
         st.integers(0, 5),
-        st.sets(st.integers(-2, 7)),
-        st.fixed_dictionaries(
+        _seen_sets(),
+        dictionaries_with_optional_keys(
             {},
-            optional={
+            {
                 "index": st.integers(-2, 7) | st.booleans() | st.text(max_size=2),
                 "relevance_score": st.floats()
                 | st.integers()

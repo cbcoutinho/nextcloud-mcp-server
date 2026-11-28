@@ -394,6 +394,10 @@ def test_stitch_drops_overlap_and_marks_gaps():
     assert sar_export.stitch(chunks) == "abcdefghijklmno\nuvw"
 
 
+_MAX_RUNS = 4
+_MAX_CUTS = 4
+
+
 @st.composite
 def chunked_documents(draw):
     """``(chunks in any order, the text stitch must rebuild)``.
@@ -401,23 +405,37 @@ def chunked_documents(draw):
     The document is runs of text separated by gaps no chunk covers. Each run is
     cut into chunks that may overlap the previous one (the chunker's repeated
     tail) without starting before it. Rebuilt, the runs join with line breaks.
+
+    Every run slot draws the same values whether it is used or not, and the
+    order is a permutation of every chunk slot, so the number of draws is
+    fixed: Hypothesis's mutations never outgrow the example and discard it.
     """
-    runs = draw(st.lists(st.text(min_size=1, max_size=20), min_size=1, max_size=4))
-    chunks: list[tuple[int, str]] = []
+    n_runs = draw(st.integers(1, _MAX_RUNS))
+    slots = []  # (run, cuts, overlaps, gap) per run slot
+    for _ in range(_MAX_RUNS):
+        run = draw(st.text(min_size=1, max_size=20))
+        n_cuts = draw(st.integers(0, _MAX_CUTS))
+        cut_at = [draw(st.integers(0, len(run))) for _ in range(_MAX_CUTS)]
+        overlaps = [draw(st.integers(0, 20)) for _ in range(_MAX_CUTS + 1)]
+        slots.append((run, set(cut_at[:n_cuts]), overlaps, draw(st.integers(1, 5))))
+    order = draw(st.permutations(range(_MAX_RUNS * (_MAX_CUTS + 1))))
+
+    runs = [run for run, *_ in slots[:n_runs]]
+    chunks: list[tuple[int, tuple[int, str]]] = []  # (slot in order, chunk)
     offset = 0
-    for run in runs:
-        cuts = sorted(
-            draw(st.sets(st.integers(0, len(run)), max_size=4)) - {0, len(run)}
-        )
-        bounds = [0, *cuts, len(run)]
+    for r, (run, cut_at, overlaps, gap) in enumerate(slots[:n_runs]):
+        bounds = [0, *sorted(cut_at - {0, len(run)}), len(run)]
         prev_start = 0
         for i in range(len(bounds) - 1):
-            start = bounds[i] - draw(st.integers(0, bounds[i] - prev_start))
-            chunks.append((offset + start, run[start : bounds[i + 1]]))
+            # Any overlap from none back to the previous chunk's start.
+            start = bounds[i] - overlaps[i] % (bounds[i] - prev_start + 1)
+            chunk = (offset + start, run[start : bounds[i + 1]])
+            chunks.append((order[r * (_MAX_CUTS + 1) + i], chunk))
             prev_start = start
-        offset += len(run) + draw(st.integers(1, 5))
-    event(f"overlap: {sum(len(t) for _, t in chunks) > sum(map(len, runs))}")
-    return draw(st.permutations(chunks)), "\n".join(runs)
+        offset += len(run) + gap
+    chunks.sort()
+    event(f"overlap: {sum(len(t) for _, (_, t) in chunks) > sum(map(len, runs))}")
+    return [chunk for _, chunk in chunks], "\n".join(runs)
 
 
 @given(chunked_documents())

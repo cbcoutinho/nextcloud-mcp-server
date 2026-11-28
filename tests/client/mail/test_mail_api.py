@@ -25,6 +25,7 @@ the GreenMail integration suite.
 import base64
 import json
 import logging
+import string
 from datetime import UTC, datetime
 from typing import Any
 
@@ -1030,9 +1031,19 @@ _filenames = st.text(
 ).filter(lambda name: name.strip() == name)
 
 
+#: ``[a-z]{1,10}/[a-z0-9.+-]{1,15}``, built from two texts rather than
+#: ``st.from_regex``, which draws per character and so overran often enough
+#: under Hypothesis's mutations to discard about a fifth of the examples.
+_mimes = st.builds(
+    "{}/{}".format,
+    st.text(string.ascii_lowercase, min_size=1, max_size=10),
+    st.text(string.ascii_lowercase + string.digits + ".+-", min_size=1, max_size=15),
+)
+
+
 @given(
     _filenames,
-    st.from_regex(r"[a-z]{1,10}/[a-z0-9.+-]{1,15}", fullmatch=True),
+    _mimes,
     st.sampled_from(["", "; charset=binary", ";name=x"]),
     st.binary(max_size=64),
 )

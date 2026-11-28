@@ -62,7 +62,8 @@ _suffix = st.sampled_from(["", "/", "//", "\\", "/."])
 @st.composite
 def _spellings(draw) -> tuple[str, str]:
     """``(non_canonical_spelling, canonical_path)`` of the same file."""
-    segments = draw(st.lists(_segment, min_size=1, max_size=5))
+    n = draw(st.integers(min_value=1, max_value=5))
+    segments = [draw(_segment) for _ in range(n)]
     canonical = "/".join(segments)
     spelling = draw(_prefix)
     for i, seg in enumerate(segments):

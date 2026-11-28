@@ -427,7 +427,11 @@ def windowed_chunks(draw) -> tuple[int, list[int], int]:
     """A page count, the pages carrying a chunk, and a window over those pages:
     dividing their number, leaving a remainder, or larger than it."""
     n_pages = draw(st.integers(1, 13))
-    pages = sorted(draw(st.sets(st.integers(0, n_pages - 1), min_size=1)))
+    # Any non-empty subset: one page always, each other page in or out. A
+    # fixed number of draws per page count, unlike st.sets, so Hypothesis's
+    # mutations never outgrow the example and discard it.
+    first = draw(st.integers(0, n_pages - 1))
+    pages = [p for p in range(n_pages) if draw(st.booleans()) or p == first]
     return n_pages, pages, draw(st.integers(1, len(pages) + 3))
 
 
