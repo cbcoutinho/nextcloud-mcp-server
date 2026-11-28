@@ -8,7 +8,7 @@ those before comparison.
 """
 
 import pytest
-from hypothesis import example, given
+from hypothesis import event, example, given
 from hypothesis import strategies as st
 
 from nextcloud_mcp_server.auth.browser_oauth_routes import _normalise_origin
@@ -41,7 +41,13 @@ def test_host_is_case_insensitive(scheme, host, recase):
     )
 
 
-@given(_schemes, _schemes, _hosts, _hosts, st.none() | _ports, st.none() | _ports)
+#: An absent port, an explicit default (stripped only for its own scheme), or
+#: any port. A uniform draw from 1..65535 is almost never 80 or 443, which left
+#: the stripping to the ``@example``s alone.
+_maybe_ports = st.none() | st.sampled_from([80, 443]) | _ports
+
+
+@given(_schemes, _schemes, _hosts, _hosts, _maybe_ports, _maybe_ports)
 @example("https", "http", "example.com", "example.com", None, None)
 @example("https", "http", "example.com", "example.com", 443, 80)
 @example("https", "https", "example.com", "example.com", 8443, 443)
@@ -53,7 +59,10 @@ def test_equal_iff_same_scheme_host_and_effective_port(s1, s2, h1, h2, p1, p2):
     def effective(scheme, port):
         return _DEFAULT_PORT[scheme] if port is None else port
 
+    stripped = any(p == _DEFAULT_PORT[s] for s, p in ((s1, p1), (s2, p2)))
+    event("a default port to strip" if stripped else "no default port")
     same = (s1, h1, effective(s1, p1)) == (s2, h2, effective(s2, p2))
+    event("same origin" if same else "different origin")
     assert (
         _normalise_origin(_origin(s1, h1, p1)) == _normalise_origin(_origin(s2, h2, p2))
     ) is same

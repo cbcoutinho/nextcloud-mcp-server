@@ -12,7 +12,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from hypothesis import example, given
+from hypothesis import event, example, given
 from hypothesis import strategies as st
 from mcp import types
 from mcp.client import Client
@@ -298,7 +298,19 @@ class TestSanitizeToolArgs:
         assert _sanitize_tool_args({"ctx": object(), "etag": "abc"}) is None
 
 
-@given(st.text())
+#: Headers that start with a known scheme word in any case, followed by a
+#: space, another separator or none. Plain ``st.text()`` almost never does.
+_scheme_prefixed_headers = st.builds(
+    lambda scheme, sep, rest: scheme + sep + rest,
+    st.sampled_from(
+        ["Basic", "basic", "BASIC", "bASIC", "Bearer", "bearer", "BEARER", "bEARER"]
+    ),
+    st.sampled_from([" ", "", "\t", ":"]),
+    st.text(),
+)
+
+
+@given(st.text() | _scheme_prefixed_headers)
 @example("bare-token-without-scheme")  # its first word IS the secret
 @example("Token abc123")
 def test_auth_scheme_never_echoes_credentials(header):
@@ -306,7 +318,9 @@ def test_auth_scheme_never_echoes_credentials(header):
     nothing else, so no part of any header can reach the log."""
     from nextcloud_mcp_server.app import _auth_scheme
 
-    assert _auth_scheme(header).lower() in {"basic", "bearer", "<other>"}
+    scheme = _auth_scheme(header)
+    event("placeholder" if scheme == "<other>" else "known scheme")
+    assert scheme.lower() in {"basic", "bearer", "<other>"}
 
 
 @given(st.sampled_from(["Basic", "Bearer"]), st.text())

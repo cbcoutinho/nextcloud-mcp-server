@@ -18,7 +18,7 @@ from nextcloud_mcp_server.providers.ner import (
     NerError,
     windows,
 )
-from tests.strategies import fixed_draw_lists, json_values
+from tests.strategies import fixed_draw_lists, fixed_draw_one_of, json_values
 
 pytestmark = pytest.mark.unit
 
@@ -172,23 +172,41 @@ def test_parse_accepts_exactly_a_response_covering_every_text(case):
     assert len(NerClient._parse(body, texts, _LABELS)) == len(texts)
 
 
-@given(json_values, fixed_draw_lists(st.text(max_size=5), min_size=1, max_size=3))
-@example({"nope": []}, ["a", "b"])
-@example([], ["a", "b"])
-@example({"results": [{"index": 0}]}, ["a", "b"])
-@example(
-    {
-        "results": [
-            {"index": 0, "entities": [{"label": "person", "start": 0, "end": 1}]}
-        ]
-    },
-    ["a"],
+#: ``(body, texts)`` for the "raises only NerError" property. Arbitrary JSON
+#: almost never has a ``results`` list, and independently drawn indices almost
+#: never cover every text exactly once, so on their own they never reach the
+#: parsed branch. ``ner_responses`` supplies bodies built for the texts: complete
+#: ones (parsed) and ones broken in each single way (every NerError path).
+_ner_cases = fixed_draw_one_of(
+    st.tuples(
+        json_values, fixed_draw_lists(st.text(max_size=5), min_size=1, max_size=3)
+    ),
+    ner_responses().map(lambda case: (case[1], case[0])),
 )
-def test_parse_raises_only_ner_error(body, texts):
+
+
+@given(_ner_cases)
+@example(({"nope": []}, ["a", "b"]))
+@example(([], ["a", "b"]))
+@example(({"results": [{"index": 0}]}, ["a", "b"]))
+@example(
+    (
+        {
+            "results": [
+                {"index": 0, "entities": [{"label": "person", "start": 0, "end": 1}]}
+            ]
+        },
+        ["a"],
+    )
+)
+def test_parse_raises_only_ner_error(case):
+    body, texts = case
     try:
         found = NerClient._parse(body, texts, _LABELS)
     except NerError:
+        event("raised NerError")
         return
+    event("parsed")
     assert len(found) == len(texts)
 
 
