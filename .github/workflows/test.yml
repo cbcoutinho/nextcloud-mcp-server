@@ -45,8 +45,40 @@ jobs:
       # -n auto fans the (fully mocked) unit tests across the runner's cores.
       # -q instead of -v: with xdist, per-test progress lines are interleaved
       # noise, and failures still print in full.
+      # HYPOTHESIS_EXPERIMENTAL_OBSERVABILITY makes Hypothesis write one JSON
+      # line per generated example (arguments, status, gave_up reasons,
+      # timing, coverage) to .hypothesis/observed/*.jsonl, uploaded below so
+      # property-test behaviour can be analysed per run. It is set here only,
+      # so local runs are unchanged. Cost on the full unit suite: ~+30% wall
+      # time, ~27 MB raw / ~1.5 MB compressed. xdist workers append to the
+      # same daily file; lines do not interleave. The files are Python
+      # json.dumps output: lone-surrogate escapes (and NaN/Infinity) occur,
+      # and jq aborts a whole-file parse at the first one, so read
+      # line by line:
+      #   jq -nR '[inputs | try fromjson catch {status: "unparseable"}]' *_testcases.jsonl
+      #
+      # PYTHONPATH: Hypothesis drops coverage for any file under site-packages.
+      # uv-env installs the workspace --no-editable, so nextcloud_client (where
+      # most properties' code under test lives) would record no coverage at
+      # all. Importing it from the checkout instead matches a local editable
+      # run; the built wheel is still exercised by package-smoke.
       - name: Run unit tests
+        env:
+          HYPOTHESIS_EXPERIMENTAL_OBSERVABILITY: "1"
+          PYTHONPATH: packages/nextcloud-client/src
         run: uv run --no-build --no-sync pytest -q -m unit -n auto -o "addopts=-p no:asyncio"
+      # Upload on red runs too (that is when the data matters most), but not on
+      # cancellation. include-hidden-files: upload-artifact skips dot-dirs such
+      # as .hypothesis/ by default, which would upload nothing.
+      - name: Upload Hypothesis observability data
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hypothesis-observability-unit
+          path: .hypothesis/observed/
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
 
   # Cross-platform install smoke test. Installs the package (and its full
   # dependency closure) into an isolated environment and runs the CLI
